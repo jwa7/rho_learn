@@ -678,7 +678,7 @@ def flatten_tensormap(tensor, backend: str) -> float:
     """
     Flattens all block values and returns as a 1D numpy array.
     """
-    if backed == "numpy":
+    if backend == "numpy":
         flattened = np.array([])
         for block in tensor.blocks():
             flattened = np.concatenate((flattened, block.values.flatten()))
