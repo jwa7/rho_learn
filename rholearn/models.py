@@ -236,6 +236,16 @@ class EquiModelGlobal(torch.nn.Module):
                 f"{self.keys}, input keys: {input.keys}"
             )
 
+        for key in self.keys:
+            if input[key].properties != self.in_feature_labels[key]:
+                raise ValueError(
+                    "the feature labels of the ``input`` TensorMap given to forward()"
+                    " must match the feature labels used to initialize the"
+                    f" EquiModelGlobal object. For block {key}, model feature labels:"
+                    f"{self.in_feature_labels[key]}, input feature"
+                    f" labels: {input[key].properties}"
+                )
+
         if self.model_type == "linear":
             output = TensorMap(
                 keys=self.keys,
@@ -420,16 +430,34 @@ class EquiModelLocal(torch.nn.Module):
         if not isinstance(input, TensorBlock):
             raise TypeError("``input`` must be an equistore TensorBlock")
 
+        if input.properties != self.in_feature_labels:
+            raise ValueError(
+                "the feature labels of the ``input`` TensorBlock given to forward()"
+                " must match the feature labels used to initialize the"
+                " EquiModelLocal object. Model feature labels:"
+                f"{self.in_feature_labels}, input feature labels: {input.properties}"
+            )
+
         if self.model_type == "linear":
             output = self.model(input.values)
         elif self.model_type == "nonlinear":
             # Check exact equivalence of samples
-            if not utils.labels_equal(
-                input.samples, invariant.samples, correct_order=True
-            ):
+            # if not utils.labels_equal(
+            #     input.samples, invariant.samples, correct_order=True
+            # ):
+            if input.samples != invariant.samples:
                 raise ValueError(
                     "``input`` and ``invariant`` TensorBlocks must have the"
                     + " the same samples Labels, in the same order."
+                )
+            # Check input invariant features match that of the model
+            if invariant.properties != self.in_invariant_features:
+                raise ValueError(
+                    "the feature labels of the ``invariant`` TensorBlock given to forward()"
+                    " must match the invariant features used to initialize the"
+                    " EquiModelLocal object. Model in_invariant_features:"
+                    f"{self.in_invariant_features}, invariant feature labels:"
+                    f"{invariant.properties}"
                 )
             output = self.model(input=input.values, invariant=invariant.values)
         else:
@@ -500,19 +528,19 @@ class NonLinearModel(torch.nn.Module):
     This model class must be initialized with several arguments. First, the
     number of ``in_features`` and ``out_features`` of the equivariant block,
     which dictates the widths of the input and output linear layers applied to
-    the equivariant. 
-    
+    the equivariant.
+
     Second, the number of features present in the supplementary invariant block,
     ``in_invariant_features`` - this controls the width of the input layer to
-    the neural network that the invariant block is passed through. 
-    
+    the neural network that the invariant block is passed through.
+
     Third, the ``hidden_layer_widths`` passed as a list of int. For ``n_elems``
     number of elements in the list, there will be ``n_elems`` number of hidden
     linear layers in the NN architecture, but ``n_elems - 1`` number of
     nonlinear activation layers. Passing a list with 1 element therefore
     corresponds to a linear model, where all equivariant blocks are multiplied
     by their corresponding invariants, but with no nonlinearities included.
-    
+
     Finally, the ``activation_fn`` that should be used must be specified.
     """
 
