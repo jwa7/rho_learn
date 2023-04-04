@@ -595,6 +595,52 @@ def pad_with_empty_blocks(
     return TensorMap(keys=target.keys, blocks=blocks)
 
 
+def sort_tensormap(tensor: TensorMap) -> TensorMap:
+    """
+    Uses np.sort to rearrange block values along every axis. Note: doesn't
+    currently handle gradient blocks. Assumes there is only one components axis.
+    """
+    keys = tensor.keys
+    blocks = []
+    for key in keys:
+        block = tensor[key]
+
+        # Define the samples resorting order
+        unsorted_s = block.samples
+        sorted_s = np.sort(unsorted_s)
+        samples_filter = np.array([np.where(unsorted_s == s)[0][0] for s in sorted_s])
+
+        # Define the components resorting order
+        unsorted_c = block.components
+        sorted_c = [np.sort(un_c) for un_c in unsorted_c]
+        components_filter = [
+            np.array([np.where(un_c == c)[0][0] for c in sor_c])
+            for un_c, sor_c in zip(unsorted_c, sorted_c)
+        ]
+
+        # Define the properties resorting order
+        unsorted_p = block.properties
+        sorted_p = np.sort(unsorted_p)
+        properties_filter = np.array(
+            [np.where(unsorted_p == p)[0][0] for p in sorted_p]
+        )
+
+        # Sort the block
+        blocks.append(
+            TensorBlock(
+                samples=sorted_s,
+                components=sorted_c,
+                properties=sorted_p,
+                values=np.ascontiguousarray(
+                    block.values[samples_filter][:, components_filter[0]][
+                        ..., properties_filter
+                    ]
+                ),
+            )
+        )
+    return TensorMap(keys=keys, blocks=blocks)
+
+
 # ===== other utility functions
 
 
