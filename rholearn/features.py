@@ -124,6 +124,7 @@ def lambda_feature_vector(
     # definition 2 for all keys.
     print("Dropping 'order_nu' from the key names")
     acdc_nu2 = utils.drop_key_name(acdc_nu2, key_name="order_nu")
+    utils.trim_memory()
 
     if even_parity_only:
         # Drop all odd parity keys/blocks
