@@ -16,6 +16,7 @@ from equistore import Labels, TensorMap
 from rholearn import io, spherical, utils
 
 
+@profile
 def lambda_feature_vector(
     frames: list,
     hypers: dict,
@@ -115,20 +116,26 @@ def lambda_feature_vector(
         lcut=lambda_max,
         other_keys_match=["species_center"],
     )
+    # Release acdc_nu1 from memory
     del acdc_nu1
+    utils.trim_memory()
 
     # Clean the lambda-SOAP TensorMap. Drop the order_nu key name as this is by
     # definition 2 for all keys.
     print("Dropping 'order_nu' from the key names")
     acdc_nu2 = utils.drop_key_name(acdc_nu2, key_name="order_nu")
 
-    if even_parity_only:  # Drop all odd parity keys/blocks
+    if even_parity_only:
+        # Drop all odd parity keys/blocks
         print("Dropping blocks with odd parity")
         keys_to_drop = acdc_nu2.keys[acdc_nu2.keys["inversion_sigma"] == -1]
         acdc_nu2 = equistore.drop_blocks(acdc_nu2, keys=keys_to_drop)
+        utils.trim_memory()
+
         # Drop the inversion_sigma key name as this is now +1 for all blocks
         print("Dropping 'inversion_sigma' from the key names")
         acdc_nu2 = utils.drop_key_name(acdc_nu2, key_name="inversion_sigma")
+        utils.trim_memory()
 
     if save_dir is not None:  # Write hypers and features to file
         with open(os.path.join(save_dir, f"hypers_{calc}.pickle"), "wb") as handle:
