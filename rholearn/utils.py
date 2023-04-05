@@ -695,7 +695,7 @@ def drop_blocks(tensor: TensorMap, keys: Labels) -> TensorMap:
         for key in new_keys
     ]
     del tensor
-    utils.trim_memory()
+    trim_memory()
     return TensorMap(keys=new_keys, blocks=new_blocks)
 
 
@@ -739,7 +739,7 @@ def get_invariant_means(tensor: TensorMap) -> TensorMap:
     keys_to_drop = tensor.keys[tensor.keys["spherical_harmonics_l"] != 0]
 
     # Drop these blocks
-    inv_tensor = utils.drop_blocks(tensor, keys=keys_to_drop)
+    inv_tensor = drop_blocks(tensor, keys=keys_to_drop)
 
     # inv_keys = tensor.keys[tensor.keys["spherical_harmonics_l"] == 0]
     # inv_tensor = TensorMap(keys=inv_keys, blocks=[tensor[k].copy() for k in inv_keys])
