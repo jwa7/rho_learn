@@ -1,3 +1,5 @@
+import ctypes
+import gc
 import os
 from typing import List, Union, Optional
 
@@ -470,8 +472,9 @@ def drop_key_name(tensor: TensorMap, key_name: str) -> TensorMap:
     Takes a TensorMap and drops the key_name from the keys. Every key must have
     the same value for the key_name, otherwise a ValueError is raised.
     """
+    keys = tensor.keys
     # Check that the key_name is present and unique
-    if not len(np.unique(tensor.keys[key_name])) == 1:
+    if not len(np.unique(keys[key_name])) == 1:
         raise ValueError(
             f"key_name {key_name} is not unique in the keys."
             " Can only drop a key_name where the value is the"
@@ -479,16 +482,30 @@ def drop_key_name(tensor: TensorMap, key_name: str) -> TensorMap:
         )
 
     # Define the idx of the key_name to drop
-    drop_idx = tensor.keys.names.index(key_name)
+    drop_idx = keys.names.index(key_name)
 
-    # Build the new keys
+    # Build the new TensorMap
     new_keys = Labels(
-        names=tensor.keys.names[:drop_idx] + tensor.keys.names[drop_idx + 1 :],
+        names=keys.names[:drop_idx] + keys.names[drop_idx + 1 :],
         values=np.array(
-            [k.tolist()[:drop_idx] + k.tolist()[drop_idx + 1 :] for k in tensor.keys]
+            [k.tolist()[:drop_idx] + k.tolist()[drop_idx + 1 :] for k in keys]
         ),
     )
-    return TensorMap(keys=new_keys, blocks=[b.copy() for b in tensor.blocks()])
+    new_tensor = TensorMap(
+        keys=new_keys,
+        blocks=[
+            TensorBlock(
+                samples=tensor[key].samples,
+                components=tensor[key].components,
+                properties=tensor[key].properties,
+                values=tensor[key].values,
+            )
+            for key in keys
+        ],
+    )
+    del tensor
+    trim_memory()
+    return new_tensor
 
 
 def drop_metadata_name(tensor: TensorMap, axis: str, name: str) -> TensorMap:
@@ -551,10 +568,13 @@ def drop_metadata_name(tensor: TensorMap, axis: str, name: str) -> TensorMap:
                 values=tensor[key].values,
             )
         )
-    return TensorMap(
+    new_tensor = TensorMap(
         keys=tensor.keys,
         blocks=new_blocks,
     )
+    del tensor
+    trim_memory()
+    return new_tensor
 
 
 def pad_with_empty_blocks(
@@ -677,9 +697,14 @@ def get_invariant_means(tensor: TensorMap) -> TensorMap:
     new TensorMap, whose number of block is equal to the number of invariant
     blocks in `tensor`. Assumes `tensor` is a numpy-based TensorMap.
     """
-    # Define the keys of the invariant blocks and create a new TensorMap
-    inv_keys = tensor.keys[tensor.keys["spherical_harmonics_l"] == 0]
-    inv_tensor = TensorMap(keys=inv_keys, blocks=[tensor[k].copy() for k in inv_keys])
+    # Define the keys of the covariant blocks
+    keys_to_drop = tensor.keys[tensor.keys["spherical_harmonics_l"] != 0]
+
+    # Drop these blocks
+    inv_tensor = equistore.drop_blocks(tensor, keys=keys_to_drop)
+
+    # inv_keys = tensor.keys[tensor.keys["spherical_harmonics_l"] == 0]
+    # inv_tensor = TensorMap(keys=inv_keys, blocks=[tensor[k].copy() for k in inv_keys])
 
     # Find the mean over sample for the invariant blocks
     return equistore.mean_over_samples(
@@ -758,3 +783,14 @@ def num_elements_tensormap(tensor: TensorMap) -> int:
             n_elems += torch.prod(block.values.shape)
 
     return int(n_elems)
+
+
+# ===== memory utils
+
+def trim_memory() -> int:
+
+    # Garbage collect
+    gc.collect()
+    # Release memory back to the OS
+    libc = ctypes.CDLL("libc.so.6")
+    return libc.malloc_trim(0)
