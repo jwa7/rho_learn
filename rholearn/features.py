@@ -85,9 +85,11 @@ def lambda_feature_vector(
     cg = spherical.ClebschGordanReal(l_max=lambda_max)
 
     # Generate descriptor via Spherical Expansion
+    print("Computing spherical expansion")
     acdc_nu1 = calculator.compute(frames)
 
     # nu=1 features
+    print("Standardizing keys")
     acdc_nu1 = spherical.acdc_standardize_keys(acdc_nu1)
 
     # Move "species_neighbor" sparse keys to properties with enforced atom
@@ -100,10 +102,12 @@ def lambda_feature_vector(
             names=(keys_to_move,),
             values=np.array(neighbor_species).reshape(-1, 1),
         )
+    print("Moving keys to properties")
     acdc_nu1 = acdc_nu1.keys_to_properties(keys_to_move=keys_to_move)
 
     # Combined nu=1 features to generate nu=2 features. lambda-SOAP is defined
     # as just the nu=2 features.
+    print("Performing CG iteration to generate nu=2 features")
     acdc_nu2 = spherical.cg_increment(
         acdc_nu1,
         acdc_nu1,
@@ -111,17 +115,19 @@ def lambda_feature_vector(
         lcut=lambda_max,
         other_keys_match=["species_center"],
     )
+    del acdc_nu1
 
     # Clean the lambda-SOAP TensorMap. Drop the order_nu key name as this is by
     # definition 2 for all keys.
+    print("Dropping 'order_nu' from the key names")
     acdc_nu2 = utils.drop_key_name(acdc_nu2, key_name="order_nu")
 
     if even_parity_only:  # Drop all odd parity keys/blocks
-        new_keys = acdc_nu2.keys[acdc_nu2.keys["inversion_sigma"] == +1]
-        acdc_nu2 = TensorMap(
-            keys=new_keys, blocks=[acdc_nu2[key].copy() for key in new_keys]
-        )
+        print("Dropping blocks with odd parity")
+        keys_to_drop = acdc_nu2.keys[acdc_nu2.keys["inversion_sigma"] == -1]
+        acdc_nu2 = equistore.drop_blocks(acdc_nu2, keys=keys_to_drop)
         # Drop the inversion_sigma key name as this is now +1 for all blocks
+        print("Dropping 'inversion_sigma' from the key names")
         acdc_nu2 = utils.drop_key_name(acdc_nu2, key_name="inversion_sigma")
 
     if save_dir is not None:  # Write hypers and features to file
