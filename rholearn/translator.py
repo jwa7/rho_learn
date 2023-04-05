@@ -478,7 +478,7 @@ def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
         if not (l1 == l2 and a1 == a2):
             keys_to_drop.update({(l1, l2, a1, a2)})
 
-    new_tensor = equistore.drop_blocks(
+    new_tensor = utils.drop_blocks(
         tensor,
         keys=Labels(
             names=tensor.keys.names,
