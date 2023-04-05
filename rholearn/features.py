@@ -129,7 +129,7 @@ def lambda_feature_vector(
         # Drop all odd parity keys/blocks
         print("Dropping blocks with odd parity")
         keys_to_drop = acdc_nu2.keys[acdc_nu2.keys["inversion_sigma"] == -1]
-        acdc_nu2 = equistore.drop_blocks(acdc_nu2, keys=keys_to_drop)
+        acdc_nu2 = utils.drop_blocks(acdc_nu2, keys=keys_to_drop)
         utils.trim_memory()
 
         # Drop the inversion_sigma key name as this is now +1 for all blocks

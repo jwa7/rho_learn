@@ -661,6 +661,44 @@ def sort_tensormap(tensor: TensorMap) -> TensorMap:
     return TensorMap(keys=keys, blocks=blocks)
 
 
+def drop_blocks(tensor: TensorMap, keys: Labels) -> TensorMap:
+    """
+    Drop specified key/block pairs from a TensorMap.
+
+    :param tensor: the TensorMap to drop the key-block pair from.
+    :param keys: a :py:class:`Labels` object containing the keys of the
+        blocks to drop
+
+    :return: the input :py:class:`TensorMap` with the specified key/block
+        pairs dropped.
+    """
+    if not np.all(tensor.keys.names == keys.names):
+        raise ValueError(
+            "The input tensor's keys must have the same names as the specified"
+            f" keys to drop. Should be {tensor.keys.names} but got {keys.names}"
+        )
+    diff = np.setdiff1d(keys, tensor.keys)
+    if len(diff) > 0:
+        raise ValueError(
+            "some keys in `keys` are not present in `tensor`."
+            f" Non-existent keys: {diff}"
+        )
+    new_keys = np.setdiff1d(tensor.keys, keys)
+    # new_blocks = [tensor[key].copy() for key in new_keys]
+    new_blocks = [
+        TensorBlock(
+            values=tensor[key].values,
+            samples=tensor[key].samples,
+            components=tensor[key].components,
+            properties=tensor[key].properties,
+        )
+        for key in new_keys
+    ]
+    del tensor
+    utils.trim_memory()
+    return TensorMap(keys=new_keys, blocks=new_blocks)
+
+
 # ===== other utility functions
 
 
@@ -701,7 +739,7 @@ def get_invariant_means(tensor: TensorMap) -> TensorMap:
     keys_to_drop = tensor.keys[tensor.keys["spherical_harmonics_l"] != 0]
 
     # Drop these blocks
-    inv_tensor = equistore.drop_blocks(tensor, keys=keys_to_drop)
+    inv_tensor = utils.drop_blocks(tensor, keys=keys_to_drop)
 
     # inv_keys = tensor.keys[tensor.keys["spherical_harmonics_l"] == 0]
     # inv_tensor = TensorMap(keys=inv_keys, blocks=[tensor[k].copy() for k in inv_keys])
