@@ -554,7 +554,6 @@ def acdc_standardize_keys(descriptor):
         blocks=blocks,
     )
 
-
 def cg_combine(
     x_a,
     x_b,
@@ -763,7 +762,11 @@ def cg_combine(
                 if grad_components is not None:
                     X_grads[KEY].append(one_shot_grads)
 
-    # turns data into sparse storage format (and dumps any empty block in the process)
+    # Release memory back to the OS
+    utils.trim_memory()
+
+    # turns data into sparse storage format (and dumps any empty block in the
+    # process)
     nz_idx = []
     nz_blk = []
     for KEY in X_blocks:
