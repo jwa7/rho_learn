@@ -156,6 +156,7 @@ def salted_coeffs_to_tensormap(
 
 def salted_overlaps_to_tensormap(
     frames: list,
+    start_idx: int,
     overlaps: np.ndarray,
     lmax: dict,
     nmax: dict,
@@ -169,6 +170,9 @@ def salted_overlaps_to_tensormap(
 
     :param frames: List of ASE Atoms objects for each xyz structure in the data
         set.
+    :param start_idx: int, the index of the first frame in the data set that is
+        passed in frames. This dictates the value of the "structure" index in
+        the output TensorMap.
     :param overlaps: np.ndarray of shape (n_structures, n_coefficients,
         n_coefficients), where each 2D-matrix of overlap elements for a single
         structure is ordered with indices iterating over i1, l1, n1, m1, along
@@ -343,14 +347,18 @@ def salted_overlaps_to_tensormap(
         atom_idxs = np.array(list(raw_block.keys()))
 
         # Build the TensorBlock
-        values = np.concatenate([raw_block[i1, i2] for i1, i2 in atom_idxs], axis=0)
+        values = np.ascontiguousarray(
+            np.concatenate([raw_block[i1, i2] for i1, i2 in atom_idxs], axis=0)
+        )
         block = TensorBlock(
             samples=Labels(
                 names=["structure", "center_1", "center_2"],
                 values=np.array(
                     [
                         [A, i1, i2]
-                        for (i1, i2), A in itertools.product(atom_idxs, range(n_frames))
+                        for (i1, i2), A in itertools.product(
+                            atom_idxs, range(start_idx, start_idx + n_frames)
+                        )
                     ]
                 ),
             ),
