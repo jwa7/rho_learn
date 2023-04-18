@@ -154,7 +154,6 @@ def random_tensor_like(tensor: Union[TensorMap, TensorBlock, torch.Tensor]):
     if isinstance(tensor, TensorMap):
         new_blocks = []
         for key, block in tensor:
-
             new_block = TensorBlock(
                 samples=block.samples,
                 components=[c for c in block.components],
@@ -508,11 +507,16 @@ def drop_key_name(tensor: TensorMap, key_name: str) -> TensorMap:
     return new_tensor
 
 
-def drop_metadata_name(tensor: TensorMap, axis: str, name: str) -> TensorMap:
+def drop_metadata_name(
+    tensor: TensorMap, axis: str, name: str, unsafe: bool = False
+) -> TensorMap:
     """
     Takes a TensorMap and drops the `name` from either the "samples" or
-    "properties" labels of every block. Every block must have the same value for
-    the `name`, otherwise a ValueError is raised.
+    "properties" labels of every block. If `unsafe=False` (default), every block
+    must have the same value for the `name`, otherwise a ValueError is raised.
+    if `unsafe=True`, the `name` is dropped from every block, even if the values
+    for this name are not equivalent. This is unsafe as it can create non-unique
+    metadata, and should only be used if this is not the case.
     """
     if axis not in ["samples", "properties"]:
         raise ValueError(f"axis must be 'samples' or 'properties', not {axis}")
@@ -523,11 +527,14 @@ def drop_metadata_name(tensor: TensorMap, axis: str, name: str) -> TensorMap:
         else:
             uniq = np.unique(block.properties[name])
         if len(uniq) > 1:
-            raise ValueError(
-                f"name {name} is not unique in the {axis}."
-                " Can only drop a `name` where the value is the"
-                f" same for all {axis}."
-            )
+            if unsafe is False:
+                raise ValueError(
+                    f"name {name} is not unique in the {axis}."
+                    " Can only drop a `name` where the value is the"
+                    f" same for all {axis}."
+                )
+            else:
+                pass
     # Identify the idx of the name to drop
     if axis == "samples":
         drop_idx = tensor.blocks()[0].samples.names.index(name)
@@ -825,8 +832,8 @@ def num_elements_tensormap(tensor: TensorMap) -> int:
 
 # ===== memory utils
 
-def trim_memory() -> int:
 
+def trim_memory() -> int:
     # Garbage collect
     gc.collect()
     # Release memory back to the OS
