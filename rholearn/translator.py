@@ -5,6 +5,8 @@ rholearn.
 import itertools
 import numpy as np
 
+import ase
+
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
@@ -17,264 +19,289 @@ SYM_TO_NUM = {"H": 1, "C": 6, "O": 8, "N": 7}
 NUM_TO_SYM = {1: "H", 6: "C", 8: "O", 7: "N"}
 
 
-def salted_coeffs_to_tensormap(
-    frames: list,
+def get_flat_index(
+    symbol_list: list, lmax: dict, nmax: dict, i: int, l: int, n: int, m: int
+) -> int:
+    """
+    Get the flat index of the coefficient pointed to by the basis function
+    indices.
+
+    :param lmax : A dictionary containing the maximum spherical harmonics (l)
+        value for each atom type.
+    :param nmax: A dictionary containing the maximum radial channel (n) value
+        for each combination of atom type and l.
+    :param i: int, the atom index.
+    :param l: int, the spherical harmonics index.
+    :param n: int, the radial channel index.
+    :param m: int, the spherical harmonics component index.
+    :param tests: int, the number of coefficients to randomly compare between
+        the raw input array and processed TensorMap to check for correct
+        conversion.
+
+    :return int: the flat index of the coefficient pointed to by the input
+        indices.
+    """
+    # Define the atom offset
+    atom_offset = 0
+    for atom_index in range(i):
+        symbol = symbol_list[atom_index]
+        for l_tmp in range(lmax[symbol] + 1):
+            atom_offset += (2 * l_tmp + 1) * nmax[(symbol, l_tmp)]
+
+    # Define the l offset
+    l_offset = 0
+    symbol = symbol_list[i]
+    for l_tmp in range(l):
+        l_offset += (2 * l_tmp + 1) * nmax[(symbol, l_tmp)]
+
+    # Define the n offset
+    n_offset = (2 * l + 1) * n
+
+    # Define the m offset
+    m_offset = m + l
+
+    return atom_offset + l_offset + n_offset + m_offset
+
+
+def coeff_vector_to_tensormap(
+    frame: ase.Atoms,
     coeffs: np.ndarray,
+    structure_idx: int,
     lmax: dict,
     nmax: dict,
+    tests: int = 0,
 ) -> TensorMap:
     """
-    Convert the flat vector of SALTED electron density coefficients to a
-    TensorMap. Assumes the order of the coefficients, for a given molecule, is:
-
-    .. math::
-
-        c_v = \sum_{i \in atoms(A)} \sum_{l}^{l_max} \sum_{n}^{n_max} \sum_{m
-        \in [-l, +l]} c^i_{lnm}
-
-    :param frames: List of ASE Atoms objects for each xyz structure in the data
-        set.
-    :param coeffs: np.ndarray of shape (n_structures, n_coefficients), where
-        each flat vector of coefficients for a single structure is ordered with
-        indices iterating over i, l, n, m, in that nested order - as in the
-        equation above.
-    :param lmax: dict of maximum l values for each species in the data set that
-        wass used to construct the projections passed in `coeffs`. Chemical
-        symbols are the keys, and the values are the maximum l values. For
-        instance, if the data set contains only oxygen and hydrogen atoms, a
-        valid lmax dict would be: {"H": 4, "O": 8}.
-    :param nmax: dict of maximum n values for each species and l values. For
-        instance, {('H', 0): 8, ('H', 1): 6, ('H', 2): 6, ... ('O', 0): 9, ('O',
-        1): 10, ('O', 2): 9, ...}. The keys are tuples of the form (symbol, l),
-        and the values are the maximum n values for that species and l value.
-
-    :return: TensorMap of the coefficients, with the appropriate indices named
-        as follows: Keys: l -> "spherical_harmonics_l", a -> "species_center".
-        Samples: A -> "structure", i -> "center". Components: m ->
-        "spherical_harmonics_m". Properties: n -> "n".
+    Convert a set of coefficients to a TensorMap.
     """
+    # Define some useful variables
+    symbols = frame.get_chemical_symbols()
+    uniq_symbols = np.unique(symbols)
+    tot_atoms = len(symbols)
+    tot_coeffs = len(coeffs)
 
-    # Define some useful constants
-    n_frames = len(frames)
-    n_atoms_per_frame = len(frames[0].get_positions())
-    species_symbols = np.array(frames[0].get_chemical_symbols())
+    # First, confirm the length of the flat array is as expected
+    num_coeffs_by_uniq_symbol = {}
+    for symbol in uniq_symbols:
+        n_coeffs = 0
+        for l_tmp in range(lmax[symbol] + 1):
+            for n_tmp in range(nmax[(symbol, l_tmp)]):
+                n_coeffs += 2 * l_tmp + 1
+        num_coeffs_by_uniq_symbol[symbol] = n_coeffs
 
-    # Define some useful dimensions
-    n_coeffs_by_l = {
-        symbol: [(2 * l + 1) * nmax[(symbol, l)] for l in range(lmax[symbol] + 1)]
-        for symbol in species_symbols
-    }
-    n_coeffs_by_symbol = {
-        symbol: np.sum(n_coeffs_by_l[symbol]) for symbol in species_symbols
-    }
-    n_coeffs_per_atom = np.array(
-        [n_coeffs_by_symbol[symbol] for symbol in species_symbols]
+    num_coeffs_by_symbol = np.array(
+        [num_coeffs_by_uniq_symbol[symbol] for symbol in symbols]
     )
-    n_coeffs_per_frame = np.sum(n_coeffs_per_atom)
-    assert coeffs.shape == (n_frames, n_coeffs_per_frame)
+    assert np.sum(num_coeffs_by_symbol) == tot_coeffs
 
-    # Split the projections into a list of arrays, one for each atom. Go up to
-    # -1 to remove the last empty array, created by numpy.split when using exact
-    # indices.
-    split_by_atom = np.split(coeffs, np.cumsum(n_coeffs_per_atom), axis=1)[:-1]
-    assert len(split_by_atom) == n_atoms_per_frame
+    # Split the flat array by atomic index
+    split_by_atom = np.split(coeffs, np.cumsum(num_coeffs_by_symbol), axis=0)[:-1]
+    assert len(split_by_atom) == tot_atoms
+    assert np.sum([len(x) for x in split_by_atom]) == tot_coeffs
 
-    # Split each of these arrays into a list of arrays, one for each l
-    tmp_atomic = []
-    for symbol, atomic_array in zip(species_symbols, split_by_atom):
-        assert atomic_array.shape == (n_frames, n_coeffs_by_symbol[symbol])
+    num_coeffs_by_l = {
+        symbol: np.array(
+            [
+                (2 * l_tmp + 1) * nmax[(symbol, l_tmp)]
+                for l_tmp in range(lmax[symbol] + 1)
+            ]
+        )
+        for symbol in uniq_symbols
+    }
+    for symbol in uniq_symbols:
+        assert np.sum(num_coeffs_by_l[symbol]) == num_coeffs_by_uniq_symbol[symbol]
 
-        split_by_l = np.split(atomic_array, np.cumsum(n_coeffs_by_l[symbol]), axis=1)[
-            :-1
-        ]
-        assert lmax[symbol] + 1 == len(split_by_l)
+    # Split each atom array by angular momentum channel
+    new_split_by_atom = []
+    for symbol, atom_arr in zip(symbols, split_by_atom):
+        split_by_l = np.split(atom_arr, np.cumsum(num_coeffs_by_l[symbol]), axis=0)[:-1]
+        assert len(split_by_l) == lmax[symbol] + 1
 
-        # Reshape the arrays such that the m-components are along the 1st axis
-        tmp_l = []
-        for l, l_array in zip(range(lmax[symbol] + 1), split_by_l):
-            # Don't need to check the shape here as np.reshape implicitly does that
-            # for us.
-            tmp_l.append(l_array.reshape(n_frames, 2 * l + 1, nmax[(symbol, l)]))
+        new_split_by_l = []
+        for l_tmp, l_arr in enumerate(split_by_l):
+            assert len(l_arr) == nmax[(symbol, l_tmp)] * (2 * l_tmp + 1)
 
-        tmp_atomic.append(tmp_l)
+            # Reshape to have components and properties on the 2nd and 3rd axes.
+            # IMPORTANT: Fortran order!
+            l_arr = l_arr.reshape((1, 2 * l_tmp + 1, nmax[(symbol, l_tmp)]), order="F")
+            new_split_by_l.append(l_arr)
 
-    split_by_atom = tmp_atomic
+        new_split_by_atom.append(new_split_by_l)
 
-    # Initialize dict of the form {(l, symbol): array}
+    # Create a dict to store the arrays by l and species
     results_dict = {}
-    for symbol in np.unique(species_symbols):
-        for l in range(lmax[symbol] + 1):
-            results_dict[(l, symbol)] = {}
+    for symbol in uniq_symbols:
+        for l_tmp in range(lmax[symbol] + 1):
+            results_dict[(l_tmp, symbol)] = {}
 
-    # Store the arrays by l and species
-    for atom_idx, (symbol, atomic_array) in enumerate(
-        zip(species_symbols, split_by_atom)
-    ):
-        for l, l_array in zip(range(lmax[symbol] + 1), atomic_array):
-            results_dict[(l, symbol)][atom_idx] = l_array
+    for i_tmp, (symbol, atom_arr) in enumerate(zip(symbols, new_split_by_atom)):
+        for l_tmp, l_array in zip(range(lmax[symbol] + 1), atom_arr):
+            results_dict[(l_tmp, symbol)][i_tmp] = l_array
 
-    # Contruct the TensorMap
+    # Build the TensorMap keys
     keys = Labels(
         names=["spherical_harmonics_l", "species_center"],
         values=np.array([[l, SYM_TO_NUM[symbol]] for l, symbol in results_dict.keys()]),
     )
 
+    # Build the TensorMap blocks
     blocks = []
     for l, species_center in keys:
         symbol = NUM_TO_SYM[species_center]
         raw_block = results_dict[(l, symbol)]
         atom_idxs = np.sort(list(raw_block.keys()))
-        blocks.append(
-            TensorBlock(
-                samples=Labels(
-                    names=["structure", "center"],
-                    values=np.array(
-                        [
-                            [A, i]
-                            for i, A in itertools.product(atom_idxs, range(n_frames))
-                        ]
-                    ),
+        block = TensorBlock(
+            samples=Labels(
+                names=["structure", "center"],
+                values=np.array([[structure_idx, i] for i in atom_idxs]),
+            ),
+            components=[
+                Labels(
+                    names=["spherical_harmonics_m"],
+                    values=np.arange(-l, +l + 1).reshape(-1, 1),
                 ),
-                components=[
-                    Labels(
-                        names=["spherical_harmonics_m"],
-                        values=np.arange(-l, +l + 1).reshape(-1, 1),
-                    ),
-                ],
-                properties=Labels(
-                    names=["n"], values=np.arange(nmax[(symbol, l)]).reshape(-1, 1)
-                ),
-                values=np.concatenate(
-                    [raw_block[atom_idx] for atom_idx in atom_idxs], axis=0
-                ),
-            )
+            ],
+            properties=Labels(
+                names=["n"], values=np.arange(nmax[(symbol, l)]).reshape(-1, 1)
+            ),
+            values=np.ascontiguousarray(
+                np.concatenate([raw_block[i] for i in atom_idxs], axis=0)
+            ),
         )
+        assert block.values.shape == (len(atom_idxs), 2 * l + 1, nmax[(symbol, l)])
+        blocks.append(block)
+
+    # Construct TensorMap
     tensor = TensorMap(keys=keys, blocks=blocks)
-    assert utils.num_elements_tensormap(tensor) == np.prod(coeffs.shape)
+
+    # Check number of elements
+    assert utils.num_elements_tensormap(tensor) == tot_coeffs
+
+    # Check values of 1000 test coefficients
+    for _ in range(tests):
+        if not test_coeff_vector_conversion(
+            frame, structure_idx, lmax, nmax, coeffs, tensor
+        ):
+            raise ValueError("Conversion test failed.")
+
     return tensor
 
 
-def salted_overlaps_to_tensormap(
-    frames: list,
-    start_idx: int,
+def overlap_matrix_to_tensormap(
+    frame: ase.Atoms,
     overlaps: np.ndarray,
+    structure_idx: int,
     lmax: dict,
     nmax: dict,
+    tests: int = 0,
 ) -> TensorMap:
-    """
-    Convert the flat vector of SALTED electron density coefficients to a
-    TensorMap. Assumes the order of the coefficients, for a given molecule, is:
+    """ """
+    # Define some useful variables
+    symbols = frame.get_chemical_symbols()
+    uniq_symbols = np.unique(symbols)
+    tot_atoms = len(symbols)
+    tot_coeffs = overlaps.shape[0]
+    tot_overlaps = np.prod(overlaps.shape)
 
-    .. math::
+    # First, confirm the length of each side of square matrix array is as expected
+    num_coeffs_by_uniq_symbol = {}
+    for symbol in uniq_symbols:
+        n_coeffs = 0
+        for l_tmp in range(lmax[symbol] + 1):
+            for n_tmp in range(nmax[(symbol, l_tmp)]):
+                n_coeffs += 2 * l_tmp + 1
+        num_coeffs_by_uniq_symbol[symbol] = n_coeffs
 
-
-    :param frames: List of ASE Atoms objects for each xyz structure in the data
-        set.
-    :param start_idx: int, the index of the first frame in the data set that is
-        passed in frames. This dictates the value of the "structure" index in
-        the output TensorMap.
-    :param overlaps: np.ndarray of shape (n_structures, n_coefficients,
-        n_coefficients), where each 2D-matrix of overlap elements for a single
-        structure is ordered with indices iterating over i1, l1, n1, m1, along
-        one axis and i2, l2, n2, m2, in that nested order - as in the equation
-        above.
-    :param basis_str: str of the basis set that the density has been expanded
-        onto, e.g. "RI-cc-pvqz".
-
-    :return: TensorMap of the density basis set overlap matrix elements, with
-        the appropriate indices named as follows: Keys: l1 ->
-        "spherical_harmonics_l1", l2 -> "spherical_harmonics_l2", a1 ->
-        "species_center_1", a2 -> "species_center_2". Samples: A -> "structure",
-        i1 -> "center_1", i2 -> "center_2". Components: m1 ->
-        "spherical_harmonics_m2", m1 -> "spherical_harmonics_m2". Properties: n1
-        -> "n1", n2 -> "n2".
-    """
-
-    # Define some useful constants
-    n_frames = len(frames)
-    n_atoms_per_frame = len(frames[0].get_positions())
-    species_symbols = np.array(frames[0].get_chemical_symbols())
-
-    # Define some useful dimensions
-    n_coeffs_by_l = {
-        symbol: [(2 * l + 1) * nmax[(symbol, l)] for l in range(lmax[symbol] + 1)]
-        for symbol in species_symbols
-    }
-    n_coeffs_by_symbol = {
-        symbol: np.sum(n_coeffs_by_l[symbol]) for symbol in species_symbols
-    }
-    n_coeffs_per_atom = np.array(
-        [n_coeffs_by_symbol[symbol] for symbol in species_symbols]
+    num_coeffs_by_symbol = np.array(
+        [num_coeffs_by_uniq_symbol[symbol] for symbol in symbols]
     )
-    n_coeffs_per_frame = np.sum(n_coeffs_per_atom)
+    assert np.sum(num_coeffs_by_symbol) == tot_coeffs
+    assert overlaps.shape == (tot_coeffs, tot_coeffs)
 
-    assert overlaps.shape == (n_frames, n_coeffs_per_frame, n_coeffs_per_frame)
+    # Define the number of coefficients for each respective l value (0,1,...)
+    # for each unique atomic symbol
+    num_coeffs_by_l = {
+        symbol: np.array(
+            [
+                (2 * l_tmp + 1) * nmax[(symbol, l_tmp)]
+                for l_tmp in range(lmax[symbol] + 1)
+            ]
+        )
+        for symbol in uniq_symbols
+    }
+    for symbol in uniq_symbols:
+        assert np.sum(num_coeffs_by_l[symbol]) == num_coeffs_by_uniq_symbol[symbol]
 
-    # Split the overlaps into a list of matrices along axis 1, one for each atom
-    split_by_i1 = np.split(overlaps, np.cumsum(n_coeffs_per_atom), axis=1)[:-1]
-    assert len(split_by_i1) == n_atoms_per_frame
+    # Split the overlaps into a list of matrices along axis 0, one for each atom
+    split_by_i1 = np.split(overlaps, np.cumsum(num_coeffs_by_symbol), axis=0)[:-1]
+    assert len(split_by_i1) == tot_atoms
 
-    # Split the overlaps into a list of matrices along axis 2, one for each atom
     tmp_i1 = []
     for i1, i1_matrix in enumerate(split_by_i1):
+        # Check the shape
         assert i1_matrix.shape == (
-            n_frames,
-            n_coeffs_by_symbol[species_symbols[i1]],
-            n_coeffs_per_frame,
+            num_coeffs_by_uniq_symbol[symbols[i1]],
+            tot_coeffs,
         )
+        # Split the overlaps into a list of matrices along axis 1, one for each atom
+        split_by_i2 = np.split(i1_matrix, np.cumsum(num_coeffs_by_symbol), axis=1)[:-1]
+        assert len(split_by_i2) == tot_atoms
 
-        # Split along the axis corresponding to the second atom
-        split_by_i2 = np.split(i1_matrix, np.cumsum(n_coeffs_per_atom), axis=2)[:-1]
-        assert len(split_by_i2) == n_atoms_per_frame
-
-        # Split by l1
         tmp_i2 = []
         for i2, i2_matrix in enumerate(split_by_i2):
+            # Check that the matrix for this atom is correct shape
             assert i2_matrix.shape == (
-                n_frames,
-                n_coeffs_by_symbol[species_symbols[i1]],
-                n_coeffs_by_symbol[species_symbols[i2]],
+                num_coeffs_by_uniq_symbol[symbols[i1]],
+                num_coeffs_by_uniq_symbol[symbols[i2]],
             )
+            # Split by angular channel l1, along axis 0
             split_by_l1 = np.split(
-                i2_matrix, np.cumsum(n_coeffs_by_l[species_symbols[i1]]), axis=1
+                i2_matrix, np.cumsum(num_coeffs_by_l[symbols[i1]]), axis=0
             )[:-1]
-            assert len(split_by_l1) == lmax[species_symbols[i1]] + 1
+            assert len(split_by_l1) == lmax[symbols[i1]] + 1
 
-            # Split by l2
             tmp_l1 = []
             for l1, l1_matrix in enumerate(split_by_l1):
+                # Check the shape
                 assert l1_matrix.shape == (
-                    n_frames,
-                    n_coeffs_by_l[species_symbols[i1]][l1],
-                    n_coeffs_by_symbol[species_symbols[i2]],
+                    num_coeffs_by_l[symbols[i1]][l1],
+                    num_coeffs_by_uniq_symbol[symbols[i2]],
                 )
+                # Split now by angular channel l2, along axis 1
                 split_by_l2 = np.split(
-                    l1_matrix, np.cumsum(n_coeffs_by_l[species_symbols[i2]]), axis=2
+                    l1_matrix, np.cumsum(num_coeffs_by_l[symbols[i2]]), axis=1
                 )[:-1]
-                assert len(split_by_l2) == lmax[species_symbols[i2]] + 1
+                assert len(split_by_l2) == lmax[symbols[i2]] + 1
 
                 # Now reshape the matrices such that the m-components are expanded
                 tmp_l2 = []
                 for l2, l2_matrix in enumerate(split_by_l2):
                     assert l2_matrix.shape == (
-                        n_frames,
-                        n_coeffs_by_l[species_symbols[i1]][l1],
-                        n_coeffs_by_l[species_symbols[i2]][l2],
+                        num_coeffs_by_l[symbols[i1]][l1],
+                        num_coeffs_by_l[symbols[i2]][l2],
                     )
 
-                    l2_matrix = l2_matrix.reshape(
-                        n_frames,
-                        2 * l1 + 1,
-                        nmax[(species_symbols[i1], l1)],
-                        n_coeffs_by_l[species_symbols[i2]][l2],
+                    l2_matrix = np.reshape(
+                        l2_matrix,
+                        (
+                            1,  # as this is a single atomic sample
+                            2 * l1 + 1,
+                            nmax[(symbols[i1], l1)],
+                            num_coeffs_by_l[symbols[i2]][l2],
+                        ),
+                        order="F",
                     )
 
-                    l2_matrix = l2_matrix.reshape(
-                        n_frames,
-                        2 * l1 + 1,
-                        nmax[(species_symbols[i1], l1)],
-                        2 * l2 + 1,
-                        nmax[(species_symbols[i2], l2)],
+                    l2_matrix = np.reshape(
+                        l2_matrix,
+                        (
+                            1,
+                            2 * l1 + 1,
+                            nmax[(symbols[i1], l1)],
+                            2 * l2 + 1,
+                            nmax[(symbols[i2], l2)],
+                        ),
+                        order="F",
                     )
                     # Reorder the axes such that m-components are in the
                     # intermediate dimensions
@@ -282,20 +309,22 @@ def salted_overlaps_to_tensormap(
 
                     # Reshape matrix such that both n1 and n2 are along the final
                     # axes
-                    l2_matrix = l2_matrix.reshape(
-                        n_frames,
-                        2 * l1 + 1,
-                        2 * l2 + 1,
-                        nmax[(species_symbols[i1], l1)]
-                        * nmax[(species_symbols[i2], l2)],
+                    l2_matrix = np.reshape(
+                        l2_matrix,
+                        (
+                            1,
+                            2 * l1 + 1,
+                            2 * l2 + 1,
+                            nmax[(symbols[i1], l1)] * nmax[(symbols[i2], l2)],
+                        ),
+                        order="C",
                     )
 
                     assert l2_matrix.shape == (
-                        n_frames,
+                        1,
                         2 * l1 + 1,
                         2 * l2 + 1,
-                        nmax[(species_symbols[i1], l1)]
-                        * nmax[(species_symbols[i2], l2)],
+                        nmax[(symbols[i1], l1)] * nmax[(symbols[i2], l2)],
                     )
                     tmp_l2.append(l2_matrix)
                 tmp_l1.append(tmp_l2)
@@ -305,19 +334,19 @@ def salted_overlaps_to_tensormap(
 
     # Initialize dict of the form {(l, symbol): array}
     results_dict = {}
-    for symbol_1, symbol_2 in itertools.product(np.unique(species_symbols), repeat=2):
+    for symbol_1, symbol_2 in itertools.product(np.unique(symbols), repeat=2):
         for l1 in range(lmax[symbol_1] + 1):
             for l2 in range(lmax[symbol_2] + 1):
                 results_dict[(l1, l2, symbol_1, symbol_2)] = {}
 
     # Store the arrays by l1, l2, species
-    for i1, (symbol_1, i1_matrix) in enumerate(zip(species_symbols, split_by_i1)):
-        for i2, (symbol_2, i2_matrix) in enumerate(zip(species_symbols, i1_matrix)):
+    for i1, (symbol_1, i1_matrix) in enumerate(zip(symbols, split_by_i1)):
+        for i2, (symbol_2, i2_matrix) in enumerate(zip(symbols, i1_matrix)):
             for l1, l1_matrix in zip(range(lmax[symbol_1] + 1), i2_matrix):
                 for l2, l2_matrix in zip(range(lmax[symbol_2] + 1), l1_matrix):
                     results_dict[(l1, l2, symbol_1, symbol_2)][i1, i2] = l2_matrix
 
-    # Contruct the TensorMap
+    # Contruct the TensorMap keys
     keys = Labels(
         names=[
             "spherical_harmonics_l1",
@@ -332,10 +361,9 @@ def salted_overlaps_to_tensormap(
             ]
         ),
     )
-
+    # Contruct the TensorMap blocks
     blocks = []
     for l1, l2, species_center_1, species_center_2 in keys:
-
         # Get the chemical symbols for the corresponding atomic numbers
         symbol_1 = NUM_TO_SYM[species_center_1]
         symbol_2 = NUM_TO_SYM[species_center_2]
@@ -353,14 +381,7 @@ def salted_overlaps_to_tensormap(
         block = TensorBlock(
             samples=Labels(
                 names=["structure", "center_1", "center_2"],
-                values=np.array(
-                    [
-                        [A, i1, i2]
-                        for (i1, i2), A in itertools.product(
-                            atom_idxs, range(start_idx, start_idx + n_frames)
-                        )
-                    ]
-                ),
+                values=np.array([[structure_idx, i1, i2] for (i1, i2) in atom_idxs]),
             ),
             components=[
                 Labels(
@@ -392,7 +413,154 @@ def salted_overlaps_to_tensormap(
     tensor = TensorMap(keys=keys, blocks=blocks)
     assert utils.num_elements_tensormap(tensor) == np.prod(overlaps.shape)
 
+    for _ in range(tests):
+        assert test_overlap_matrix_conversion(
+            frame, structure_idx, lmax, nmax, overlaps, tensor
+        )
+
     return tensor
+
+
+def test_coeff_vector_conversion(
+    frame,
+    structure_idx: int,
+    lmax: dict,
+    nmax: dict,
+    coeffs_flat: np.ndarray,
+    coeffs_tm: TensorMap,
+    print_level: int = 0,
+) -> bool:
+    """
+    Tests that the TensorMap has been constructed correctly from the raw overlap
+    matrix.
+    """
+    # Define some useful variables
+    n_atoms = len(frame.get_positions())
+    species_symbols = np.array(frame.get_chemical_symbols())
+
+    # Pick a random atom index and find its chemical symbol
+    rng = np.random.default_rng()
+    i = rng.integers(n_atoms)
+    symbol = species_symbols[i]
+
+    # Pick a random l, n, and m
+    l = rng.integers(lmax[symbol] + 1)
+    n = rng.integers(nmax[(symbol, l)])
+    m = rng.integers(-l, l + 1)
+    if print_level > 0:
+        print("Atom:", i, symbol, "l:", l, "n:", n, "m:", m)
+
+    # Get the flat index + value of this basis function coefficient in the flat array
+    flat_index = get_flat_index(species_symbols, lmax, nmax, i, l, n, m)
+    raw_elem = coeffs_flat[flat_index]
+    if print_level > 0:
+        print("Raw array: idx", flat_index, "coeff", raw_elem)
+
+    # Pick out this element from the TensorMap
+    tm_block = coeffs_tm.block(
+        spherical_harmonics_l=l,
+        species_center=SYM_TO_NUM[symbol],
+    )
+    s_idx = tm_block.samples.position((structure_idx, i))
+    c_idx = tm_block.components[0].position((m,))
+    p_idx = tm_block.properties.position((n,))
+
+    tm_elem = tm_block.values[s_idx][c_idx][p_idx]
+    if print_level > 0:
+        print(f"TensorMap: idx", (s_idx, c_idx, p_idx), "coeff", tm_elem)
+
+    return np.isclose(raw_elem, tm_elem)
+
+
+def test_overlap_matrix_conversion(
+    frame,
+    structure_idx: int,
+    lmax: dict,
+    nmax: dict,
+    overlaps_matrix: np.ndarray,
+    overlaps_tm: TensorMap,
+    off_diags_dropped: bool = False,
+    print_level: int = 0,
+) -> bool:
+    """
+    Tests that the TensorMap has been constructed correctly from the raw overlap
+    matrix.
+    """
+    # Define some useful variables
+    n_atoms = len(frame.get_positions())
+    species_symbols = np.array(frame.get_chemical_symbols())
+
+    # Pick 2 random atom indices and find their chemical symbols
+    # and define their species symbols
+    rng = np.random.default_rng()
+    if off_diags_dropped:
+        # a1 <= a2 and i1 <= i2; choose `a` values first, then `i` values
+        atomic_nums = [SYM_TO_NUM[sym] for sym in species_symbols]
+
+        a1 = rng.choice(atomic_nums, replace=True)
+        a2 = rng.choice(atomic_nums, replace=True)
+        if a1 > a2:
+            a1, a2 = a2, a1
+
+        i2_idxs_gt_i1 = []
+        while len(i2_idxs_gt_i1) == 0:  # keep selecting until i1 <= i2 satisfied
+            i1 = rng.choice(np.where(atomic_nums == a1)[0], replace=True)
+            i2_idxs = np.where(atomic_nums == a2)[0]
+            i2_idxs_gt_i1 = [i for i in i2_idxs if i1 <= i]
+
+        i2 = rng.choice(np.array(i2_idxs_gt_i1), replace=True)
+        assert a1 <= a2 and i1 <= i2
+
+        symbol1, symbol2 = NUM_TO_SYM[a1], NUM_TO_SYM[a2]
+
+    else:
+        # i and a values can be drawn independently
+        i1, i2 = rng.integers(n_atoms), rng.integers(n_atoms)
+        symbol1, symbol2 = species_symbols[i1], species_symbols[i2]
+
+    # Pick pairs of random l
+    l1 = rng.integers(lmax[symbol1] + 1)
+    if off_diags_dropped:  # ensure l1 <= l2
+        l2 = rng.integers(l1, lmax[symbol2] + 1)
+    else:
+        l2 = rng.integers(lmax[symbol2] + 1)
+
+    # Pick random pairs of n and m based on the l values
+    n1, n2 = rng.integers(nmax[(symbol1, l1)]), rng.integers(nmax[(symbol2, l2)])
+    m1, m2 = rng.integers(-l1, l1 + 1), rng.integers(-l2, l2 + 1)
+
+    if print_level > 0:
+        print("Atom 1:", i1, symbol1, "l1:", l1, "n1:", n1, "m1:", m1)
+        print("Atom 2:", i2, symbol2, "l2:", l2, "n2:", n2, "m2:", m2)
+
+    # Get the flat row and column indices for this matrix element
+    row_idx = get_flat_index(species_symbols, lmax, nmax, i1, l1, n1, m1)
+    col_idx = get_flat_index(species_symbols, lmax, nmax, i2, l2, n2, m2)
+    raw_elem = overlaps_matrix[row_idx][col_idx]
+    assert raw_elem == overlaps_matrix[col_idx][row_idx]
+    if print_level > 0:
+        print("Raw matrix: idx", (row_idx, col_idx), "coeff", raw_elem)
+
+    # Pick out this matrix element from the TensorMap
+    # Start by extracting the block.
+    tm_block = overlaps_tm.block(
+        spherical_harmonics_l1=l1,
+        spherical_harmonics_l2=l2,
+        species_center_1=SYM_TO_NUM[symbol1],
+        species_center_2=SYM_TO_NUM[symbol2],
+    )
+
+    # Define the samples, components, and properties indices
+    s_idx = tm_block.samples.position((structure_idx, i1, i2))
+    c_idx_1 = tm_block.components[0].position((m1,))
+    c_idx_2 = tm_block.components[1].position((m2,))
+    p_idx = tm_block.properties.position((n1, n2))
+
+    tm_elem = tm_block.values[s_idx][c_idx_1][c_idx_2][p_idx]
+    if print_level > 0:
+        print(f"TensorMap: idx", (s_idx, c_idx_1, c_idx_2, p_idx), "coeff", tm_elem)
+
+    return np.isclose(raw_elem, tm_elem)
 
 
 def overlap_is_symmetric(tensor: TensorMap) -> bool:
@@ -462,29 +630,28 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
 def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
     Given an input TensorMap with keys (l1, l2, a1, a2), returns a new TensorMap
-    where off-diagonal blocks (i.e. where (l1 != l2 or a1 != a2) indexed by (l1,
-    l2, a1, a2) are kept but blocks indexed by (l2, l1, a2, a1) are dropped.
-    Diagonal blocks (i.e. where (l1 == l2 and a1 == a2) are kept.
+    where off-diagonal blocks are dropped, such that the new TensorMap has keys
+    with l1 <= l2 and a1 <= a2.
     """
     keys = tensor.keys
-    keys_to_drop = set()
 
+    # Define a filter for the keys *TO DROP*
+    keys_to_drop_filter = []
     for key in keys:
         l1, l2, a1, a2 = key
-        if (l1, l2, a1, a2) in keys_to_drop or (l2, l1, a2, a1) in keys_to_drop:
-            continue
 
-        # Don't drop keys for diagonal blocks
-        if not (l1 == l2 and a1 == a2):
-            keys_to_drop.update({(l1, l2, a1, a2)})
+        # Keep keys where l1 <= l2 and a1 <= a2
+        if a1 < a2:  # keep
+            keys_to_drop_filter.append(False)
+        elif a1 == a2 and l1 <= l2:  # keep
+            keys_to_drop_filter.append(False)
+        else:  # drop
+            keys_to_drop_filter.append(True)
 
-    new_tensor = utils.drop_blocks(
-        tensor,
-        keys=Labels(
-            names=tensor.keys.names,
-            values=np.array([np.array(k) for k in keys_to_drop]),
-        ),
-    )
+    # Drop these blocks
+    new_tensor = equistore.drop_blocks(tensor, keys=keys[keys_to_drop_filter])
+
+    # Check the number of output blocks is correct
     K_old = len(tensor.keys)
     K_new = len(new_tensor.keys)
     assert K_new == np.sqrt(K_old) / 2 * (np.sqrt(K_old) + 1)
@@ -495,9 +662,10 @@ def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
 def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
     Given an input TensorMap with keys (l1, l2, a1, a2), returns a new TensorMap
-    where diagonal blocks have redundant samples dropped. For instance, for
-    blocks where l1 = l2 and a1 = a2, samples of the form (A, i1, i2) are kept
-    but samples of the form (A, i2, i1) are dropped.
+    where diagonal blocks (i.e. l1 = l2, a1 = a2) have redundant off-diagonal
+    atom pairs from the samples dropped. For instance, the samples must have the
+    integer form (A, i1, i2), where i1 and i2 correspond to the atom centers 1
+    and 2 repsectively. Only samples where i1 <= i2 are kept.
     """
     keys = tensor.keys
     assert np.all(
@@ -511,7 +679,6 @@ def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     )
     blocks = []
     for key in keys:
-
         # Unpack the key
         l1, l2, a1, a2 = key
 
@@ -523,24 +690,29 @@ def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
         # Otherwise, manipulate the samples of the diagonal block
         block = tensor[key]
 
-        # Create a samples filter
+        # Create a samples filter for samples *TO KEEP*
         samples_filter = []
-        s_checked = set()
         for sample in block.samples:
             A, i1, i2 = sample
-            if (A, i1, i2) in s_checked or (A, i2, i1) in s_checked:
-                samples_filter.append(False)
-            else:
+            if i1 <= i2:  # keep
                 samples_filter.append(True)
-                s_checked.add((A, i1, i2))
+            else:  # discard
+                samples_filter.append(False)
+        new_samples = block.samples[samples_filter]
+
+        # Check the number of output blocks is correct
+        S_old = len(block.samples)
+        S_new = len(new_samples)
+        assert S_new == np.sqrt(S_old) / 2 * (np.sqrt(S_old) + 1)
 
         # Create and store the new block
         blocks.append(
             TensorBlock(
                 values=block.values[samples_filter],
-                samples=block.samples[samples_filter],
+                samples=new_samples,
                 components=block.components,
                 properties=block.properties,
             )
         )
+
     return TensorMap(keys=keys, blocks=blocks)
