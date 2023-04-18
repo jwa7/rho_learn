@@ -256,16 +256,16 @@ def basiset(basis):
 
     elif basis == "FHI-aims-tight-2":
 
-        lmax["H"] = 4
-        lmax["O"] = 8
+        lmax["H"] = 4  # 5 angluar channels: 0,1,2,3,4
+        lmax["O"] = 8  # 9 angluar channels: 0,1,2,3,4,5,6,7,8
 
-        nmax[("H", 0)] = 8
+        nmax[("H", 0)] = 8  # 8 radial functions: 0,1,2,3,4,5,6,7
         nmax[("H", 1)] = 6
         nmax[("H", 2)] = 6
         nmax[("H", 3)] = 3
         nmax[("H", 4)] = 1
 
-        nmax[("O", 0)] = 9
+        nmax[("O", 0)] = 9  # 9 radial functions: 0,1,2,3,4,5,6,7,8
         nmax[("O", 1)] = 10
         nmax[("O", 2)] = 9
         nmax[("O", 3)] = 8
