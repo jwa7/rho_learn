@@ -12,8 +12,6 @@ from equistore import Labels, TensorBlock, TensorMap
 
 from rholearn import utils
 
-# TODO:
-# - check correct ordering of properties
 
 SYM_TO_NUM = {"H": 1, "C": 6, "O": 8, "N": 7}
 NUM_TO_SYM = {1: "H", 6: "C", 8: "O", 7: "N"}
