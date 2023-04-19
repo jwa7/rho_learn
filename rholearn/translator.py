@@ -429,8 +429,8 @@ def test_coeff_vector_conversion(
     print_level: int = 0,
 ) -> bool:
     """
-    Tests that the TensorMap has been constructed correctly from the raw overlap
-    matrix.
+    Tests that the TensorMap has been constructed correctly from the raw
+    coefficients vector.
     """
     # Define some useful variables
     n_atoms = len(frame.get_positions())
