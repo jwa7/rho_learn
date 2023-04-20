@@ -7,7 +7,19 @@ https://github.com/andreagrisafi/SALTED/blob/master/src/basis.py
 
 
 def basiset(basis):
-    """Return basis set dimensions"""
+    """
+    Return basis set dimensions. For a given species, where lmax is reported as
+    x, there are (x + 1) angular momentum channels. For instance:
+
+        if lmax["H"] = 4
+        there are 5 l channels numbered by 0,1,2,3,4
+
+    For a given species and angular momentum channel, where nmax is reported as
+    y, there are y radial functions. For instance:
+
+        if nmax[("H", 0)] = 9
+        there are 9 radial functions numbered 0,1,2,3,4,5,6,7,8
+    """
 
     lmax = {}
     nmax = {}
