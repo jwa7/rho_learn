@@ -22,11 +22,11 @@ def get_flat_index(
 ) -> int:
     """
     Get the flat index of the coefficient pointed to by the basis function
-    indices.
+    indices in AIMS format.
 
-    :param lmax : A dictionary containing the maximum spherical harmonics (l)
+    :param lmax : dict containing the maximum spherical harmonics (l)
         value for each atom type.
-    :param nmax: A dictionary containing the maximum radial channel (n) value
+    :param nmax: dict containing the maximum radial channel (n) value
         for each combination of atom type and l.
     :param i: int, the atom index.
     :param l: int, the spherical harmonics index.
@@ -64,13 +64,22 @@ def get_flat_index(
 def coeff_vector_to_tensormap(
     frame: ase.Atoms,
     coeffs: np.ndarray,
-    structure_idx: int,
     lmax: dict,
     nmax: dict,
-    tests: int = 0,
+    structure_idx: Optional[int] = None,
+    tests: Optional[int] = 0,
 ) -> TensorMap:
     """
-    Convert a set of coefficients to a TensorMap.
+    Convert a vector of basis function coefficients (or projections) to
+    TensorMap format.
+
+    :param frame: ase.Atoms object containing the atomic structure.
+    :param coeffs: np.ndarray of shape (N,), where N is the number of basis
+        functions the electron density is expanded onto.
+    :param structure_idx: int, the index of the structure in the overall
+        dataset. If None, the samples metadata of each block in the output
+        TensorMap will not contain an index for the structure. Samples will just
+        track the "center_1" and "center_2" indices.
     """
     # Define some useful variables
     symbols = frame.get_chemical_symbols()
@@ -142,17 +151,25 @@ def coeff_vector_to_tensormap(
         values=np.array([[l, SYM_TO_NUM[symbol]] for l, symbol in results_dict.keys()]),
     )
 
+    # Define the sample names, with or without the structure index
+    if structure_idx is None:  # don't include structure idx in the metadata
+        sample_names = ["center"]
+    else:  # include
+        sample_names = ["structure", "center"]
+
     # Build the TensorMap blocks
     blocks = []
     for l, species_center in keys:
         symbol = NUM_TO_SYM[species_center]
         raw_block = results_dict[(l, symbol)]
         atom_idxs = np.sort(list(raw_block.keys()))
+        # Define the sample values, with or without the structure index
+        if structure_idx is None:  # don't include structure idx in the metadata
+            sample_values = np.array([[i] for i in atom_idxs])
+        else:  # include
+            sample_values = np.array([[structure_idx, i] for i in atom_idxs])
         block = TensorBlock(
-            samples=Labels(
-                names=["structure", "center"],
-                values=np.array([[structure_idx, i] for i in atom_idxs]),
-            ),
+            samples=Labels(names=sample_names, values=sample_values),
             components=[
                 Labels(
                     names=["spherical_harmonics_m"],
@@ -175,7 +192,7 @@ def coeff_vector_to_tensormap(
     # Check number of elements
     assert utils.num_elements_tensormap(tensor) == tot_coeffs
 
-    # Check values of 1000 test coefficients
+    # Check values of the coefficients, repeating the test `tests` number of times.
     for _ in range(tests):
         if not test_coeff_vector_conversion(
             frame, structure_idx, lmax, nmax, coeffs, tensor
@@ -188,9 +205,9 @@ def coeff_vector_to_tensormap(
 def overlap_matrix_to_tensormap(
     frame: ase.Atoms,
     overlaps: np.ndarray,
-    structure_idx: int,
     lmax: dict,
     nmax: dict,
+    structure_idx: Optional[int] = None,
     tests: int = 0,
 ) -> TensorMap:
     """ """
@@ -359,6 +376,13 @@ def overlap_matrix_to_tensormap(
             ]
         ),
     )
+
+    # Define the sample names, with or without the structure index
+    if structure_idx is None:  # don't include structure idx in the metadata
+        sample_names = ["center_1", "center_2"]
+    else:  # include
+        sample_names = ["structure", "center_1", "center_2"]
+
     # Contruct the TensorMap blocks
     blocks = []
     for l1, l2, species_center_1, species_center_2 in keys:
@@ -372,14 +396,22 @@ def overlap_matrix_to_tensormap(
         # Get the atomic indices
         atom_idxs = np.array(list(raw_block.keys()))
 
+        # Define the sample values, with or without the structure index
+        if structure_idx is None:  # don't include structure idx in the metadata
+            sample_values = np.array([[i1, i2] for (i1, i2) in atom_idxs])
+        else:  # include
+            sample_values = np.array(
+                [[structure_idx, i1, i2] for (i1, i2) in atom_idxs]
+            )
+
         # Build the TensorBlock
         values = np.ascontiguousarray(
             np.concatenate([raw_block[i1, i2] for i1, i2 in atom_idxs], axis=0)
         )
         block = TensorBlock(
             samples=Labels(
-                names=["structure", "center_1", "center_2"],
-                values=np.array([[structure_idx, i1, i2] for (i1, i2) in atom_idxs]),
+                names=sample_names,
+                values=sample_values,
             ),
             components=[
                 Labels(
@@ -421,11 +453,11 @@ def overlap_matrix_to_tensormap(
 
 def test_coeff_vector_conversion(
     frame,
-    structure_idx: int,
     lmax: dict,
     nmax: dict,
     coeffs_flat: np.ndarray,
     coeffs_tm: TensorMap,
+    structure_idx: Optional[int] = None,
     print_level: int = 0,
 ) -> bool:
     """
@@ -459,7 +491,10 @@ def test_coeff_vector_conversion(
         spherical_harmonics_l=l,
         species_center=SYM_TO_NUM[symbol],
     )
-    s_idx = tm_block.samples.position((structure_idx, i))
+    if structure_idx is None:
+        s_idx = tm_block.samples.position((i,))
+    else:
+        s_idx = tm_block.samples.position((structure_idx, i))
     c_idx = tm_block.components[0].position((m,))
     p_idx = tm_block.properties.position((n,))
 
@@ -472,11 +507,11 @@ def test_coeff_vector_conversion(
 
 def test_overlap_matrix_conversion(
     frame,
-    structure_idx: int,
     lmax: dict,
     nmax: dict,
     overlaps_matrix: np.ndarray,
     overlaps_tm: TensorMap,
+    structure_idx: Optional[int] = None,
     off_diags_dropped: bool = False,
     print_level: int = 0,
 ) -> bool:
@@ -549,7 +584,10 @@ def test_overlap_matrix_conversion(
     )
 
     # Define the samples, components, and properties indices
-    s_idx = tm_block.samples.position((structure_idx, i1, i2))
+    if structure_idx is None:
+        s_idx = tm_block.samples.position((i1, i2))
+    else:
+        s_idx = tm_block.samples.position((structure_idx, i1, i2))
     c_idx_1 = tm_block.components[0].position((m1,))
     c_idx_2 = tm_block.components[1].position((m2,))
     p_idx = tm_block.properties.position((n1, n2))
