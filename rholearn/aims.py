@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Tuple, Optional
 
 import ase
 import ase.io
@@ -39,7 +39,7 @@ def generate_aims_input_geometry_files(frames: List[ase.Atoms], save_dir: str):
         ase.io.write(os.path.join(structure_dir, "geometry.in"), frames[A])
 
 
-def convert_aims_basis_info_to_dict(frame: ase.Atoms, basis_info_file: str) -> dict:
+def convert_aims_basis_info_to_dict(frame: ase.Atoms, basis_info_file: str) -> Tuple[dict, dict]:
     """
     Takes an AIMS basis info file and converts it into a dictionary of the lmax
     and nmax values for each atom type in the structure.
