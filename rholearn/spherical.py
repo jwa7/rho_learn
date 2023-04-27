@@ -9,9 +9,12 @@ github.com/lab-cosmo/librascal/blob/master/bindings/rascal/utils/cg_utils.py
 from copy import deepcopy
 from itertools import product
 import re
+from typing import Optional, Tuple
 
+import ase
 import numpy as np
 from scipy.spatial.transform import Rotation
+import torch
 import wigners
 
 import equistore
@@ -93,11 +96,99 @@ class WignerDReal:
             frame["cell"] = self._rotation @ frame["cell"]
         return frame
 
+    def rotate_aims_coeff_vector(
+        self,
+        frame: ase.Atoms,
+        lmax: dict,
+        nmax: dict,
+        coeffs: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Rotates the irreducible spherical components (ISCs) of the AIMS auxiliary
+        basis coefficients passed in as a flat vector.
+        """
+        # Initialize empty vector for storing the rotated ISCs
+        rot_vect = np.empty_like(coeffs)        
+
+        # Iterate over atomic species of the atoms in the frame
+        curr_idx = 0
+        for symbol in frame.get_chemical_symbols():
+            # Get the basis set lmax value for this species
+            sym_lmax = lmax[symbol]
+            for l in range(sym_lmax + 1):
+                # Get the number of radial functions for this species and l value
+                sym_l_nmax = nmax[(symbol, l)]
+                # Get the Wigner D Matrix for this l value
+                wig_mat = self._wddict[l].T
+                for n in range(sym_l_nmax):
+                    # Retrieve the irreducible spherical component
+                    isc = coeffs[curr_idx : curr_idx + (2 * l + 1)]
+                    # Rotate the ISC and store
+                    rot_isc = isc @ wig_mat
+                    rot_vect[curr_idx : curr_idx + (2 * l + 1)][:] = rot_isc[:]
+                    # Update the start index for the next ISC
+                    curr_idx += (2 * l + 1)
+
+        return rot_vect
+
+    def rotate_tensorblock(self, l: int, block: TensorBlock) -> TensorBlock:
+        """
+        Rotates a TensorBlock ``block``, represented in the spherical basis,
+        according to the Wigner D Real matrices for the given ``l`` value.
+        Assumes the components of the block are [("spherical_harmonics_m",),].
+        """
+
+        # Get the Wigner matrix for this l value
+        wig = self._wddict[l].T
+
+        # Copy the block
+        block_rotated = block.copy()
+        vals = block_rotated.values
+
+        # Perform the rotation, either with numpy or torch, by taking the
+        # tensordot product of the irreducible spherical components. Modify in-place the
+        # values of the copied TensorBlock
+        if isinstance(vals, torch.Tensor):
+            wig = torch.tensor(wig)
+            block_rotated.values[:] = torch.tensordot(
+                vals.swapaxes(1, 2), wig, dims=1
+            ).swapaxes(1, 2)
+        elif isinstance(block.values, np.ndarray):
+            block_rotated.values[:] = np.tensordot(
+                vals.swapaxes(1, 2), wig, axes=1
+            ).swapaxes(1, 2)
+        else:
+            raise TypeError("TensorBlock values must be a numpy array or torch tensor.")
+
+        return block_rotated
+
+    def rotate_tensormap(self, tensor: TensorMap) -> TensorMap:
+        """
+        Rotates a TensorMap usign Wigner D Matrices. Assumes the tensor keys has
+        a name "spherical_harmonics_l" that indicates the l value, and that each
+        block has exactly one component axis, named by
+        ("spherical_harmonics_m",).
+        """
+        # Retrieve the key and the position of the l value in the key names
+        keys = tensor.keys
+        idx_l_value = keys.names.index("spherical_harmonics_l")
+
+        # Iterate over the blocks and rotate
+        rotated_blocks = []
+        for key in keys:
+            # Retrieve the l value
+            l = key[idx_l_value]
+
+            # Rotate the block and store
+            rotated_blocks.append(self.rotate_tensorblock(l, tensor[key]))
+
+        return TensorMap(keys, rotated_blocks)
+
 
 # ===== helper functions for WignerDReal
 
 
-def rotate_ase_frame(frame):
+def rotate_ase_frame(frame) -> Tuple[ase.Atoms, Tuple[float, float, float]]:
     """
     Make a copy of the input ``frame``. Randomly rotates its xyz and cell
     coordinates and returns the new frame, and euler angles alpha, beta, and
@@ -158,8 +249,10 @@ def check_equivariance(
     alpha: float,
     beta: float,
     gamma: float,
-    n_checks_per_block: int = None,
-):
+    rtol: Optional[float] = 1e-15,
+    atol: Optional[float] = 1e-15,
+    n_checks_per_block: Optional[int] = None,
+) -> bool:
     """
     Checks equivariance by comparing the expansion coefficients of the
     structural representations of an unrotated and rotated structure, rotating
@@ -169,6 +262,26 @@ def check_equivariance(
     If ``n_checks_per_block`` is passed (i.e. not None, the default), only this
     number of (sample, property) combinations are checked per block. Otherwise,
     all component vectors in every block are checked.
+
+    :param unrotated: a TensorMap of the coefficients in the spherical basis for
+        the unrotated structure.
+    :param rotated: a TensorMap of the coefficients in the spherical basis for
+        the rotated structure.
+    :param lmax: the maximum l value for which the spherical basis is expanded.
+    :param alpha: the first Euler angle for the rotation between the unrotated
+        and rotated structure.
+    :param beta: the second Euler angle for the rotation between the unrotated
+        and rotated structure.
+    :param gamma: the third Euler angle for the rotation between the unrotated
+        and rotated structure.
+    :param rtol: the relative tolerance for the check. Default 1e-15.
+    :param atol: the absolute tolerance for the check. Default 1e-15.
+    :param n_checks_per_block: the number of comparisons between rotated and
+        unrotated structures to perform per block of the input TensorMaps.
+
+    :return bool: True if the rotated and unrotated structures are exact rotated
+        forms of eachother in the spherical basis, within the defined
+        tolerances. False otherwise.
     """
     equivariant = True
 
@@ -213,9 +326,7 @@ def check_equivariance(
             unr_comp_vect_rot = wigner_d_matrices.rotate(unr_comp_vect)
 
             # Check for exact (within a strict tolerance) equivalence
-            if not np.allclose(
-                unr_comp_vect_rot, rot_comp_vect, rtol=1e-15, atol=1e-15
-            ):
+            if not np.allclose(unr_comp_vect_rot, rot_comp_vect, rtol=rtol, atol=atol):
                 print(
                     f"block {key}, sample {unr_block.samples[sample_i]},"
                     + f" property {unr_block.properties[property_i]}, vectors"
@@ -378,7 +489,6 @@ class ClebschGordanReal:
         for ltuple, lcomponents in decoupled.items():
             # each is a list of L terms
             for lc in lcomponents.keys():
-
                 # this is the actual matrix-valued coupled term,
                 # of shape (..., 2l1+1, 2l2+1), transforming as Y^m1_l1 Y^m2_l2
                 dec_term = lcomponents[lc]
@@ -416,7 +526,6 @@ class ClebschGordanReal:
         decoupled = {}
         # applies the decoupling to each entry in the dictionary
         for ltuple, lcomponents in coupled.items():
-
             # the initial pair in the key indicates the decoupled terms that generated
             # the L entries
             l1, l2 = ltuple[:2]
@@ -553,6 +662,7 @@ def acdc_standardize_keys(descriptor):
         keys=Labels(names=key_names, values=np.asarray(keys, dtype=np.int32)),
         blocks=blocks,
     )
+
 
 def cg_combine(
     x_a,
