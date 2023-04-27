@@ -291,17 +291,59 @@ def process_aims_aux_basis_func_data(
     overlap = overlap[abf_info[:, 0], :]
     overlap = overlap[:, abf_info[:, 0]]
 
+    # Save files if requested
     if save_dir is not None:
         np.save(os.path.join(save_dir, "coeffs.npy"), coeffs)
         np.save(os.path.join(save_dir, "projs.npy"), projs)
         np.save(os.path.join(save_dir, "overlap.npy"), overlap)
 
+    # Delete original files if requested
     if delete_original_files:
         os.remove(os.path.join(aims_output_dir, "ri_restart_coeffs.out"))
         os.remove(os.path.join(aims_output_dir, "ri_projections.out"))
         os.remove(os.path.join(aims_output_dir, "ri_ovlp.out"))
 
     return coeffs, projs, overlap
+
+
+def density_fitting_error(aims_output_dir: str) -> float:
+    """
+    Calculates the error in the RI fitted electron density relative to the SCF
+    converged electron density.
+
+    :param aims_output_dir: str for the absolute path to the directory
+        containing the AIMS output files from the RI calculation on a single
+        structure using keyword "ri_full_output" set to true.
+
+    :return float: the error in the RI fitted density relative to the SCF
+        converged density.
+    """
+    # Load the real-space density data. Each row corresponds to x, y, z coordinates
+    # followed by the value of the density in the 3rd column. We are only
+    # interested
+    # 1) SCF converged electron density
+    scf_rho = np.loadtxt(os.path.join(aims_output_dir, "rho_scf.out"))
+    # 2) RI fitted electron density
+    ri_rho = np.loadtxt(os.path.join(aims_output_dir, "rho_rebuilt_ri.out"))
+    # 3) Partitioning table
+    partition = np.loadtxt(os.path.join(aims_output_dir, "partition_tab.out"))
+
+    # Check the coordinates on each row are exactly equivalent
+    assert np.all(scf_rho[:, :3] == ri_rho[:, :3]) and np.all(
+        scf_rho[:, :3] == partition[:, :3]
+    )
+
+    # Now just slice to keep only the final column of data from each file, as
+    # this is the only bit we're interested in
+    scf_rho = scf_rho[:, 3]
+    ri_rho = ri_rho[:, 3]
+    partition = partition[:, 3]
+
+    # Get the absolute residual error between the SCF and fitted densities
+    error = np.abs(ri_rho - scf_rho)
+
+    # Calculate and return the relative error
+    return np.dot(error, partition) / np.dot(scf_rho, partition)
 
 
 # ===== Converting to equistore format =====
@@ -329,11 +371,34 @@ def get_flat_index(
     :return int: the flat index of the coefficient pointed to by the input
         indices.
     """
+    # Check atom index is valid
+    if i not in np.arange(0, len(symbol_list)):
+        raise ValueError(
+            f"invalid atom index, i={i} is not in the range [0, {len(symbol_list)})."
+            f"Passed symbol list: {symbol_list}"
+        )
+    # Check l value is valid
+    if l not in np.arange(0, lmax[symbol_list[i]] + 1):
+        raise ValueError(
+            f"invalid spherical harmonics index, l={l} is not in the range "
+            f"of valid values for species {symbol_list[i]}: [0, {lmax[symbol_list[i]]}] (inclusive)."
+        )
+    # Check n value is valid
+    if n not in np.arange(0, nmax[(symbol_list[i], l)]):
+        raise ValueError(
+            f"invalid radial index, n={n} is not in the range of valid values for species "
+            f"{symbol_list[i]}, l={l}: [0, {nmax[(symbol_list[i], l)]}) (exclusive)."
+        )
+    # Check m value is valid
+    if m not in np.arange(-l, l + 1):
+        raise ValueError(
+            f"invalid azimuthal index, m={m} is not in the l range [-l, l] = [{-l}, +{l}] (inclusive)."
+        )
     # Define the atom offset
     atom_offset = 0
     for atom_index in range(i):
         symbol = symbol_list[atom_index]
-        for l_tmp in range(lmax[symbol] + 1):
+        for l_tmp in np.arange(lmax[symbol] + 1):
             atom_offset += (2 * l_tmp + 1) * nmax[(symbol, l_tmp)]
 
     # Define the l offset
