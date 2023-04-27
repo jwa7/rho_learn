@@ -16,7 +16,6 @@ from equistore import Labels, TensorMap
 from rholearn import io, spherical, utils
 
 
-@profile
 def lambda_feature_vector(
     frames: list,
     hypers: dict,
@@ -39,7 +38,7 @@ def lambda_feature_vector(
         "LodeSphericalExpansion" calculator.
     :param calc: a str of the calculator used to calculate the atom density
         correlations, must be either "SphericalExpansion" (i.e. for short-range)
-        or "LodeESphericalExpansion" (for long-range).
+        or "LodeSphericalExpansion" (for long-range).
     :param lambda_max: an int of the maximum lambda value to include in the
         final lambda representation. If none, the 'max_angular' value in
         `hypers` will be used instead.
