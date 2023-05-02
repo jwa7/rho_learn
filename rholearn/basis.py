@@ -6,7 +6,7 @@ https://github.com/andreagrisafi/SALTED/blob/master/src/basis.py
 """
 
 
-def basiset(basis):
+def basis_sets(basis_name: str):
     """
     Return basis set dimensions. For a given species, where lmax is reported as
     x, there are (x + 1) angular momentum channels. For instance:
@@ -24,7 +24,7 @@ def basiset(basis):
     lmax = {}
     nmax = {}
 
-    if basis == "FHI-aims-clusters":
+    if basis_name == "FHI-aims-clusters":
 
         lmax["H"] = 4
         lmax["C"] = 5
@@ -67,7 +67,7 @@ def basiset(basis):
         nmax[("F", 4)] = 7
         nmax[("F", 5)] = 5
 
-    elif basis == "RI-cc-pvqz":
+    elif basis_name == "RI-cc-pvqz":
 
         lmax["H"] = 4
         lmax["C"] = 5
@@ -102,7 +102,7 @@ def basiset(basis):
         nmax[("O", 4)] = 2
         nmax[("O", 5)] = 1
 
-    elif basis == "FHI-aims-first-tier":
+    elif basis_name == "FHI-aims-first-tier":
 
         lmax["H"] = 2
         lmax["O"] = 4
@@ -118,7 +118,7 @@ def basiset(basis):
         nmax[("O", 3)] = 3
         nmax[("O", 4)] = 1
 
-    elif basis == "FHI-aims-third-tier":
+    elif basis_name == "FHI-aims-third-tier":
 
         lmax["H"] = 5
         lmax["C"] = 5
@@ -140,7 +140,7 @@ def basiset(basis):
         nmax[("O", 4)] = 8
         nmax[("O", 5)] = 5
 
-    elif basis == "FHI-aims-min":
+    elif basis_name == "FHI-aims-min":
 
         lmax["H"] = 0
         lmax["O"] = 2
@@ -158,7 +158,7 @@ def basiset(basis):
         nmax[("Si", 1)] = 7
         nmax[("Si", 2)] = 3
 
-    elif basis == "LRI-DZVP-MOLOPT-GTH-MEDIUM":
+    elif basis_name == "LRI-DZVP-MOLOPT-GTH-MEDIUM":
 
         lmax["H"] = 3
         lmax["O"] = 4
@@ -184,7 +184,7 @@ def basiset(basis):
         nmax[("Cu", 5)] = 9
         nmax[("Cu", 6)] = 8
 
-    elif basis == "LRI-DZVP-MOLOPT-GTH-MEDIUM-FULL-ANGULAR":
+    elif basis_name == "LRI-DZVP-MOLOPT-GTH-MEDIUM-FULL-ANGULAR":
 
         lmax["H"] = 3
         lmax["O"] = 4
@@ -210,7 +210,7 @@ def basiset(basis):
         nmax[("Cu", 5)] = 15
         nmax[("Cu", 6)] = 15
 
-    elif basis == "LRI-DZVP-MOLOPT-GTH-MEDIUM-FULL-ANGULAR-SUPER-FAT-WIDER-18":
+    elif basis_name == "LRI-DZVP-MOLOPT-GTH-MEDIUM-FULL-ANGULAR-SUPER-FAT-WIDER-18":
 
         lmax["Cu"] = 6
 
@@ -223,7 +223,7 @@ def basiset(basis):
         nmax[("Cu", 5)] = 18
         nmax[("Cu", 6)] = 18
 
-    elif basis == "DF-DZVP-MOLOPT-GTH":
+    elif basis_name == "DF-DZVP-MOLOPT-GTH":
 
         lmax["Ag"] = 6
 
@@ -245,7 +245,7 @@ def basiset(basis):
         nmax[("Au", 5)] = 18
         nmax[("Au", 6)] = 18
 
-    elif basis == "FHI-aims-tight":
+    elif basis_name == "FHI-aims-tight":
 
         lmax["H"] = 4
         lmax["O"] = 8
@@ -266,7 +266,7 @@ def basiset(basis):
         nmax[("O", 7)] = 2
         nmax[("O", 8)] = 1
 
-    elif basis == "FHI-aims-tight-2":
+    elif basis_name == "FHI-aims-tight-2":
 
         lmax["H"] = 4  # 5 angluar channels: 0,1,2,3,4
         lmax["O"] = 8  # 9 angluar channels: 0,1,2,3,4,5,6,7,8
@@ -287,7 +287,7 @@ def basiset(basis):
         nmax[("O", 7)] = 2
         nmax[("O", 8)] = 1
 
-    elif basis == "FHI-aims-ZrS":
+    elif basis_name == "FHI-aims-ZrS":
 
         lmax["S"] = 6
         lmax["Zr"] = 6
@@ -308,7 +308,7 @@ def basiset(basis):
         nmax[("Zr", 5)] = 8
         nmax[("Zr", 6)] = 4
 
-    elif basis == "FHI-aims-graphene":
+    elif basis_name == "FHI-aims-graphene":
 
         lmax["C"] = 4
 
@@ -318,7 +318,7 @@ def basiset(basis):
         nmax[("C", 3)] = 5
         nmax[("C", 4)] = 3
 
-    elif basis == "FHI-aims-MoSe":
+    elif basis_name == "FHI-aims-MoSe":
 
         lmax["Se"] = 6
         lmax["Mo"] = 6
@@ -339,7 +339,7 @@ def basiset(basis):
         nmax[("Mo", 5)] = 8
         nmax[("Mo", 6)] = 5
 
-    elif basis == "FHI-aims-light":
+    elif basis_name == "FHI-aims-light":
 
         lmax["H"] = 2
         lmax["O"] = 4
