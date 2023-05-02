@@ -309,7 +309,12 @@ def process_aims_aux_basis_func_data(
 def density_fitting_error(aims_output_dir: str) -> float:
     """
     Calculates the error in the RI fitted electron density relative to the SCF
-    converged electron density.
+    converged electron density. The files required for this calculation, that
+    must be present in `aims_output_dir` are as follows:
+    
+        - rho_scf.out: SCF converged electron density.
+        - rho_rebuilt_ri.out: RI fitted electron density.
+        - partition_tab.out: the tabulated partition function.
 
     :param aims_output_dir: str for the absolute path to the directory
         containing the AIMS output files from the RI calculation on a single
@@ -318,6 +323,24 @@ def density_fitting_error(aims_output_dir: str) -> float:
     :return float: the error in the RI fitted density relative to the SCF
         converged density.
     """
+    # Check various directories and paths exist
+    if not os.path.isdir(aims_output_dir):
+        raise NotADirectoryError(
+            f"The directory {aims_output_dir} does not exist."
+        )
+    if not os.path.exists(os.path.join(aims_output_dir, "rho_scf.out")):
+        raise FileNotFoundError(
+            f"The file rho_scf.out does not exist in {aims_output_dir}."
+        )
+    if not os.path.exists(os.path.join(aims_output_dir, "rho_rebuilt_ri.out")):
+        raise FileNotFoundError(
+            f"The file rho_rebuilt_ri.out does not exist in {aims_output_dir}."
+        )
+    if not os.path.exists(os.path.join(aims_output_dir, "partition_tab.out")):
+        raise FileNotFoundError(
+            f"The file partition_tab.out does not exist in {aims_output_dir}."
+        )
+        
     # Load the real-space density data. Each row corresponds to x, y, z coordinates
     # followed by the value of the density in the 3rd column. We are only
     # interested
