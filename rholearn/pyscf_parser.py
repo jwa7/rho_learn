@@ -1,6 +1,7 @@
 """
 Module for running PySCF calculations and parsing outputs.
 """
+import os
 from typing import Union, Tuple
 
 import ase
@@ -9,6 +10,35 @@ import pyscf
 import pyscf.pbc.tools.pyscf_ase as pyscf_ase
 
 from rholearn import basis, translator
+
+
+# ===== PySCF input file generation =====
+
+
+def generate_input_geometry_files(xyz_path: str, save_dir: str):
+    """
+    Loads an xyz file into a list of ASE Atoms objects, then writes each
+    geometry to separate directories at relative paths
+    f"{save_dir}/{frame_i}/geometry.xyz", where frame_i is the index of the
+    stucture in the list of frames.
+    """
+    # Make the save directory if it doesn't exist
+    if not os.path.exists(save_dir):
+        os.mkdir(save_dir)
+
+    # Load the xyz file into frames
+    frames = ase.io.read(xyz_path, ":")
+
+    # Write each geometry to a separate directory
+    for A, frame in enumerate(frames):
+        # Create the dir
+        structure_dir = os.path.join(save_dir, f"{A}")
+        if not os.path.exists(structure_dir):
+            os.mkdir(structure_dir)
+        # Write the geometry
+        ase.io.write(os.path.join(structure_dir, "geometry.xyz"), frame)
+
+    return
 
 
 # ===== PySCF calculation setup and execution =====
@@ -73,7 +103,7 @@ def calculate_density_matrix(
         rks = dft.RKS(atom_structure)
 
     # Set the functional
-    rks.xc = inp.functional
+    rks.xc = functional
 
     # Run the calculation
     rks = rks.density_fit()
@@ -106,9 +136,13 @@ def fit_auxiliary_basis(
     and returns the density fitting coefficients, the density projections on the
     auxiliary basis, and the overlap matrix of the auxiliary basis.
 
-    If ``reorder_l1`` is true, the l = 1 ISCs are reordered, changing them from
-    the PySCF order convention of [+1, -1, 0] to the regular ordering of [-1, 0,
-    +1].
+    IMPORTANT: there is a certain convention in the ordering of the auxiliary
+    basis function coefficents, projections, and overlap matrices that is
+    important to note. PySCF orders the irreducible spherical component vectors
+    for the l = 1 basis functions as [+1, -1, 0], whilst for all other l values
+    the order follows the usual [-l, ... +l] convention. This ordering can be
+    made consistent by using the functions :py:func:`reorder_l1_coeffs_vector`
+    and :py:func:`reorder_l1_overlap_matrix` in this module.
 
     :param frame: the ASE Atoms object of the structure for which to fit the
         electron density.
@@ -124,9 +158,6 @@ def fit_auxiliary_basis(
     :param df_nmax: the maximum number of radial basis functions of the density-
         fitted auxiliary basis for each chemcial species and l value in
         ``frame``.
-    :param reorder_l1: whether or not to reorder the coefficients of l = 1 ISCs
-        in the auxiliary basis, undoing the PySCF convention of [+1, -1, 0] and
-        instead returning as order [-1, 0, +1].
 
     :return tuple: tuple of np.ndarray objects containing the density fitting
         coefficients, the density projections on the auxiliary basis, and the
@@ -138,11 +169,6 @@ def fit_auxiliary_basis(
 
     # Calculate overlap matrix for the auxiliary basis
     overlap = aux_structure.intor("int1e_ovlp_sph")
-    if reorder_l1:
-        # Reorder the l = 1 ISCs
-        overlap = reorder_l1_overlap_matrix(
-            frame, overlap, df_lmax, df_nmax, inplace=True
-        )
 
     # Calculate the 2-center 2-electron integral
     eri2c = aux_structure.intor("int2c2e_sph")
@@ -163,9 +189,6 @@ def fit_auxiliary_basis(
     # Compute density fitted coefficients
     rho = np.einsum("ijp,ij->p", eri3c, density_matrix)
     coeff = np.linalg.solve(eri2c, rho)
-    if reorder_l1:
-        # Reorder the l = 1 ISCs
-        coeff = reorder_l1_coeffs_vector(frame, coeff, df_lmax, df_nmax, inplace=True)
 
     # Compute density projections on auxiliary functions
     proj = np.dot(overlap, coeff)
