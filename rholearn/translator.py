@@ -1,11 +1,12 @@
 """
-Module for performing data format translations between various packages and
-rholearn.
+Module for translating coefficient (or projection) vectors and overlap matrices
+from numpy ndarrays to equistore TensorMaps.
 """
 import itertools
-import numpy as np
+from typing import Optional
 
 import ase
+import numpy as np
 
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
@@ -22,12 +23,38 @@ def get_flat_index(
 ) -> int:
     """
     Get the flat index of the coefficient pointed to by the basis function
-    indices in AIMS format.
+    indices ``i``, ``l``, ``n``, ``m``.
 
-    :param lmax : dict containing the maximum spherical harmonics (l)
-        value for each atom type.
-    :param nmax: dict containing the maximum radial channel (n) value
-        for each combination of atom type and l.
+    Given the basis set definition specified by ``lmax`` and ``nmax``, the
+    assumed ordering of basis function coefficients follows the following
+    hierarchy, which can be read as nested loops over the various indices. Be
+    mindful that some indices range are from 0 to x (exclusive) and others from
+    0 to x + 1 (exclusive). The ranges reported below are ordered.
+
+    1. Loop over atoms (index ``i``, of chemical species ``a``) in the
+       structure. ``i`` takes values 0 to N (** exclusive **), where N is the
+       number of atoms in the structure.
+    2. Loop over spherical harmonics channel (index ``l``) for each atom. ``l``
+       takes values from 0 to ``lmax[a] + 1`` (** exclusive **), where ``a`` is
+       the chemical species of atom ``i``, given by the chemical symbol at the
+       ``i``th position of ``symbol_list``.
+    3. Loop over radial channel (index ``n``) for each atom ``i`` and spherical
+       harmonics channel ``l`` combination. ``n`` takes values from 0 to
+       ``nmax[(a, l)]`` (** exclusive **).
+    4. Loop over spherical harmonics component (index ``m``) for each atom.
+       ``m`` takes values from ``-l`` to ``l`` (** inclusive **).
+
+    Note that basis function coefficient vectors, projection vectors, and
+    overlap matrices outputted by quantum chemistry packages such as PySCF and
+    AIMS may follow different conventions. ``rholearn`` provides parsing
+    functions to standardize these outputs to the convention described above.
+    Once standardized, the functions in this module can be used to convert to
+    equistore format.
+
+    :param lmax : dict containing the maximum spherical harmonics (l) value for
+        each atom type.
+    :param nmax: dict containing the maximum radial channel (n) value for each
+        combination of atom type and l.
     :param i: int, the atom index.
     :param l: int, the spherical harmonics index.
     :param n: int, the radial channel index.
@@ -39,11 +66,34 @@ def get_flat_index(
     :return int: the flat index of the coefficient pointed to by the input
         indices.
     """
+    # Check atom index is valid
+    if i not in np.arange(0, len(symbol_list)):
+        raise ValueError(
+            f"invalid atom index, i={i} is not in the range [0, {len(symbol_list)})."
+            f"Passed symbol list: {symbol_list}"
+        )
+    # Check l value is valid
+    if l not in np.arange(0, lmax[symbol_list[i]] + 1):
+        raise ValueError(
+            f"invalid spherical harmonics index, l={l} is not in the range "
+            f"of valid values for species {symbol_list[i]}: [0, {lmax[symbol_list[i]]}] (inclusive)."
+        )
+    # Check n value is valid
+    if n not in np.arange(0, nmax[(symbol_list[i], l)]):
+        raise ValueError(
+            f"invalid radial index, n={n} is not in the range of valid values for species "
+            f"{symbol_list[i]}, l={l}: [0, {nmax[(symbol_list[i], l)]}) (exclusive)."
+        )
+    # Check m value is valid
+    if m not in np.arange(-l, l + 1):
+        raise ValueError(
+            f"invalid azimuthal index, m={m} is not in the l range [-l, l] = [{-l}, +{l}] (inclusive)."
+        )
     # Define the atom offset
     atom_offset = 0
     for atom_index in range(i):
         symbol = symbol_list[atom_index]
-        for l_tmp in range(lmax[symbol] + 1):
+        for l_tmp in np.arange(lmax[symbol] + 1):
             atom_offset += (2 * l_tmp + 1) * nmax[(symbol, l_tmp)]
 
     # Define the l offset
@@ -71,15 +121,28 @@ def coeff_vector_to_tensormap(
 ) -> TensorMap:
     """
     Convert a vector of basis function coefficients (or projections) to
-    TensorMap format.
+    equistore TensorMap format.
 
-    :param frame: ase.Atoms object containing the atomic structure.
+    :param frame: ase.Atoms object containing the atomic structure for which the
+        coefficients (or projections) were calculated.
     :param coeffs: np.ndarray of shape (N,), where N is the number of basis
         functions the electron density is expanded onto.
+    :param lmax: dict containing the maximum spherical harmonics (l) value for
+        each atomic species.
+    :param nmax: dict containing the maximum radial channel (n) value for each
+        combination of atomic species and l value.
     :param structure_idx: int, the index of the structure in the overall
-        dataset. If None, the samples metadata of each block in the output
-        TensorMap will not contain an index for the structure. Samples will just
-        track the "center_1" and "center_2" indices.
+        dataset. If None (default), the samples metadata of each block in the
+        output TensorMap will not contain an index for the structure, i.e. the
+        sample names will just be ["center"]. If an integer, the sample names
+        will be ["structure", "center"] and the index for "structure" will be
+        ``structure_idx``.
+    :param tests: int, the number of coefficients to randomly compare between
+        the raw input array and processed TensorMap to check for correct
+        conversion.
+
+    :return TensorMap: the TensorMap containing the coefficients data and
+        metadata.
     """
     # Define some useful variables
     symbols = frame.get_chemical_symbols()
@@ -204,19 +267,44 @@ def coeff_vector_to_tensormap(
 
 def overlap_matrix_to_tensormap(
     frame: ase.Atoms,
-    overlaps: np.ndarray,
+    overlap: np.ndarray,
     lmax: dict,
     nmax: dict,
     structure_idx: Optional[int] = None,
     tests: int = 0,
 ) -> TensorMap:
-    """ """
+    """
+    Converts a 2D numpy array corresponding to the overlap matrix into equistore
+    TensorMap format.
+
+    :param frame: the ASE Atoms object corresponding to the structure for which
+        the overlap matrix was computed.
+    :param overlap: the overlap matrix, as a 2D numpy array of shape (N, N),
+        where N is the number of basis functions the electron density is
+        expanded on.
+    :param lmax: dict containing the maximum spherical harmonics (l) value for
+        each atomic species.
+    :param nmax: dict containing the maximum radial channel (n) value for each
+        combination of atomic species and l value.
+    :param structure_idx: int, the index of the structure in the overall
+        dataset. If None (default), the samples metadata of each block in the
+        output TensorMap will not contain an index for the structure, i.e. the
+        sample names will just be ["center_1", "center_2"]. If an integer, the
+        sample names will be ["structure", "center_1", "center_2"] and the index
+        for "structure" will be ``structure_idx``.
+    :param tests: int, the number of coefficients to randomly compare between
+        the raw input array ``overlap`` and processed TensorMap to check for
+        correct conversion.
+
+    :return TensorMap: the TensorMap containing the overlap matrix data and
+        metadata.
+    """
     # Define some useful variables
     symbols = frame.get_chemical_symbols()
     uniq_symbols = np.unique(symbols)
     tot_atoms = len(symbols)
-    tot_coeffs = overlaps.shape[0]
-    tot_overlaps = np.prod(overlaps.shape)
+    tot_coeffs = overlap.shape[0]
+    tot_overlaps = np.prod(overlap.shape)
 
     # First, confirm the length of each side of square matrix array is as expected
     num_coeffs_by_uniq_symbol = {}
@@ -231,7 +319,7 @@ def overlap_matrix_to_tensormap(
         [num_coeffs_by_uniq_symbol[symbol] for symbol in symbols]
     )
     assert np.sum(num_coeffs_by_symbol) == tot_coeffs
-    assert overlaps.shape == (tot_coeffs, tot_coeffs)
+    assert overlap.shape == (tot_coeffs, tot_coeffs)
 
     # Define the number of coefficients for each respective l value (0,1,...)
     # for each unique atomic symbol
@@ -247,8 +335,8 @@ def overlap_matrix_to_tensormap(
     for symbol in uniq_symbols:
         assert np.sum(num_coeffs_by_l[symbol]) == num_coeffs_by_uniq_symbol[symbol]
 
-    # Split the overlaps into a list of matrices along axis 0, one for each atom
-    split_by_i1 = np.split(overlaps, np.cumsum(num_coeffs_by_symbol), axis=0)[:-1]
+    # Split the overlap into a list of matrices along axis 0, one for each atom
+    split_by_i1 = np.split(overlap, np.cumsum(num_coeffs_by_symbol), axis=0)[:-1]
     assert len(split_by_i1) == tot_atoms
 
     tmp_i1 = []
@@ -258,7 +346,7 @@ def overlap_matrix_to_tensormap(
             num_coeffs_by_uniq_symbol[symbols[i1]],
             tot_coeffs,
         )
-        # Split the overlaps into a list of matrices along axis 1, one for each atom
+        # Split the overlap into a list of matrices along axis 1, one for each atom
         split_by_i2 = np.split(i1_matrix, np.cumsum(num_coeffs_by_symbol), axis=1)[:-1]
         assert len(split_by_i2) == tot_atoms
 
@@ -441,14 +529,176 @@ def overlap_matrix_to_tensormap(
 
     # Build TensorMap and check num elements same as input
     tensor = TensorMap(keys=keys, blocks=blocks)
-    assert utils.num_elements_tensormap(tensor) == np.prod(overlaps.shape)
+    assert utils.num_elements_tensormap(tensor) == np.prod(overlap.shape)
 
     for _ in range(tests):
         assert test_overlap_matrix_conversion(
-            frame, structure_idx, lmax, nmax, overlaps, tensor
+            frame, structure_idx, lmax, nmax, overlap, tensor
         )
 
     return tensor
+
+
+# ===== Functions to sparsify the symmetric overlap matrix =====
+
+
+def overlap_is_symmetric(tensor: TensorMap) -> bool:
+    """
+    Returns true if the overlap matrices stored in TensorMap form are symmetric,
+    false otherwise. Assumes the following data strutcure of the TensorMap:
+    - keys: spherical_harmonics_l1, spherical_harmonics_l2, species_center_1,
+    species_center_2
+    - blocks: samples: structure, center_1, center_2
+              components: [spherical_harmonics_m1, spherical_harmonics_m2]
+              properties: n1, n2
+    """
+    keys = tensor.keys
+    checked = set()
+
+    # Iterate over the keys
+    for key in keys:
+        l1, l2, a1, a2 = key
+        if (l1, l2, a1, a2) in checked or (l2, l1, a2, a1) in checked:
+            continue
+
+        # Get 2 blocks for comparison, permuting l and a. If this is a diagonal
+        # block, block 1 and block 2 will be the same object
+        block1 = tensor.block(
+            spherical_harmonics_l1=l1,
+            spherical_harmonics_l2=l2,
+            species_center_1=a1,
+            species_center_2=a2,
+        )
+        block2 = tensor.block(
+            spherical_harmonics_l1=l2,
+            spherical_harmonics_l2=l1,
+            species_center_1=a2,
+            species_center_2=a1,
+        )
+        if not overlap_is_symmetric_block(block1, block2):
+            return False
+        # Only track checking of off-diagonal blocks
+        if not (l1 == l2 and a1 == a2):
+            checked.update({(l1, l2, a1, a2)})
+
+    return True
+
+
+def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool:
+    """
+    Returns true if the overlap matrices stored in the input blocks are
+    symmetric, false otherwise.
+    """
+    # Create a samples filter for how the samples map to eachother between blocks
+    samples_filter = [
+        block2.samples.position((A, i2, i1)) for [A, i1, i2] in block1.samples
+    ]
+    # Create a properties filter for how the properties map to eachother between
+    # blocks
+    properties_filter = [
+        block2.properties.position((n2, n1)) for [n1, n2] in block1.properties
+    ]
+    # Broadcast the values array using the filters, and swap the components axes
+    reordered_block2 = np.swapaxes(
+        block2.values[samples_filter][..., properties_filter], 1, 2
+    )
+
+    return np.all(block1.values == reordered_block2)
+
+
+def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
+    """
+    Takes an input TensorMap ``tensor`` that corresponds to the overlap matrix
+    for a given structure. Assumes blocks have keys of the form (l1, l2, a1,
+    a2), and returns a new TensorMap where off-diagonal blocks are dropped, such
+    that the new TensorMap has keys with l1 <= l2 and a1 <= a2.
+    """
+    keys = tensor.keys
+
+    # Define a filter for the keys *TO DROP*
+    keys_to_drop_filter = []
+    for key in keys:
+        l1, l2, a1, a2 = key
+
+        # Keep keys where l1 <= l2 and a1 <= a2
+        if a1 < a2:  # keep
+            keys_to_drop_filter.append(False)
+        elif a1 == a2 and l1 <= l2:  # keep
+            keys_to_drop_filter.append(False)
+        else:  # drop
+            keys_to_drop_filter.append(True)
+
+    # Drop these blocks
+    new_tensor = equistore.drop_blocks(tensor, keys=keys[keys_to_drop_filter])
+
+    # Check the number of output blocks is correct
+    K_old = len(tensor.keys)
+    K_new = len(new_tensor.keys)
+    assert K_new == np.sqrt(K_old) / 2 * (np.sqrt(K_old) + 1)
+
+    return new_tensor
+
+
+def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
+    """
+    Given an input TensorMap with keys (l1, l2, a1, a2), returns a new TensorMap
+    where diagonal blocks (i.e. l1 = l2, a1 = a2) have redundant off-diagonal
+    atom pairs from the samples dropped. For instance, the samples must have the
+    integer form (A, i1, i2), where i1 and i2 correspond to the atom centers 1
+    and 2 repsectively. Only samples where i1 <= i2 are kept.
+    """
+    keys = tensor.keys
+    assert np.all(
+        keys.names
+        == (
+            "spherical_harmonics_l1",
+            "spherical_harmonics_l2",
+            "species_center_1",
+            "species_center_2",
+        )
+    )
+    blocks = []
+    for key in keys:
+        # Unpack the key
+        l1, l2, a1, a2 = key
+
+        # If an off-diagonal block, just store it
+        if not (l1 == l2 and a1 == a2):
+            blocks.append(tensor[key].copy())
+            continue
+
+        # Otherwise, manipulate the samples of the diagonal block
+        block = tensor[key]
+
+        # Create a samples filter for samples *TO KEEP*
+        samples_filter = []
+        for sample in block.samples:
+            A, i1, i2 = sample
+            if i1 <= i2:  # keep
+                samples_filter.append(True)
+            else:  # discard
+                samples_filter.append(False)
+        new_samples = block.samples[samples_filter]
+
+        # Check the number of output blocks is correct
+        S_old = len(block.samples)
+        S_new = len(new_samples)
+        assert S_new == np.sqrt(S_old) / 2 * (np.sqrt(S_old) + 1)
+
+        # Create and store the new block
+        blocks.append(
+            TensorBlock(
+                values=block.values[samples_filter],
+                samples=new_samples,
+                components=block.components,
+                properties=block.properties,
+            )
+        )
+
+    return TensorMap(keys=keys, blocks=blocks)
+
+
+# ===== Functions to test conversions etc. =====
 
 
 def test_coeff_vector_conversion(
@@ -597,158 +847,3 @@ def test_overlap_matrix_conversion(
         print(f"TensorMap: idx", (s_idx, c_idx_1, c_idx_2, p_idx), "coeff", tm_elem)
 
     return np.isclose(raw_elem, tm_elem)
-
-
-def overlap_is_symmetric(tensor: TensorMap) -> bool:
-    """
-    Returns true if the overlap matrices stored in TensorMap form are symmetric,
-    false otherwise. Assumes the following data strutcure of the TensorMap:
-    - keys: spherical_harmonics_l1, spherical_harmonics_l2, species_center_1,
-    species_center_2
-    - blocks: samples: structure, center_1, center_2
-              components: [spherical_harmonics_m1, spherical_harmonics_m2]
-              properties: n1, n2
-    """
-    keys = tensor.keys
-    checked = set()
-    # Iterate over the keys
-    for key in keys:
-        l1, l2, a1, a2 = key
-        if (l1, l2, a1, a2) in checked or (l2, l1, a2, a1) in checked:
-            continue
-
-        # Get 2 blocks for comparison, permuting l and a. If this is a diagonal
-        # block, block 1 and block 2 will be the same object
-        block1 = tensor.block(
-            spherical_harmonics_l1=l1,
-            spherical_harmonics_l2=l2,
-            species_center_1=a1,
-            species_center_2=a2,
-        )
-        block2 = tensor.block(
-            spherical_harmonics_l1=l2,
-            spherical_harmonics_l2=l1,
-            species_center_1=a2,
-            species_center_2=a1,
-        )
-        if not overlap_is_symmetric_block(block1, block2):
-            return False
-        # Only track checking of off-diagonal blocks
-        if not (l1 == l2 and a1 == a2):
-            checked.update({(l1, l2, a1, a2)})
-
-    return True
-
-
-def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool:
-    """
-    Returns true if the overlap matrices stored in the input blocks are
-    symmetric,
-    false otherwise. Assumes the following data structure of the TensorMap:
-    """
-    # Create a samples filter for how the samples map to eachother between blocks
-    samples_filter = [
-        block2.samples.position((A, i2, i1)) for [A, i1, i2] in block1.samples
-    ]
-    # Create a properties filter for how the properties map to eachother between
-    # blocks
-    properties_filter = [
-        block2.properties.position((n2, n1)) for [n1, n2] in block1.properties
-    ]
-    # Broadcast the values array using the filters, and swap the components axes
-    reordered_block2 = np.swapaxes(
-        block2.values[samples_filter][..., properties_filter], 1, 2
-    )
-
-    return np.all(block1.values == reordered_block2)
-
-
-def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
-    """
-    Given an input TensorMap with keys (l1, l2, a1, a2), returns a new TensorMap
-    where off-diagonal blocks are dropped, such that the new TensorMap has keys
-    with l1 <= l2 and a1 <= a2.
-    """
-    keys = tensor.keys
-
-    # Define a filter for the keys *TO DROP*
-    keys_to_drop_filter = []
-    for key in keys:
-        l1, l2, a1, a2 = key
-
-        # Keep keys where l1 <= l2 and a1 <= a2
-        if a1 < a2:  # keep
-            keys_to_drop_filter.append(False)
-        elif a1 == a2 and l1 <= l2:  # keep
-            keys_to_drop_filter.append(False)
-        else:  # drop
-            keys_to_drop_filter.append(True)
-
-    # Drop these blocks
-    new_tensor = equistore.drop_blocks(tensor, keys=keys[keys_to_drop_filter])
-
-    # Check the number of output blocks is correct
-    K_old = len(tensor.keys)
-    K_new = len(new_tensor.keys)
-    assert K_new == np.sqrt(K_old) / 2 * (np.sqrt(K_old) + 1)
-
-    return new_tensor
-
-
-def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
-    """
-    Given an input TensorMap with keys (l1, l2, a1, a2), returns a new TensorMap
-    where diagonal blocks (i.e. l1 = l2, a1 = a2) have redundant off-diagonal
-    atom pairs from the samples dropped. For instance, the samples must have the
-    integer form (A, i1, i2), where i1 and i2 correspond to the atom centers 1
-    and 2 repsectively. Only samples where i1 <= i2 are kept.
-    """
-    keys = tensor.keys
-    assert np.all(
-        keys.names
-        == (
-            "spherical_harmonics_l1",
-            "spherical_harmonics_l2",
-            "species_center_1",
-            "species_center_2",
-        )
-    )
-    blocks = []
-    for key in keys:
-        # Unpack the key
-        l1, l2, a1, a2 = key
-
-        # If an off-diagonal block, just store it
-        if not (l1 == l2 and a1 == a2):
-            blocks.append(tensor[key].copy())
-            continue
-
-        # Otherwise, manipulate the samples of the diagonal block
-        block = tensor[key]
-
-        # Create a samples filter for samples *TO KEEP*
-        samples_filter = []
-        for sample in block.samples:
-            A, i1, i2 = sample
-            if i1 <= i2:  # keep
-                samples_filter.append(True)
-            else:  # discard
-                samples_filter.append(False)
-        new_samples = block.samples[samples_filter]
-
-        # Check the number of output blocks is correct
-        S_old = len(block.samples)
-        S_new = len(new_samples)
-        assert S_new == np.sqrt(S_old) / 2 * (np.sqrt(S_old) + 1)
-
-        # Create and store the new block
-        blocks.append(
-            TensorBlock(
-                values=block.values[samples_filter],
-                samples=new_samples,
-                components=block.components,
-                properties=block.properties,
-            )
-        )
-
-    return TensorMap(keys=keys, blocks=blocks)
