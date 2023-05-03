@@ -1,10 +1,176 @@
 """
 Module for running PySCF calculations and parsing outputs.
 """
+from typing import Union, Tuple
+
 import ase
 import numpy as np
+import pyscf
+import pyscf.pbc.tools.pyscf_ase as pyscf_ase
 
-from rholearn import translator
+from rholearn import basis, translator
+
+
+# ===== PySCF calculation setup and execution =====
+
+
+def build_structure_from_ase(
+    frame: ase.Atoms, pbc: bool, qm_basis_name: str, **kwargs
+) -> Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole]:
+    """
+    From an ASE Atoms object, builds either a PySCF Cell or Molecule object
+    depending on whether ``pbc`` is true or false (respectively), initialized
+    with the various parameters.
+
+    If ``pbc`` is true, the ``make_kpoints`` kwarg must be specified.
+    """
+    if pbc:  # periodic
+        # Check k-points have been specified
+        if kwargs.get("make_kpoints") is None:
+            raise ValueError(
+                "Must specify the k-points if running a periodic calculation"
+            )
+
+        # Build the PySCF Cell object
+        structure = pyscf.pbc.gto.Cell(
+            atom=pyscf.pbc.tools.pyscf_ase.ase_atoms_to_pyscf(frame),
+            a=frame.cell,
+            basis=qm_basis_name,
+            make_kpoints=kwargs.get("make_kpoints"),
+            exp_to_discard=kwargs.get("exp_to_discard"),
+        ).build()
+
+    else:  # molecular
+        # Build the PySCF Molecule object
+        frame.set_pbc = False
+
+        structure = pyscf.gto.M(
+            atom=pyscf_ase.ase_atoms_to_pyscf(frame),
+            basis=qm_basis_name,
+        ).build()
+
+    return structure
+
+
+def calculate_density_matrix(
+    atom_structure: Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole],
+    pbc: bool,
+    functional: str,
+) -> np.ndarray:
+    """
+    Runs a RKS and denisty fitting calculation using PySCF to generate a denisty
+    matrix for the input ``frame``. If ``pbc`` is true, runs RKS in k-space.
+    """
+    # Run restricted Kohn-Sham DFT calculation
+    if pbc:  # periodic
+        import pyscf.pbc.dft as dft
+
+        rks = dft.KRKS(atom_structure)
+
+    else:  # molecular
+        import pyscf.dft as dft
+
+        rks = dft.RKS(atom_structure)
+
+    # Set the functional
+    rks.xc = inp.functional
+
+    # Run the calculation
+    rks = rks.density_fit()
+    rks.kernel()
+
+    # Get the density matrix
+    density_matrix = rks.make_rdm1()
+
+    if pbc:
+        assert density_matrix.shape == (1, atom_structure.nao, atom_structure.nao)
+        density_matrix = density_matrix[0]
+    else:
+        assert density_matrix.shape == (atom_structure.nao, atom_structure.nao)
+
+    return density_matrix
+
+
+def fit_auxiliary_basis(
+    frame: ase.Atoms,
+    atom_structure: Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole],
+    aux_structure: Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole],
+    density_matrix: np.ndarray,
+    pbc: bool,
+    df_lmax: dict,
+    df_nmax: dict,
+    reorder_l1: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fits an auxiliary basis to the density matrix of the ``atomic_structure``
+    and returns the density fitting coefficients, the density projections on the
+    auxiliary basis, and the overlap matrix of the auxiliary basis.
+
+    If ``reorder_l1`` is true, the l = 1 ISCs are reordered, changing them from
+    the PySCF order convention of [+1, -1, 0] to the regular ordering of [-1, 0,
+    +1].
+
+    :param frame: the ASE Atoms object of the structure for which to fit the
+        electron density.
+    :param atom_structure: the PySCF Cell or Molecule object of the structure in
+        ``frame``.
+    :param aux_structure: the PySCF Cell or Molecule object of the auxiliary
+        structure used to fit the auxiliary basis.
+    :param density_matrix: the density matrix of the ``atom_structure``
+        calculated with PySCF.
+    :param pbc: whether or not the structure in ``frame`` is periodic.
+    :param df_lmax: the maximum angular momentum of the density-fitted auxiliary
+        basis for each chemcial species in ``frame``.
+    :param df_nmax: the maximum number of radial basis functions of the density-
+        fitted auxiliary basis for each chemcial species and l value in
+        ``frame``.
+    :param reorder_l1: whether or not to reorder the coefficients of l = 1 ISCs
+        in the auxiliary basis, undoing the PySCF convention of [+1, -1, 0] and
+        instead returning as order [-1, 0, +1].
+
+    :return tuple: tuple of np.ndarray objects containing the density fitting
+        coefficients, the density projections on the auxiliary basis, and the
+        overlap matrix of the auxiliary basis, respectively.
+    """
+
+    # Define the product structure
+    prod_structure = atom_structure + aux_structure
+
+    # Calculate overlap matrix for the auxiliary basis
+    overlap = aux_structure.intor("int1e_ovlp_sph")
+    if reorder_l1:
+        # Reorder the l = 1 ISCs
+        overlap = reorder_l1_overlap_matrix(
+            frame, overlap, df_lmax, df_nmax, inplace=True
+        )
+
+    # Calculate the 2-center 2-electron integral
+    eri2c = aux_structure.intor("int2c2e_sph")
+
+    # Calculate the 3-center 2-electron integral
+    eri3c = prod_structure.intor(
+        "int3c2e_sph",
+        shls_slice=(
+            0,
+            atom_structure.nbas,
+            0,
+            atom_structure.nbas,
+            atom_structure.nbas,
+            atom_structure.nbas + aux_structure.nbas,
+        ),
+    ).reshape(atom_structure.nao_nr(), atom_structure.nao_nr(), -1)
+
+    # Compute density fitted coefficients
+    rho = np.einsum("ijp,ij->p", eri3c, density_matrix)
+    coeff = np.linalg.solve(eri2c, rho)
+    if reorder_l1:
+        # Reorder the l = 1 ISCs
+        coeff = reorder_l1_coeffs_vector(frame, coeff, df_lmax, df_nmax, inplace=True)
+
+    # Compute density projections on auxiliary functions
+    proj = np.dot(overlap, coeff)
+
+    return coeff, proj, overlap
 
 
 # ===== PySCF output parsing =====
