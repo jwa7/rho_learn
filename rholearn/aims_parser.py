@@ -363,3 +363,11 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
 
     # Calculate and return the relative error
     return np.dot(error, partition) / np.dot(scf_rho, partition)
+
+
+def calc_num_electrons_error() -> float:
+    """
+    Integrates the real space density and the reconstructed fitted density to
+    get a relative error in the number of electrons.
+    """
+    return
