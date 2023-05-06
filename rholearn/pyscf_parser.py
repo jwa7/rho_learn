@@ -2,11 +2,13 @@
 Module for running PySCF calculations and parsing outputs.
 """
 import os
-from typing import Union, Tuple
+from typing import List, Tuple, Union, Optional
 
 import ase
 import numpy as np
 import pyscf
+import pyscf.dft as dft
+import pyscf.pbc.dft as pbc_dft
 import pyscf.pbc.tools.pyscf_ase as pyscf_ase
 
 from rholearn import basis, translator
@@ -15,69 +17,70 @@ from rholearn import basis, translator
 # ===== PySCF input file generation =====
 
 
-def generate_input_geometry_files(xyz_path: str, save_dir: str):
+def generate_input_geometry_files(frames: List[ase.Atoms], save_dir: str):
     """
-    Loads an xyz file into a list of ASE Atoms objects, then writes each
-    geometry to separate directories at relative paths
-    f"{save_dir}/{frame_i}/geometry.xyz", where frame_i is the index of the
-    stucture in the list of frames.
+    Takes a list of ASE Atoms objects (i.e. ``frames``) for a set of structures
+    and writes each to a separate .xyz file in its own directory.
+
+    For a set of N structures in ``frames``, N new directories in the parent
+    directory ``save_dir`` are created, with relative paths
+    f"{save_dir}/{A}/geometry.xyz", where A is a numeric structure index running
+    from 0 -> (N - 1) (inclusive), and corresponding to the order of structures
+    in ``frames``.
+
+    :param frames: a :py:class:`list` of :py:class:`ase.Atoms` objects
+        corresponding to the structures in the dataset to generate AIMS input
+        files for.
+    :param save_dir: a `str` of the absolute path to the directory where the
+        .xyz geometry files should be saved.
     """
-    # Make the save directory if it doesn't exist
+
+    # Create the save directory if it doesn't already exist
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
 
-    # Load the xyz file into frames
-    frames = ase.io.read(xyz_path, ":")
-
-    # Write each geometry to a separate directory
-    for A, frame in enumerate(frames):
-        # Create the dir
+    for A in range(len(frames)):  # Iterate over structures
+        # Create a directory named simply by the structure index
         structure_dir = os.path.join(save_dir, f"{A}")
         if not os.path.exists(structure_dir):
             os.mkdir(structure_dir)
-        # Write the geometry
-        ase.io.write(os.path.join(structure_dir, "geometry.xyz"), frame)
 
-    return
+        # Write the xyz input geometry file.
+        ase.io.write(os.path.join(structure_dir, "geometry.xyz"), frames[A])
 
 
 # ===== PySCF calculation setup and execution =====
 
 
 def build_structure_from_ase(
-    frame: ase.Atoms, pbc: bool, qm_basis_name: str, **kwargs
+    frame: ase.Atoms, structure_type: str, qm_basis_name: str, **kwargs
 ) -> Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole]:
     """
     From an ASE Atoms object, builds either a PySCF Cell or Molecule object
     depending on whether ``pbc`` is true or false (respectively), initialized
     with the various parameters.
-
-    If ``pbc`` is true, the ``make_kpoints`` kwarg must be specified.
     """
-    if pbc:  # periodic
-        # Check k-points have been specified
-        if kwargs.get("make_kpoints") is None:
-            raise ValueError(
-                "Must specify the k-points if running a periodic calculation"
-            )
-
+    if structure_type.lower() == "cell":
         # Build the PySCF Cell object
         structure = pyscf.pbc.gto.Cell(
             atom=pyscf.pbc.tools.pyscf_ase.ase_atoms_to_pyscf(frame),
             a=frame.cell,
             basis=qm_basis_name,
-            make_kpoints=kwargs.get("make_kpoints"),
-            exp_to_discard=kwargs.get("exp_to_discard"),
+            **kwargs,
         ).build()
 
-    else:  # molecular
+    elif structure_type.lower() == "molecule":
         # Build the PySCF Molecule object
-        frame.set_pbc = False
-
         structure = pyscf.gto.M(
             atom=pyscf_ase.ase_atoms_to_pyscf(frame),
             basis=qm_basis_name,
+            **kwargs,
         ).build()
+
+    else:
+        raise ValueError(
+            f"structure_type must be either 'Cell' or 'Molecule', not {structure_type}"
+        )
 
     return structure
 
@@ -85,22 +88,30 @@ def build_structure_from_ase(
 def calculate_density_matrix(
     atom_structure: Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole],
     pbc: bool,
+    method: str,
     functional: str,
 ) -> np.ndarray:
     """
-    Runs a RKS and denisty fitting calculation using PySCF to generate a denisty
-    matrix for the input ``frame``. If ``pbc`` is true, runs RKS in k-space.
+    Runs either restricted Kohn-Sham DFT (RKS) or k-space RKS, (whether
+    ``method`` is "RKS" or "KRKS", respectively) and returns the density matrix.
     """
     # Run restricted Kohn-Sham DFT calculation
-    if pbc:  # periodic
-        import pyscf.pbc.dft as dft
-
-        rks = dft.KRKS(atom_structure)
-
-    else:  # molecular
-        import pyscf.dft as dft
-
-        rks = dft.RKS(atom_structure)
+    if pbc:
+        if method == "KRKS":  # k-space
+            rks = pbc_dft.KRKS(atom_structure)
+        elif method == "RKS":  # real-space
+            rks = pbc_dft.RKS(atom_structure)
+        else:
+            raise ValueError(
+                f"if ``pbc`` is true, ``method`` must be either 'KRKS' or 'RKS', not {method}"
+            )
+    else:
+        if method == "RKS":  # real-space
+            rks = dft.RKS(atom_structure)
+        else:
+            raise ValueError(
+                f"if ``pbc`` is False, ``method`` must be either 'KRKS' or 'RKS', not {method}"
+            )
 
     # Set the functional
     rks.xc = functional
@@ -109,13 +120,14 @@ def calculate_density_matrix(
     rks = rks.density_fit()
     rks.kernel()
 
-    # Get the density matrix
+    # Build the density matrix
     density_matrix = rks.make_rdm1()
 
-    if pbc:
+    if method == "KRKS":
         assert density_matrix.shape == (1, atom_structure.nao, atom_structure.nao)
         density_matrix = density_matrix[0]
     else:
+        assert method == "RKS"
         assert density_matrix.shape == (atom_structure.nao, atom_structure.nao)
 
     return density_matrix
@@ -126,10 +138,8 @@ def fit_auxiliary_basis(
     atom_structure: Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole],
     aux_structure: Union[pyscf.pbc.gto.cell.Cell, pyscf.gto.mole.Mole],
     density_matrix: np.ndarray,
-    pbc: bool,
     df_lmax: dict,
     df_nmax: dict,
-    reorder_l1: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Fits an auxiliary basis to the density matrix of the ``atomic_structure``
@@ -152,7 +162,6 @@ def fit_auxiliary_basis(
         structure used to fit the auxiliary basis.
     :param density_matrix: the density matrix of the ``atom_structure``
         calculated with PySCF.
-    :param pbc: whether or not the structure in ``frame`` is periodic.
     :param df_lmax: the maximum angular momentum of the density-fitted auxiliary
         basis for each chemcial species in ``frame``.
     :param df_nmax: the maximum number of radial basis functions of the density-
