@@ -305,8 +305,9 @@ def process_aux_basis_func_data(
 def calc_density_fitting_error(aims_output_dir: str) -> float:
     """
     Calculates the error in the RI fitted electron density relative to the SCF
-    converged electron density. The files required for this calculation, that
-    must be present in `aims_output_dir` are as follows:
+    converged electron density. A returned value of 1 corresponds to an error of
+    100%. The files required for this calculation, that must be present in
+    `aims_output_dir` are as follows:
     
         - rho_scf.out: SCF converged electron density.
         - rho_rebuilt_ri.out: RI fitted electron density.

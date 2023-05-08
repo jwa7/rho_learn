@@ -59,9 +59,6 @@ def get_flat_index(
     :param l: int, the spherical harmonics index.
     :param n: int, the radial channel index.
     :param m: int, the spherical harmonics component index.
-    :param tests: int, the number of coefficients to randomly compare between
-        the raw input array and processed TensorMap to check for correct
-        conversion.
 
     :return int: the flat index of the coefficient pointed to by the input
         indices.

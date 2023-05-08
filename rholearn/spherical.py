@@ -96,16 +96,51 @@ class WignerDReal:
             frame["cell"] = self._rotation @ frame["cell"]
         return frame
 
-    def rotate_aims_coeff_vector(
+    def rotate_coeff_vector(
         self,
         frame: ase.Atoms,
+        coeffs: np.ndarray,
         lmax: dict,
         nmax: dict,
-        coeffs: np.ndarray,
     ) -> np.ndarray:
         """
-        Rotates the irreducible spherical components (ISCs) of the AIMS auxiliary
-        basis coefficients passed in as a flat vector.
+        Rotates the irreducible spherical components (ISCs) of basis set
+        coefficients in the spherical basis passed in as a flat vector.
+
+        Given the basis set definition specified by ``lmax`` and ``nmax``, the
+        assumed ordering of basis function coefficients follows the following
+        hierarchy, which can be read as nested loops over the various indices.
+        Be mindful that some indices range are from 0 to x (exclusive) and
+        others from 0 to x + 1 (exclusive). The ranges reported below are
+        ordered.
+
+        1. Loop over atoms (index ``i``, of chemical species ``a``) in the
+        structure. ``i`` takes values 0 to N (** exclusive **), where N is the
+        number of atoms in the structure. 
+
+        2. Loop over spherical harmonics channel (index ``l``) for each atom.
+        ``l`` takes values from 0 to ``lmax[a] + 1`` (** exclusive **), where
+        ``a`` is the chemical species of atom ``i``, given by the chemical
+        symbol at the ``i``th position of ``symbol_list``. 
+
+        3. Loop over radial channel (index ``n``) for each atom ``i`` and
+        spherical harmonics channel ``l`` combination. ``n`` takes values from 0
+        to ``nmax[(a, l)]`` (** exclusive **). 
+
+        4. Loop over spherical harmonics component (index ``m``) for each atom.
+        ``m`` takes values from ``-l`` to ``l`` (** inclusive **).
+
+        :param frame: the atomic structure in ASE format for which the
+            coefficients are defined.
+        :param coeffs: the coefficients in the spherical basis, as a flat
+            vector. 
+        :param lmax: dict containing the maximum spherical harmonics (l) value
+            for each atom type. 
+        :param nmax: dict containing the maximum radial channel (n) value for
+            each combination of atom type and l.
+
+        :return: the rotated coefficients in the spherical basis, as a flat
+            vector with the same order as the input vector.
         """
         # Initialize empty vector for storing the rotated ISCs
         rot_vect = np.empty_like(coeffs)        
