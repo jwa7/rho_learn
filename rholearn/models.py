@@ -441,10 +441,7 @@ class EquiModelLocal(torch.nn.Module):
         if self.model_type == "linear":
             output = self.model(input.values)
         elif self.model_type == "nonlinear":
-            # Check exact equivalence of samples
-            # if not utils.labels_equal(
-            #     input.samples, invariant.samples, correct_order=True
-            # ):
+            # Check samples exactly equivalent
             if input.samples != invariant.samples:
                 raise ValueError(
                     "``input`` and ``invariant`` TensorBlocks must have the"

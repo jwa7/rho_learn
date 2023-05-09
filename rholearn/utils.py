@@ -12,7 +12,6 @@ from equistore import Labels, TensorBlock, TensorMap
 # TODO:
 # - Remove functions once in equistore:
 #       - searchable_labels
-#       - labels_equal
 #       - tensor_to_torch/numpy, block_to_torch/numpy
 
 # ===== tensors to torch fxns
@@ -143,41 +142,6 @@ def block_to_torch(
         )
 
     return new_block
-
-
-def random_tensor_like(tensor: Union[TensorMap, TensorBlock, torch.Tensor]):
-    """
-    Returns a torch-based TensorMap, TensorBlock, or torch Tensor with the same
-    shape and type as the input ``tensor``, but with random values.
-    """
-    # Input is a TensorMap, return a TensorMap
-    if isinstance(tensor, TensorMap):
-        new_blocks = []
-        for key, block in tensor:
-            new_block = TensorBlock(
-                samples=block.samples,
-                components=[c for c in block.components],
-                properties=block.properties,
-                values=torch.rand(block.values.shape),
-            )
-            new_blocks.append(new_block)
-        return TensorMap(
-            keys=tensor.keys,
-            blocks=new_blocks,
-        )
-    # Input is a TensorBlock, return a TensorBlock
-    elif isinstance(tensor, TensorBlock):
-        return TensorBlock(
-            samples=tensor.samples,
-            components=[c for c in tensor.components],
-            properties=tensor.properties,
-            values=torch.rand(tensor.values.shape),
-        )
-    # Input is a torch Tensor, return a torch Tensor
-    elif isinstance(tensor, torch.Tensor):
-        return torch.rand(tensor.shape)
-    else:
-        raise TypeError("must pass either a TensorMap, TensorBlock, or torch Tensor")
 
 
 # ===== tensors to numpy fxns
@@ -327,21 +291,6 @@ def searchable_labels(labels: Labels):
         components=[],
         properties=Labels(["p"], np.array([[0]], dtype=np.int32)),
     ).samples
-
-
-def labels_equal(a: Labels, b: Labels, correct_order: bool = True):
-    """
-    For 2 :py:class:`Labels` objects ``a`` and ``b``, returns true if they are
-    exactly equivalent in names and values. If ``correct_order=True`` (the
-    default), checks also that the order of the elements in the Labels is
-    exactly equivalent.
-    """
-    # They can only be equivalent if the same length
-    if len(a) != len(b):
-        return False
-    if not correct_order:
-        a, b = np.sort(a), np.sort(b)
-    return np.all(np.array(searchable_labels(a) == searchable_labels(b)))
 
 
 def labels_intersection(a: Labels, b: Labels):
@@ -711,64 +660,6 @@ def flatten_dict(d: dict) -> dict:
     else:
         result[()] = d
     return result
-
-
-# ===== feature standardization
-
-
-def get_invariant_means(tensor: TensorMap) -> TensorMap:
-    """
-    Calculates the mean of the invariant (l=0) blocks on the input `tensor`
-    using the `equistore.mean_over_samples` function. Returns the result in a
-    new TensorMap, whose number of block is equal to the number of invariant
-    blocks in `tensor`. Assumes `tensor` is a numpy-based TensorMap.
-    """
-    # Define the keys of the covariant blocks
-    keys_to_drop = tensor.keys[tensor.keys["spherical_harmonics_l"] != 0]
-
-    # Drop these blocks
-    inv_tensor = drop_blocks(tensor, keys=keys_to_drop)
-
-    # inv_keys = tensor.keys[tensor.keys["spherical_harmonics_l"] == 0]
-    # inv_tensor = TensorMap(keys=inv_keys, blocks=[tensor[k].copy() for k in inv_keys])
-
-    # Find the mean over sample for the invariant blocks
-    return equistore.mean_over_samples(
-        inv_tensor, samples_names=inv_tensor.sample_names
-    )
-
-
-def standardize_invariants(
-    tensor: TensorMap, invariant_means: TensorMap, reverse: bool = False
-) -> TensorMap:
-    """
-    Standardizes the invariant (l=0) blocks on the input `tensor` by subtracting
-    from each coefficient the mean of the coefficients belonging to that
-    feature. Returns a new TensorMap.
-
-    Must pass the TensorMap containing the means of the features,
-    `invariant_means`. If `reverse` is true, the mean is instead added back to
-    the coefficients of each feature. Assumes `tensor` and `invariant_means` are
-    numpy-based TensorMaps.
-    """
-    new_keys = tensor.keys
-    new_blocks = []
-    # Iterate over the invariant keys
-    for key in new_keys:
-        if key in invariant_means.keys:  # standardize
-            # Copy the block
-            new_block = tensor[key].copy()
-            # Manipulate values of copied block in place
-            for p in range(len(new_block.properties)):
-                if reverse:  # add the mean to the values
-                    new_block.values[..., p] += invariant_means[key].values[..., p]
-                else:  # subtract
-                    new_block.values[..., p] -= invariant_means[key].values[..., p]
-            new_blocks.append(new_block)
-        else:  # Don't standardize
-            new_blocks.append(tensor[key].copy())
-
-    return TensorMap(new_keys, new_blocks)
 
 
 def flatten_tensormap(tensor, backend: str) -> float:
