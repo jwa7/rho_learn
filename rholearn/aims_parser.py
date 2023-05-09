@@ -89,7 +89,7 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
             "tot_energy_eV": [],
         }
     }
-    # Open aims.out
+    # Open aims.out file
     with open(os.path.join(aims_output_dir, "aims.out"), "r") as f:
         # Read lines
         lines = f.readlines()
