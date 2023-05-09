@@ -731,6 +731,25 @@ def get_log_subset_sizes(
     )
     return subset_sizes
 
+def flatten_dict(d: dict) -> dict:
+    """
+    Takes a nested dict and flattens it into a single level dict.
+
+    Adapted from https://stackoverflow.com/a/66789625
+    """
+    result = {}
+    if isinstance(d, dict):
+        for k in d:
+            # Recursively flatten the nested dict
+            flattened_dict = flatten_dict(d[k])
+            for key, val in flattened_dict.items():
+                key = list(key)
+                key.insert(0, k)
+                result[tuple(key)] = val
+    else:
+        result[()] = d
+    return result
+
 
 # ===== feature standardization
 
