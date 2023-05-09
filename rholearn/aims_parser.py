@@ -2,6 +2,9 @@
 A module for generating FHI-AIMS input files and parsing output files, tailored
 to calculations of RI electron density coefficients, projections, and overlap
 matrices.
+
+Note that these parsers have been written to work with the AIMS version 221103
+and may not necessarily be compatible with older or newer versions.
 """
 import itertools
 import os
@@ -57,9 +60,106 @@ def generate_input_geometry_files(frames: List[ase.Atoms], save_dir: str):
 # ===== AIMS output file parsing =====
 
 
-def extract_basis_set_info(
-    frame: ase.Atoms, aims_output_dir: str
-) -> Tuple[dict, dict]:
+def extract_calculation_info(aims_output_dir: str) -> dict:
+    """
+    Extracts relevant information from the main AIMS output file "aims.out",
+    stored in the directory at absolute path ``aims_output_dir``.
+
+    Relevent information is returned in a dictionary, and may contain, but not
+    limited to:
+        - the max cpu time and wall clock time for the calculation
+        - the number of k-points requested in control.in, and those actually
+          used
+        - the number of auxiliary basis functions used in the RI fitting
+        - the number of SCF cycles run
+
+    :param aims_output_dir: a `str` of the absolute path to the directory
+        containing AIMS output files. In particular, this directory must contain
+        a file called "aims.out".
+
+    :returns: a `dict` of the relevant information extracted from the AIMS
+        output.
+    """
+    # Initialize a dict to store the extracted information
+    calc_info = {
+        "scf": {
+            "num_cycles": 0,
+            "converged": False,
+            "charge_density": [],
+            "tot_energy_eV": [],
+        }
+    }
+    # Open aims.out
+    with open(os.path.join(aims_output_dir, "aims.out"), "r") as f:
+        # Read lines
+        lines = f.readlines()
+
+        # Parse each line for relevant information
+        for line_i, line in enumerate(lines):
+            split = line.split()
+
+            # Net and non-zero number of real-space integration points
+            # Example: "| Net number of integration points:    49038"
+            if split[:6] == "| Net number of integration points:".split():
+                calc_info["num_int_points"] = {
+                    "net": int(split[6]),
+                    "non-zero": int(lines[line_i + 1].split()[7]),  # on next line
+                }
+
+            # Requested and actually used number of k points
+            # Example: "| k-points reduced from:        8 to        8"
+            if split[:4] == "| k-points reduced from:".split():
+                calc_info["k_pts"] = {
+                    "requested": int(split[4]),
+                    "actual": int(split[6]),
+                }
+
+            # Number of auxiliary basis functions after RI fitting.
+            # Example: "| Shrink_full_auxil_basis : there are totally 1001
+            # partial auxiliary wave functions."
+            if split[:6] == "| Shrink_full_auxil_basis : there are totally".split():
+                calc_info["num_abfs"] = int(split[6])
+
+            # SCF convergence criteria
+            # Example:
+            # Self-consistency convergence accuracy:
+            # | Change of charge density      :  0.9587E-07
+            # | Change of unmixed KS density  :  0.2906E-06
+            # | Change of sum of eigenvalues  : -0.2053E-05 eV
+            # | Change of total energy        : -0.1160E-11 eV
+            if split[:6] == "| Change of charge density :".split():
+                calc_info["scf"]["charge_density"].append(float(split[6]))
+            if split[:6] == "| Change of total energy :".split():
+                calc_info["scf"]["tot_energy_eV"].append(float(split[6]))
+
+            # SCF converged or not, and number of SCF cycles run
+            if "Self-consistency cycle converged." in line:
+                calc_info["scf"]["converged"] = True
+
+            # Number of SCF cycles run
+            # Example:
+            # Computational steps:
+            # | Number of self-consistency cycles          :           21
+            # | Number of SCF (re)initializations          :            1
+            if split[:6] == "| Number of self-consistency cycles          :".split():
+                calc_info["scf"]["num_cycles"] = int(split[6])
+
+            # Extract the total time for the calculation
+            # Example:
+            # Detailed time accounting                     :  max(cpu_time)    wall_clock(cpu1)
+            # | Total time                                  :       28.746 s          28.901 s
+            # | Preparation time                            :        0.090 s           0.173 s
+            # | Boundary condition initalization            :        0.031 s           0.031 s
+            if split[:4] == "| Total time :".split():
+                calc_info["time"] = {
+                    "max(cpu_time)": float(split[4]),
+                    "wall_clock(cpu1)": float(split[6]),
+                }
+
+    return calc_info
+
+
+def extract_basis_set_info(frame: ase.Atoms, aims_output_dir: str) -> Tuple[dict, dict]:
     """
     Takes an AIMS basis info file and converts it into a dictionary of the lmax
     and nmax values for each atom type in the structure.
@@ -308,7 +408,7 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
     converged electron density. A returned value of 1 corresponds to an error of
     100%. The files required for this calculation, that must be present in
     `aims_output_dir` are as follows:
-    
+
         - rho_scf.out: SCF converged electron density.
         - rho_rebuilt_ri.out: RI fitted electron density.
         - partition_tab.out: the tabulated partition function.
@@ -322,9 +422,7 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
     """
     # Check various directories and paths exist
     if not os.path.isdir(aims_output_dir):
-        raise NotADirectoryError(
-            f"The directory {aims_output_dir} does not exist."
-        )
+        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
     if not os.path.exists(os.path.join(aims_output_dir, "rho_scf.out")):
         raise FileNotFoundError(
             f"The file rho_scf.out does not exist in {aims_output_dir}."
@@ -337,7 +435,7 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
         raise FileNotFoundError(
             f"The file partition_tab.out does not exist in {aims_output_dir}."
         )
-        
+
     # Load the real-space density data. Each row corresponds to x, y, z coordinates
     # followed by the value of the density in the 3rd column. We are only
     # interested
@@ -345,7 +443,7 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
     scf_rho = np.loadtxt(os.path.join(aims_output_dir, "rho_scf.out"))
     # 2) RI fitted electron density
     ri_rho = np.loadtxt(os.path.join(aims_output_dir, "rho_rebuilt_ri.out"))
-    # 3) Partitioning table
+    # 3) Tabulated partition function
     partition = np.loadtxt(os.path.join(aims_output_dir, "partition_tab.out"))
 
     # Check the coordinates on each row are exactly equivalent
