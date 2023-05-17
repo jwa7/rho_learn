@@ -140,7 +140,7 @@ def lambda_feature_vector(
     if save_dir is not None:  # Write hypers and features to file
         with open(os.path.join(save_dir, f"hypers_{calc}.pickle"), "wb") as handle:
             pickle.dump(hypers, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        equistore.save(os.path.join(save_dir, f"range_{calc}.npz"), acdc_nu2)
+        equistore.save(os.path.join(save_dir, f"feat_vect_{calc}.npz"), acdc_nu2)
 
     return acdc_nu2
 
