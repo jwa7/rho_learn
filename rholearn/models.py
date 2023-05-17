@@ -4,10 +4,8 @@ import numpy as np
 import torch
 
 from equistore import Labels, TensorBlock, TensorMap
-from rholearn import utils
 
-# TODO:
-# - allow option to control GELU approximation
+
 
 VALID_MODEL_TYPES = ["linear", "nonlinear"]
 VALID_ACTIVATION_FNS = ["Tanh", "GELU", "SiLU"]

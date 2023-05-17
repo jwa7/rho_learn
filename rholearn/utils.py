@@ -9,184 +9,8 @@ import torch
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
-# TODO:
-# - Remove functions once in equistore:
-#       - searchable_labels
-#       - tensor_to_torch/numpy, block_to_torch/numpy
 
-# ===== tensors to torch fxns
-
-
-def tensors_to_torch(
-    tensors: List[TensorMap],
-    requires_grad: bool,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> list:
-    """
-    Takes a list of TensorMap objects and returns a new list of TensorMap
-    objects where the values arrays of each block have been converted to
-    torch.tensor objects of specified dtype (recommended and default
-    torch.float64). If ``requires_grad=True``, torch's autograd algorithm will
-    record operations on the values tensors when they are executed.
-
-    :param tensors: a ``list`` of ``TensorMaps`` whose block values should be
-        converted to torch.
-    :param requires_grad: bool, whether or not to torch's autograd should record
-        operations on this tensor.
-    :param dtype: ``torch.dtype``, the base dtype of the resulting torch tensor,
-        i.e. ``torch.float64``.
-    :param device: ``torch.device``, the device on which the resulting torch
-        tensor should be stored, i.e. ``torch.device("cpu")``.
-    """
-
-    return [
-        tensor_to_torch(
-            tensor,
-            requires_grad=requires_grad,
-            dtype=dtype,
-            device=device,
-        )
-        for tensor in tensors
-    ]
-
-
-def tensor_to_torch(
-    tensor: TensorMap,
-    requires_grad: bool,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> TensorMap:
-    """
-    Creates a new :py:class:`TensorMap` where block values are
-    PyTorch :py:class:`torch.tensor` objects. Assumes the block
-    values are already as a type that is convertible to a
-    :py:class:`torch.tensor`, such as a numpy array or RustNDArray.
-    The resulting torch tensor dtypes are enforced as
-    :py:class:`torch.float64`.
-
-    :param tensor: input :py:class:`TensorMap`, with block values
-        as ndarrays.
-    :param requires_grad: bool, whether or not to torch's autograd should record
-        operations on this tensor.
-    :param dtype: ``torch.dtype``, the base dtype of the resulting torch tensor,
-        i.e. ``torch.float64``.
-    :param device: ``torch.device``, the device on which the resulting torch
-        tensor should be stored, i.e. ``torch.device("cpu")``.
-
-    :return: a :py:class:`TensorMap` where the values tensors of each
-        block are now of type :py:class:`torch.tensor`.
-    """
-
-    return TensorMap(
-        keys=tensor.keys,
-        blocks=[
-            block_to_torch(
-                block,
-                requires_grad=requires_grad,
-                dtype=dtype,
-                device=device,
-            )
-            for _, block in tensor
-        ],
-    )
-
-
-def block_to_torch(
-    block: TensorBlock,
-    requires_grad: bool,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> TensorBlock:
-    """
-    Creates a new :py:class:`TensorBlock` where block values are PyTorch
-    :py:class:`torch.tensor` objects. Assumes the block values are already as a
-    type that is convertible to a :py:class:`torch.tensor`, such as a numpy
-    array or RustNDArray. The resulting torch tensor dtypes are enforced as
-    :py:class:`torch.float64`.
-
-    :param block: input :py:class:`TensorBlock`, with block values as ndarrays.
-    :param requires_grad: bool, whether or not to torch's autograd should record
-        operations on this tensor.
-    :param dtype: ``torch.dtype``, the base dtype of the resulting torch tensor,
-        i.e. ``torch.float64``.
-    :param device: ``torch.device``, the device on which the resulting torch
-        tensor should be stored, i.e. ``torch.device("cpu")``.
-
-    :return: a :py:class:`TensorBlock` whose values tensor is now of type
-        :py:class:`torch.tensor`.
-    """
-    if isinstance(block.values, torch.Tensor):
-        return block.copy()
-
-    # Create new block, with the values tensor converted to a torch tensor.
-    new_block = TensorBlock(
-        values=torch.tensor(block.values, requires_grad=requires_grad, dtype=dtype).to(
-            device.type
-        ),
-        samples=block.samples,
-        components=block.components,
-        properties=block.properties,
-    )
-
-    # Add gradients to each block, again where the values tensor are torch
-    # tensors.
-    for parameter, gradient in block.gradients():
-        new_block.add_gradient(
-            parameter,
-            torch.tensor(gradient.data, requires_grad=requires_grad, dtype=dtype).to(
-                device.type
-            ),
-            gradient.samples,
-            gradient.components,
-        )
-
-    return new_block
-
-
-# ===== tensors to numpy fxns
-
-
-def tensor_to_numpy(tensor: TensorMap) -> TensorMap:
-    """
-    Takes a TensorMap object whose block values are torch.tensor objects and
-    converts them to numpy arrays of dtype np.float64. Returns a new TensorMap
-    object.
-    """
-    return TensorMap(
-        keys=tensor.keys,
-        blocks=[block_to_numpy(block) for _, block in tensor],
-    )
-
-
-def block_to_numpy(block: TensorBlock) -> TensorBlock:
-    """
-    Takes a TensorBlock object whose values are torch.tensor objects and
-    converts them to numpy arrays of dtype np.float64. Returns a new TensorBlock
-    object.
-    """
-    if isinstance(block.values, np.ndarray):
-        return block.copy()
-
-    # Create new block, with the values tensor converted to a torch tensor.
-    new_block = TensorBlock(
-        values=np.array(block.values.detach().numpy(), dtype=np.float64),
-        samples=block.samples,
-        components=block.components,
-        properties=block.properties,
-    )
-
-    # Add gradients to each block, again where the values tensor are torch
-    # tensors.
-    for parameter, gradient in block.gradients():
-        new_block.add_gradient(
-            parameter,
-            np.array(gradient.data.detach().numpy(), dtype=np.float64),
-            gradient.samples,
-            gradient.components,
-        )
-
-    return new_block
+# ===== tensors to contiguous
 
 
 def make_contiguous_numpy(tensor: TensorMap) -> TensorMap:
@@ -280,27 +104,11 @@ def key_tuple_to_npvoid(key: tuple, names: List[str]) -> np.void:
 # ===== fxns for equistore Labels objects comparisons
 
 
-def searchable_labels(labels: Labels):
-    """
-    Returns the input Labels object but after being used to construct a
-    TensorBlock, so that look-ups can be performed.
-    """
-    return TensorBlock(
-        values=np.full((len(labels), 1), 0.0),
-        samples=labels,
-        components=[],
-        properties=Labels(["p"], np.array([[0]], dtype=np.int32)),
-    ).samples
-
-
 def labels_intersection(a: Labels, b: Labels):
     """
     For 2 :py:class:`Labels` objects ``a`` and ``b``, returns a new Labels
     object of the indices that they share, i.e. the intersection.
     """
-    # Create dummy TensorBlocks with a and b as the samples labels
-    a = searchable_labels(a)
-    b = searchable_labels(b)
     # Find the intersection
     intersection_idxs = [i for i in [a.position(b_i) for b_i in b] if i is not None]
     return a[intersection_idxs]
@@ -619,28 +427,6 @@ def sort_tensormap(tensor: TensorMap) -> TensorMap:
 
 # ===== other utility functions
 
-
-def get_log_subset_sizes(
-    n_max: int,
-    n_subsets: int,
-    base: Optional[float] = np.e,
-) -> np.array:
-    """
-    Returns an ``n_subsets`` length array of subset sizes equally spaced along a
-    log of specified ``base`` (default base e) scale from 0 up to ``n_max``.
-    Elements of the returned array are rounded to integer values. The final
-    element of the returned array may be less than ``n_max``.
-    """
-    # Generate subset sizes evenly spaced on a log (base e) scale
-    subset_sizes = np.logspace(
-        np.log(n_max / n_subsets),
-        np.log(n_max),
-        num=n_subsets,
-        base=base,
-        endpoint=True,
-        dtype=int,
-    )
-    return subset_sizes
 
 def flatten_dict(d: dict) -> dict:
     """

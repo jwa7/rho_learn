@@ -11,7 +11,7 @@ import mpltex
 import equistore
 from equistore import TensorMap
 
-from rholearn import error, utils
+from rholearn import error
 
 
 def loss_vs_epoch(

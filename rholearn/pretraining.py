@@ -7,10 +7,9 @@ import torch
 
 import equistore
 from equistore import Labels, TensorMap
-
 from equisolve.utils import split_data
 
-from rholearn import io, loss, models, pretraining, utils
+from rholearn import io, features, loss, models, pretraining
 
 
 def partition_data(input_path: str, output_path: str, data_settings: dict):
@@ -116,7 +115,7 @@ def partition_data(input_path: str, output_path: str, data_settings: dict):
         [[in_train, in_test], [out_train, out_test]] = tensors
 
         # Check that the samples and components indices are exactly equal
-        for (a, b) in [(in_train, out_train), (in_test, out_test)]:
+        for a, b in [(in_train, out_train), (in_test, out_test)]:
             assert equistore.equal_metadata(a, b, check=["samples", "components"])
 
         # Define the filenames to save the structure indices of the partitioned data
@@ -135,7 +134,7 @@ def partition_data(input_path: str, output_path: str, data_settings: dict):
         [[in_train, in_test, in_val], [out_train, out_test, out_val]] = tensors
 
         # Check that the samples and components indices are exactly equal
-        for (a, b) in [(in_train, out_train), (in_test, out_test), (in_val, out_val)]:
+        for a, b in [(in_train, out_train), (in_test, out_test), (in_val, out_val)]:
             assert equistore.equal_metadata(a, b, check=["samples", "components"])
 
         # Define the filenames to save the structure indices of the partitioned data
@@ -167,7 +166,7 @@ def partition_data(input_path: str, output_path: str, data_settings: dict):
     train_structure_idxs = grouped_indices[0]
 
     # Get train subset sizes (evenly spaced on log base e scale) and write to file
-    subset_sizes = utils.get_log_subset_sizes(
+    subset_sizes = get_log_subset_sizes(
         n_max=len(train_structure_idxs),
         n_subsets=data_settings["n_subsets"],
         base=10,
@@ -271,7 +270,9 @@ def construct_torch_objects(
     print("Building and saving torch objects in directory:")
     for exercise_i in range(data_settings["n_exercises"]):
         # Create a dir for this exercise
-        io.check_or_create_dir(os.path.join(ml_settings["run_dir"], f"exercise_{exercise_i}"))
+        io.check_or_create_dir(
+            os.path.join(ml_settings["run_dir"], f"exercise_{exercise_i}")
+        )
         for subset_j in range(data_settings["n_subsets"]):
             subset_rel_dir = os.path.join(
                 f"exercise_{exercise_i}", f"subset_{subset_j}"
@@ -408,18 +409,18 @@ def load_training_objects(
     # Standardize the invariant blocks of out_train and out_test
     if ml_settings["training"]["standardize_invariant_features"]:
         # Calculate the means of the invariant features
-        train_inv_means = utils.get_invariant_means(out_train)
+        train_inv_means = features.get_invariant_means(out_train)
         # Standardize the train and test data with the train means
-        out_train = utils.standardize_invariants(out_train, train_inv_means)
-        out_test = utils.standardize_invariants(out_test, train_inv_means)
+        out_train = features.standardize_invariants(out_train, train_inv_means)
+        out_test = features.standardize_invariants(out_test, train_inv_means)
         # Save the invariant means to file
         equistore.save(os.path.join(train_data_dir, "inv_means.npz"), train_inv_means)
 
     # Convert the tensors to torch
-    in_train = utils.tensor_to_torch(in_train, **ml_settings["torch"])
-    in_test = utils.tensor_to_torch(in_test, **ml_settings["torch"])
-    out_train = utils.tensor_to_torch(out_train, **ml_settings["torch"])
-    out_test = utils.tensor_to_torch(out_test, **ml_settings["torch"])
+    in_train = equistore.to(in_train, backend="torch", **ml_settings["torch"])
+    in_test = equistore.to(in_test, backend="torch", **ml_settings["torch"])
+    out_train = equistore.to(out_train, backend="torch", **ml_settings["torch"])
+    out_test = equistore.to(out_test, backend="torch", **ml_settings["torch"])
 
     # Load model
     model_path = (
@@ -465,9 +466,7 @@ def load_training_objects(
                 coulomb_path, output_like=out_train, **ml_settings["torch"]
             )
             # Build test loss fn
-            out_test = equistore.load(
-                os.path.join(data_dir, "out_test.pt")
-            )
+            out_test = equistore.load(os.path.join(data_dir, "out_test.pt"))
             loss_fn_test = _init_coulomb_loss_fn(
                 coulomb_path, output_like=out_test, **ml_settings["torch"]
             )
@@ -496,6 +495,29 @@ def load_training_objects(
         )
 
     return [in_train, in_test, out_train, out_test], model, loss_fn, optimizer
+
+
+def get_log_subset_sizes(
+    n_max: int,
+    n_subsets: int,
+    base: Optional[float] = 10.0,
+) -> np.array:
+    """
+    Returns an ``n_subsets`` length array of subset sizes equally spaced along a
+    log of specified ``base`` (default base 10) scale from 0 up to ``n_max``.
+    Elements of the returned array are rounded to integer values. The final
+    element of the returned array may be less than ``n_max``.
+    """
+    # Generate subset sizes evenly spaced on a log (base e) scale
+    subset_sizes = np.logspace(
+        np.log(n_max / n_subsets),
+        np.log(n_max),
+        num=n_subsets,
+        base=base,
+        endpoint=True,
+        dtype=int,
+    )
+    return subset_sizes
 
 
 def _init_coulomb_loss_fn(

@@ -189,9 +189,11 @@ class CoulombLoss(torch.nn.Module):
 
         # The Labels object needs to be associated with a TensorBlock so they
         # are searchable
-        return utils.searchable_labels(
-            Labels(names=coulomb_matrices.keys.names, values=np.array(coulomb_keys))
-        )
+        # TODO: remove this once checked OK
+        # return utils.searchable_labels(
+        #     Labels(names=coulomb_matrices.keys.names, values=np.array(coulomb_keys))
+        # )
+        return Labels(names=coulomb_matrices.keys.names, values=np.array(coulomb_keys))
 
     @staticmethod
     def get_output_samples(output_like: TensorMap) -> dict:
@@ -217,7 +219,6 @@ class CoulombLoss(torch.nn.Module):
         """
         processed_coulomb = {}
         for key in coulomb_keys:
-
             # Unpack l and a indices from the key
             (l1, l2, a1, a2) = key
 
@@ -361,4 +362,3 @@ class CoulombLoss(torch.nn.Module):
                 loss += 2 * block_loss
 
         return loss
-

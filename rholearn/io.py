@@ -67,8 +67,12 @@ def load_tensormap_to_torch(
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"file at path {path} does not exist")
-    return utils.tensor_to_torch(
-        equistore.load(path), requires_grad=requires_grad, dtype=dtype, device=device
+    return equistore.to(
+        equistore.load(path),
+        backend="torch",
+        requires_grad=requires_grad,
+        dtype=dtype,
+        device=device,
     )
 
 
@@ -91,7 +95,6 @@ def save_torch_object(torch_obj: torch.nn.Module, path: str, torch_obj_str: str)
     # set the new attribute of the torch object
     old_attr_dicts = {}
     for attr in attr_names:
-
         # Get the attr if it exists
         try:
             old_attr_dict = getattr(torch_obj, attr)
@@ -142,11 +145,12 @@ def load_torch_object(
     attr_names = MODEL_DICT_ATTRS if torch_obj_str == "model" else LOSS_DICT_ATTRS
 
     # Convert the appropriate keys Labels object to be searchable
-    if torch_obj_str == "model":  # only the 'keys' attribute
-        torch_obj.keys = utils.searchable_labels(torch_obj.keys)
-    else:  # both the 'coulomb_keys' and 'output_keys' attributes
-        torch_obj.coulomb_keys = utils.searchable_labels(torch_obj.coulomb_keys)
-        torch_obj.output_keys = utils.searchable_labels(torch_obj.output_keys)
+    # TODO: remove this once checked OK
+    # if torch_obj_str == "model":  # only the 'keys' attribute
+    #     torch_obj.keys = utils.searchable_labels(torch_obj.keys)
+    # else:  # both the 'coulomb_keys' and 'output_keys' attributes
+    #     torch_obj.coulomb_keys = utils.searchable_labels(torch_obj.coulomb_keys)
+    #     torch_obj.output_keys = utils.searchable_labels(torch_obj.output_keys)
 
     # Iterate over the dict attributes, get them from the torch object, modify
     # the keys, and reset the attributes
