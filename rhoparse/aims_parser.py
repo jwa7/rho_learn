@@ -17,8 +17,6 @@ import numpy as np
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
-from rholearn import utils
-
 
 # ===== AIMS input file generation =====
 
@@ -85,8 +83,8 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
         "scf": {
             "num_cycles": 0,
             "converged": False,
-            "charge_density": [],
-            "tot_energy_eV": [],
+            "d_charge_density": [],
+            "d_tot_energy_eV": [],
         }
     }
     # Open aims.out file
@@ -128,9 +126,9 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
             # | Change of sum of eigenvalues  : -0.2053E-05 eV
             # | Change of total energy        : -0.1160E-11 eV
             if split[:6] == "| Change of charge density :".split():
-                calc_info["scf"]["charge_density"].append(float(split[6]))
+                calc_info["scf"]["d_charge_density"].append(float(split[6]))
             if split[:6] == "| Change of total energy :".split():
-                calc_info["scf"]["tot_energy_eV"].append(float(split[6]))
+                calc_info["scf"]["d_tot_energy_eV"].append(float(split[6]))
 
             # SCF converged or not, and number of SCF cycles run
             if "Self-consistency cycle converged." in line:
@@ -143,6 +141,15 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
             # | Number of SCF (re)initializations          :            1
             if split[:6] == "| Number of self-consistency cycles          :".split():
                 calc_info["scf"]["num_cycles"] = int(split[6])
+
+            # Final total energy
+            # Example:
+            # | Total energy of the DFT / Hartree-Fock s.c.f. calculation : -2078.592149198 eV
+            if (
+                split[:11]
+                == "| Total energy of the DFT / Hartree-Fock s.c.f. calculation :".split()
+            ):
+                calc_info["tot_energy_eV"] = float(split[11])
 
             # Extract the total time for the calculation
             # Example:
@@ -319,9 +326,6 @@ def process_aux_basis_func_data(
     # Load coefficients, projections, and overlap matrix
     if not os.path.exists(aims_output_dir):
         raise ValueError(f"`aims_output_dir` {aims_output_dir} does not exist.")
-    if save_dir is not None:
-        if not os.path.exists(save_dir):
-            raise ValueError(f"`save_dir` {save_dir} does not exist.")
 
     coeffs = np.loadtxt(os.path.join(aims_output_dir, "ri_restart_coeffs.out"))
     projs = np.loadtxt(os.path.join(aims_output_dir, "ri_projections.out"))
@@ -389,6 +393,8 @@ def process_aux_basis_func_data(
 
     # Save files if requested
     if save_dir is not None:
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
         np.save(os.path.join(save_dir, "coeffs.npy"), coeffs)
         np.save(os.path.join(save_dir, "projs.npy"), projs)
         np.save(os.path.join(save_dir, "overlap.npy"), overlap)

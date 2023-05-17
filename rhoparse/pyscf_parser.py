@@ -11,7 +11,7 @@ import pyscf.dft as dft
 import pyscf.pbc.dft as pbc_dft
 import pyscf.pbc.tools.pyscf_ase as pyscf_ase
 
-from rholearn import basis, translator
+import .translator
 
 
 # ===== PySCF input file generation =====

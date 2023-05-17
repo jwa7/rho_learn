@@ -255,7 +255,7 @@ def coeff_vector_to_tensormap(
     # Check values of the coefficients, repeating the test `tests` number of times.
     for _ in range(tests):
         if not test_coeff_vector_conversion(
-            frame, structure_idx, lmax, nmax, coeffs, tensor
+            frame, lmax, nmax, coeffs, tensor, structure_idx=structure_idx,
         ):
             raise ValueError("Conversion test failed.")
 
@@ -530,7 +530,7 @@ def overlap_matrix_to_tensormap(
 
     for _ in range(tests):
         assert test_overlap_matrix_conversion(
-            frame, structure_idx, lmax, nmax, overlap, tensor
+            frame, lmax, nmax, overlap, tensor, structure_idx=structure_idx,
         )
 
     return tensor
