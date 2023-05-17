@@ -65,8 +65,12 @@ def predict_density_from_xyz(
     input = equistore.drop_blocks(input, keys=np.setdiff1d(input.keys, model.keys))
 
     # Convert the input TensorMap to torch
-    input = utils.tensor_to_torch(
-        input, requires_grad=False, dtype=torch.float64, device=torch.device("cpu")
+    input = equistore.to(
+        input,
+        backend="torch",
+        requires_grad=False,
+        dtype=torch.float64,
+        device=torch.device("cpu"),
     )
 
     return predict_density_from_mol(input, mol, model_path, inv_means_path)
@@ -108,8 +112,8 @@ def predict_density_from_mol(
     # against electron densities with standardized invariants
     if inv_means_path is not None:
         inv_means = equistore.load(inv_means_path)
-        out_pred = utils.standardize_invariants(
-            tensor=utils.tensor_to_numpy(out_pred),
+        out_pred = features.standardize_invariants(
+            tensor=equistore.to(out_pred, backend="numpy"),
             invariant_means=inv_means,
             reverse=True,
         )
@@ -121,7 +125,9 @@ def predict_density_from_mol(
     # here to fit LCMD naming convention
     vect_coeffs = qstack.equio.tensormap_to_vector(
         mol,
-        utils.rename_tensor(tmp_out_pred, keys_names=["spherical_harmonics_l", "element"]),
+        utils.rename_tensor(
+            tmp_out_pred, keys_names=["spherical_harmonics_l", "element"]
+        ),
     )
 
     return out_pred, vect_coeffs
