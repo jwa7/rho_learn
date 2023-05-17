@@ -1,6 +1,6 @@
 """
-Module for translating coefficient (or projection) vectors and overlap matrices
-from numpy ndarrays to equistore TensorMaps.
+Module for converting coefficient (or projection) vectors and overlap matrices
+between numpy ndarrays and equistore TensorMap formats.
 """
 import itertools
 from typing import Optional
@@ -108,7 +108,10 @@ def get_flat_index(
     return atom_offset + l_offset + n_offset + m_offset
 
 
-def coeff_vector_to_tensormap(
+# ===== convert numpy to equistore format =====
+
+
+def coeff_vector_ndarray_to_tensormap(
     frame: ase.Atoms,
     coeffs: np.ndarray,
     lmax: dict,
@@ -255,14 +258,19 @@ def coeff_vector_to_tensormap(
     # Check values of the coefficients, repeating the test `tests` number of times.
     for _ in range(tests):
         if not test_coeff_vector_conversion(
-            frame, lmax, nmax, coeffs, tensor, structure_idx=structure_idx,
+            frame,
+            lmax,
+            nmax,
+            coeffs,
+            tensor,
+            structure_idx=structure_idx,
         ):
             raise ValueError("Conversion test failed.")
 
     return tensor
 
 
-def overlap_matrix_to_tensormap(
+def overlap_matrix_ndarray_to_tensormap(
     frame: ase.Atoms,
     overlap: np.ndarray,
     lmax: dict,
@@ -530,7 +538,12 @@ def overlap_matrix_to_tensormap(
 
     for _ in range(tests):
         assert test_overlap_matrix_conversion(
-            frame, lmax, nmax, overlap, tensor, structure_idx=structure_idx,
+            frame,
+            lmax,
+            nmax,
+            overlap,
+            tensor,
+            structure_idx=structure_idx,
         )
 
     return tensor
@@ -693,6 +706,31 @@ def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
         )
 
     return TensorMap(keys=keys, blocks=blocks)
+
+
+# ===== convert equistore to numpy format =====
+
+
+def coeff_vector_tensormap_to_ndarray(
+    frame: ase.Atoms,
+    coeffs: TensorMap,
+    lmax: dict,
+    nmax: dict,
+    structure_idx: Optional[int] = None,
+    tests: Optional[int] = 0,
+) -> np.ndarray:
+    """ """
+
+
+def overlap_matrix_tensormap_to_ndarray(
+    frame: ase.Atoms,
+    overlap: TensorMap,
+    lmax: dict,
+    nmax: dict,
+    structure_idx: Optional[int] = None,
+    tests: int = 0,
+) -> TensorMap:
+    """ """
 
 
 # ===== Functions to test conversions etc. =====

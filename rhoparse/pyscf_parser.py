@@ -11,7 +11,7 @@ import pyscf.dft as dft
 import pyscf.pbc.dft as pbc_dft
 import pyscf.pbc.tools.pyscf_ase as pyscf_ase
 
-from rhoparse import translator
+from rhoparse import convert
 
 
 # ===== PySCF input file generation =====
@@ -239,7 +239,7 @@ def reorder_l1_coeffs_vector(
             # Find the flat index of where the m = -1 coefficient for this atom i and
             # radial channel n **should be**, as this defines the start index of
             # the irreducible spherical component (ISC) vector of length 3
-            isc_idx = translator.get_flat_index(
+            isc_idx = convert.get_flat_index(
                 symbols, lmax, nmax, i=i, l=1, n=n, m=-1
             )
 
@@ -282,7 +282,7 @@ def reorder_l1_overlap_matrix(
             # Find the flat index of where the m = -1 coefficient for this atom i and
             # radial channel n **should be**, as this defines the start index of
             # the irreducible spherical component (ISC) vector of length 3
-            isc_idx = translator.get_flat_index(
+            isc_idx = convert.get_flat_index(
                 symbols, lmax, nmax, i=i, l=1, n=n, m=-1
             )
 
