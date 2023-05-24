@@ -555,17 +555,36 @@ def overlap_matrix_ndarray_to_tensormap(
 def overlap_is_symmetric(tensor: TensorMap) -> bool:
     """
     Returns true if the overlap matrices stored in TensorMap form are symmetric,
-    false otherwise. Assumes the following data strutcure of the TensorMap:
-    - keys: spherical_harmonics_l1, spherical_harmonics_l2, species_center_1,
-    species_center_2
-    - blocks: samples: structure, center_1, center_2
-              components: [spherical_harmonics_m1, spherical_harmonics_m2]
-              properties: n1, n2
-    """
-    keys = tensor.keys
-    checked = set()
+    false otherwise.
 
-    # Iterate over the keys
+    This class assumes that the overlap-type matrices are stored in equistore
+    TensorMap format and have the following data structure:
+
+        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
+          'species_center_1', 'species_center_2')
+        - sample names: either ('structure', 'center_1', 'center_2') or
+          ('center_1', 'center_2')
+        - component names: [('spherical_harmonics_m1',),
+          ('spherical_harmonics_m2',)]
+        - property names: ('n1', 'n2')
+
+    :param tensor: the overlap matrix in TensorMap format. Will be checked for
+        symmetry.
+    """
+    # Get the key names and check they have the assumed form
+    keys = tensor.keys
+    assert np.all(
+        keys.names
+        == (
+            "spherical_harmonics_l1",
+            "spherical_harmonics_l2",
+            "species_center_1",
+            "species_center_2",
+        )
+    )
+
+    # Iterate over the blocks
+    checked = set()  # for storing the keys that have been checked
     for key in keys:
         l1, l2, a1, a2 = key
         if (l1, l2, a1, a2) in checked or (l2, l1, a2, a1) in checked:
@@ -596,13 +615,72 @@ def overlap_is_symmetric(tensor: TensorMap) -> bool:
 
 def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool:
     """
-    Returns true if the overlap matrices stored in the input blocks are
-    symmetric, false otherwise.
+    Returns true if the passed blocks are symmetric with respect to eachother,
+    false otherwise. The relevant data of one of the blocks is permuted and
+    checked for exact equivalence with the other block.
+
+    Assumes both blocks have the following data structure:
+
+        - sample names: either ('structure', 'center_1', 'center_2') or
+          ('center_1', 'center_2')
+        - component names: [('spherical_harmonics_m1',),
+          ('spherical_harmonics_m2',)]
+        - property names: ('n1', 'n2')
+
+    If symmetric, the data tensor of ``block2`` should be exactly equivalent to
+    that of ``block2`` after permuting:
+
+        - the atom-center pairs in the samples, i.e. 'center_1' with 'center_2'.
+        - the spherical harmonics components *axes* (as these exist on separate
+          component axes, not in the same one as with samples/properties), i.e.
+          'spherical_harmonics_m1' with 'spherical_harmonics_m2'.
+        - the radial channels in the properties, i.e. 'n1' with 'n2'.
     """
-    # Create a samples filter for how the samples map to eachother between blocks
-    samples_filter = [
-        block2.samples.position((A, i2, i1)) for [A, i1, i2] in block1.samples
-    ]
+    # Check the samples names and determine whether or not the structure index
+    # is included
+    if block1.samples.names == (
+        "structure",
+        "center_1",
+        "center_2",
+    ) and block2.samples.names == ("structure", "center_1", "center_2"):
+        structure_idx_present = True
+    elif block1.samples.names == ("center_1", "center_2") and block2.samples.names == (
+        "center_1",
+        "center_2",
+    ):
+        structure_idx_present = False
+    else:
+        raise ValueError(
+            "the sample names of both blocks must be either ('structure', 'center_1', 'center_2')"
+            " or ('center_1', 'center_2')"
+        )
+    # Check the component names
+    for block in [block1, block2]:
+        if not (
+            np.all(block.components[0].names == ("spherical_harmonics_m1",))
+            and np.all(block.components[1].names == ("spherical_harmonics_m2",))
+        ):
+            raise ValueError(
+                "the component names of both blocks must be [('spherical_harmonics_m1',),"
+                " ('spherical_harmonics_m2',)]"
+            )
+    # Check the property names
+    if not (
+        np.all(block1.properties.names == ("n1", "n2"))
+        and np.all(block2.properties.names == ("n1", "n2"))
+    ):
+        raise ValueError("the property names of both blocks must be ('n1', 'n2')")
+
+    # Create a samples filter for how the samples map to eachother between
+    # blocks
+    if structure_idx_present:
+        samples_filter = [
+            block2.samples.position((A, i2, i1)) for [A, i1, i2] in block1.samples
+        ]
+    else:
+        samples_filter = [
+            block2.samples.position((i2, i1)) for [i1, i2] in block1.samples
+        ]
     # Create a properties filter for how the properties map to eachother between
     # blocks
     properties_filter = [
@@ -613,7 +691,7 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
         block2.values[samples_filter][..., properties_filter], 1, 2
     )
 
-    return np.all(block1.values == reordered_block2)
+    return np.allclose(block1.values, reordered_block2)
 
 
 def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
@@ -623,7 +701,17 @@ def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     a2), and returns a new TensorMap where off-diagonal blocks are dropped, such
     that the new TensorMap has keys with l1 <= l2 and a1 <= a2.
     """
+    # Get the key names and check they have the assumed form
     keys = tensor.keys
+    assert np.all(
+        keys.names
+        == (
+            "spherical_harmonics_l1",
+            "spherical_harmonics_l2",
+            "species_center_1",
+            "species_center_2",
+        )
+    )
 
     # Define a filter for the keys *TO DROP*
     keys_to_drop_filter = []
@@ -649,14 +737,20 @@ def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     return new_tensor
 
 
-def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
+def drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
-    Given an input TensorMap with keys (l1, l2, a1, a2), returns a new TensorMap
-    where diagonal blocks (i.e. l1 = l2, a1 = a2) have redundant off-diagonal
-    atom pairs from the samples dropped. For instance, the samples must have the
-    integer form (A, i1, i2), where i1 and i2 correspond to the atom centers 1
-    and 2 repsectively. Only samples where i1 <= i2 are kept.
+    Returns a new TensorMap where redundant atom center pairs from diagonal
+    blocks have been dropped. In the returned TensorMap, diagonal blocks will
+    only have samples with atom center pairs with i1 <= i2, where i1 corresponds
+    to the index of 'center_1', and i2 to 'center_2'.
+
+    The input TensorMap is assumed to have key names ('spherical_harmonics_l1',
+    'spherical_harmonics_l2', 'species_center_1', 'species_center_2'). Diagonal
+    blocks are ones where l1 == l2 and a1 == a2. The sample names are also
+    assumed to be ('structure', 'center_1', 'center_2') or ('center_1',
+    'center_2').
     """
+    # Get the key names and check they have the assumed form
     keys = tensor.keys
     assert np.all(
         keys.names
@@ -667,6 +761,18 @@ def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
             "species_center_2",
         )
     )
+    # Check the form of the sample names
+    if np.all(tensor.sample_names == ("structure", "center_1", "center_2")):
+        structure_idx_present = True
+    elif np.all(tensor.sample_names == ("center_1", "center_2")):
+        structure_idx_present = False
+    else:
+        raise ValueError(
+            "``tensor`` sample names must be ('structure', 'center_1', 'center_2')"
+            " or ('center_1', 'center_2')"
+        )
+
+    # Now iterate over blocks. Manipulate diagonal blocks only.
     blocks = []
     for key in keys:
         # Unpack the key
@@ -683,7 +789,12 @@ def drop_redundant_samples_diagonal_blocks(tensor: TensorMap) -> TensorMap:
         # Create a samples filter for samples *TO KEEP*
         samples_filter = []
         for sample in block.samples:
-            A, i1, i2 = sample
+            # Get the atom center indices, accounting for whether or not the
+            # structure index is included in the sample names
+            if structure_idx_present:
+                _, i1, i2 = sample
+            else:
+                i1, i2 = sample
             if i1 <= i2:  # keep
                 samples_filter.append(True)
             else:  # discard
