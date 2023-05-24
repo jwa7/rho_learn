@@ -7,7 +7,70 @@ import equistore
 from equistore import Labels, TensorBlock, TensorMap
 from rholearn import utils
 
-VALID_LOSS_FNS = ["MSELoss", "CoulombLoss"]
+VALID_LOSS_FNS = ["MSELoss", "CoulombLoss", "DensityLoss"]
+
+
+class DensityLoss(torch.nn.Module):
+    """
+    Computes the loss on the electron density, given a set of overlap-type
+    matrices.
+
+    For a given structure, A, the loss on the electron density is given by:
+
+    .. math::
+
+        L = \Delta c \hat{O} \Delta c
+
+    where :math:`\Delta c` is the difference between predicted (i.e. ML) and
+    reference (i.e. density fitted RI) electron density coefficients, and :math:
+    `\hat{O}` is a matrix corresponding to an overlap-type metric, i.e.
+    corresponding to either the overlap matrices, S, or the Coulomb matrices, J,
+    between pairs of basis functions.
+
+    This class assumes that the overlap-type matrices are stored in equistore
+    TensorMap format and have the following data structure:
+
+        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
+          'species_center_1', 'species_center_2')
+        - sample names: ('center_1', 'center_2')
+        - component names: [('spherical_harmonics_m1',),
+          ('spherical_harmonics_m2',)]
+        - property names: ('n1', 'n2')
+    
+    It is also assumed that, due to the symmetric nature of overlap-type
+    matrices, the TensorMap has been symmetrized and only the following data
+    stored:
+
+        - 
+
+    :param overlap_dir: Path to directory containing overlap-type matrices. Each
+        overlap matrix in this directory should be an equistore TensorMap and be
+        named according to the f"{file_prefix}_{A}.npz" convention, where
+        `file_prefix` is passed as an argument to the constructor and `A` is the
+        numeric index (zero-indexed) of the structure it corresponds to.
+    :param file_prefix: a `str` of the name prefix of the overlap-type matrices
+        in `overlap_dir`.
+    """
+
+    def __init__(self, overlap_dir: str, file_prefix: str):
+
+        if not os.path.exists(overlap_dir):
+            raise FileNotFoundError(
+                f"Overlap directory {overlap_dir} does not exist."
+            )
+
+        self.overlap_dir = overlap_dir
+        self.file_prefix = file_prefix
+
+
+    def load_matrices(self, structure_idxs: List[int]):
+        """
+        Loads the overlap-type matrices corresponding to the structures with
+        numeric indices `structure_idxs`.
+        """
+        # for A in structure_idxs:
+
+
 
 
 class MSELoss(torch.nn.Module):
