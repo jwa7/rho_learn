@@ -824,13 +824,112 @@ def drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> Tenso
 
 def coeff_vector_tensormap_to_ndarray(
     frame: ase.Atoms,
-    coeffs: TensorMap,
+    tensor: TensorMap,
     lmax: dict,
     nmax: dict,
-    structure_idx: Optional[int] = None,
     tests: Optional[int] = 0,
 ) -> np.ndarray:
-    """ """
+    """
+    Convert a equistore TensorMap of basis function coefficients (or 
+    projections) to numpy ndarray format.
+
+    :param frame: ase.Atoms object containing the atomic structure for which the
+        coefficients (or projections) were calculated.
+    :param tensor: the TensorMap containing the basis function coefficients data 
+        and metadata.
+    :param lmax: dict containing the maximum spherical harmonics (l) value for
+        each atomic species.
+    :param nmax: dict containing the maximum radial channel (n) value for each
+        combination of atomic species and l value.
+    :param tests: int, the number of coefficients to randomly compare between
+        the raw input array and processed TensorMap to check for correct
+        conversion.
+
+    :return np.ndarray: vector of coefficients converted from TensorMap format, 
+        of shape (N,), where N is the number of basis functions the electron 
+    density is expanded onto
+    """
+    # Check the samples names and determine whether or not the structure index
+    # is included
+    if tensor.sample_names == ("structure", "center"):
+        structure_idx_present = True
+        structure_idxs = equistore.unique_metadata(tensor, "samples", "structure")
+        assert len(structure_idxs) == 1
+        structure_idx = structure_idxs[0]
+    elif tensor.sample_names == ("center",):
+        structure_idx_present = False
+        structure_idx = None
+    else:
+        raise ValueError(
+            "the sample names of the input tensor must be either ('structure', 'center',)"
+            " or ('center',)"
+        )
+
+    # Define some useful variables
+    symbols = frame.get_chemical_symbols()
+    uniq_symbols = np.unique(symbols)
+    tot_atoms = len(symbols)
+    tot_coeffs = utils.num_elements_tensormap(tensor)
+
+    # First, confirm the length of the flat array is as expected
+    num_coeffs_by_uniq_symbol = {}
+    for symbol in uniq_symbols:
+        n_coeffs = 0
+        for l_tmp in range(lmax[symbol] + 1):
+            for n_tmp in range(nmax[(symbol, l_tmp)]):
+                n_coeffs += 2 * l_tmp + 1
+        num_coeffs_by_uniq_symbol[symbol] = n_coeffs
+
+    num_coeffs_by_symbol = np.array(
+        [num_coeffs_by_uniq_symbol[symbol] for symbol in symbols]
+    )
+    assert np.sum(num_coeffs_by_symbol) == tot_coeffs
+
+    # Initialize a dict to store the block values
+    results_dict = {}
+
+    # Loop over the blocks and split up the values tensors
+    for key, block in tensor:
+        l, a = key
+        symbol = NUM_TO_SYM[a]
+        tmp_dict = {}
+
+        # Store the block values in a dict by atom index
+        for atom_idx in np.unique(block.samples["center"]):
+            atom_idx_mask = block.samples["center"] == atom_idx
+            # Get the array of values for this atom, of species `symbol` and `l`` value
+            # The shape of this array is (1, 2*l+1, nmax[(symbol, l)]
+            atom_arr = block.values[atom_idx_mask]
+            assert atom_arr.shape == (1, 2 * l + 1, nmax[(symbol, l)])
+            # Reshape to a flatten array and store. IMPORTANT: Fortran order
+            atom_arr = np.reshape(atom_arr, (-1,), order="F")
+            tmp_dict[atom_idx] = atom_arr
+        results_dict[(l, symbol)] = tmp_dict
+
+    # Combine the individual arrays into a single flat vector
+    # Loop over the atomic species in the order given in `frame`
+    coeffs = np.array([])
+    for atom_i, symbol in enumerate(symbols):
+        for l in range(lmax[symbol] + 1):
+            coeffs = np.append(coeffs, results_dict[(l, symbol)][atom_i])
+
+    # Check number of elements
+    assert len(coeffs) == tot_coeffs
+
+    # Check values of the coefficients, repeating the test `tests` number of times.
+    for _ in range(tests):
+        if not test_coeff_vector_conversion(
+            frame,
+            lmax,
+            nmax,
+            coeffs,
+            tensor,
+            structure_idx=structure_idx,
+        ):
+            raise ValueError("Conversion test failed.")
+
+    # Loop over the blocks and store the values
+    return coeffs
 
 
 def overlap_matrix_tensormap_to_ndarray(
