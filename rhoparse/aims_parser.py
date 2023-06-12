@@ -80,6 +80,9 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
     """
     # Initialize a dict to store the extracted information
     calc_info = {
+        "aims": {
+            "run_dir": aims_output_dir,
+        },
         "scf": {
             "num_cycles": 0,
             "converged": False,
@@ -95,6 +98,18 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
         # Parse each line for relevant information
         for line_i, line in enumerate(lines):
             split = line.split()
+
+            # AIMS unique identifier for the run
+            if split[:2] == "aims_uuid :".split():
+                calc_info["aims"]["run_id"] = split[3]
+
+            # AIMS version
+            if split[:2] == "FHI-aims version      :".split():
+                calc_info["aims"]["version"] = split[3]
+
+            # AIMS commit version
+            if split[:2] == "Commit number         :".split():
+                calc_info["aims"]["commit"] = split[3]
 
             # Net and non-zero number of real-space integration points
             # Example: "| Net number of integration points:    49038"
@@ -366,7 +381,7 @@ def process_aux_basis_func_data(
     # Check that all the ABFs in `cs_abf_idxs` have an positive odd value of m,
     # and those not present have an even, or negative, value of m. This is just
     # a convention of AIMS, that the Condon-Shortley convention is *NOT* applied
-    # to m > 0. In AIMS version 221103, in file /src/cartesian_ylm.f90, this is
+    # to m > 0. In AIMS version > 221103, in file /src/cartesian_ylm.f90, this is
     # explained.
     for abf in abf_info:
         abf_idx = abf[0]
@@ -466,13 +481,94 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
     # Get the absolute residual error between the SCF and fitted densities
     error = np.abs(ri_rho - scf_rho)
 
-    # Calculate and return the relative error
+    # Calculate and return the relative error (normalized by the number of electrons)
     return np.dot(error, partition) / np.dot(scf_rho, partition)
 
 
-def calc_num_electrons_error() -> float:
+# ===== Convert numpy to AIMS format =====
+
+def coeff_vector_ndarray_to_aims_coeffs(
+    aims_output_dir: str, 
+    coeffs: np.ndarray, 
+    save_dir: Optional[str] = None
+) -> np.ndarray:
     """
-    Integrates the real space density and the reconstructed fitted density to
-    get a relative error in the number of electrons.
+    Takes a vector of RI coefficients in the standard order convention and
+    converts it to the AIMS format.
+
+    This involves reversing the order of the  coefficients contained in
+    idx_prodbas_details.out, and undoing the application of the Condon-Shortley
+    convention. Essentially, this performs the reverse conversion of the
+    :py:func:`process_aux_basis_func_data` function in this
+    :py:mod:`aims_parser` module, but only applied to the coefficients vector.
+
+    This function requires that the files idx_prodbas_details.out and
+    prodbas_condon_shotley_list.out exist in the directory `aims_output_dir`.
+
+    If `save_dir` is not None, the converted coefficients are saved to this
+    directory under the filename "ri_restart_coeffs.out", in the AIMS output
+    file format for this data type - i.e. one value per line. The coefficients
+    saved under this filename allow the RI fitting procedure to be restarted
+    from them.
+
+    :param aims_output_dir: str, absolute path to the directory containing the
+        AIMS calculation output files.
+    :param coeffs: np.ndarray, vector of RI coefficients in the standard order
+        convention.
+    :param save_dir: optional str, the absolute path to the directory to save
+        the coefficients to. If specified, they are saved as one coefficient per
+        line under the filename "ri_restart_coeffs.out".
+
+    :return np.ndarray: vector of RI coefficients in the AIMS format.
     """
-    return
+    # Check various directories and paths exist
+    if not os.path.isdir(aims_output_dir):
+        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
+    if not os.path.exists(os.path.join(aims_output_dir, "idx_prodbas_details.out")):
+        raise FileNotFoundError(
+            f"The file idx_prodbas_details.out does not exist in {aims_output_dir}."
+        )
+    if not os.path.exists(os.path.join(aims_output_dir, "prodbas_condon_shotley_list.out")):
+        raise FileNotFoundError(
+            f"The file prodbas_condon_shotley_list.out does not exist in {aims_output_dir}."
+        )
+    if save_dir is not None:
+        if not os.path.isdir(save_dir):
+            raise NotADirectoryError(f"The save directory {save_dir} does not exist.")
+
+    # Load the auxiliary basis function (ABF) information. This is 2D array where
+    # columns correspond to, respectively, the auxiliary basis function index, atom
+    # index, angular momentum l value, radial channel index, and the angular
+    # momentum component m value.
+    abf_idxs = np.loadtxt(
+        os.path.join(aims_output_dir, "idx_prodbas_details.out"),
+        dtype=int,)[:, 0]
+    abf_idxs -= 1  # Convert to zero indexing
+
+
+    # Load the indices of the auxiliary basis functions to which the Condon-Shortley
+    # convention should be applied
+    cs_abf_idxs = np.loadtxt(
+        os.path.join(aims_output_dir, "prodbas_condon_shotley_list.out"),
+        dtype=int,
+    )
+    cs_abf_idxs -= 1  # Convert to zero indexing
+
+    # First, re-broadcast the coefficients back to the original AIMS ordering
+    reverse_abf_idxs = [np.where(abf_idxs == i)[0][0] for i in range(len(abf_idxs))]
+    aims_coeffs = coeffs[reverse_abf_idxs]
+
+    # Second, undo the Condon-Shortley convention for the coefficients of the ABFs
+    # in `cs_abf_idxs`
+    for cs_abf_idx in cs_abf_idxs:
+        aims_coeffs[cs_abf_idx] *= -1
+
+    # Save the coefficient to file "ri_restart_coeffs.out" if `save_dir`
+    # specified.
+    if save_dir is not None:
+        np.savetxt(
+            os.path.join(save_dir, "ri_restart_coeffs.out"),
+            aims_coeffs
+        )
+
+    return aims_coeffs
