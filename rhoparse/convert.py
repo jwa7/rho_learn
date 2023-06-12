@@ -694,12 +694,27 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
     return np.allclose(block1.values, reordered_block2)
 
 
-def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
+def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
     Takes an input TensorMap ``tensor`` that corresponds to the overlap matrix
-    for a given structure. Assumes blocks have keys of the form (l1, l2, a1,
-    a2), and returns a new TensorMap where off-diagonal blocks are dropped, such
-    that the new TensorMap has keys with l1 <= l2 and a1 <= a2.
+    for a given structure. Assumes blocks have keys with names
+    ("spherical_harmonics_l1", "spherical_harmonics_l2", "species_center_1",
+    "species_center_2",) corresponding to indices of the form (l1, l2, a1, a2).
+    
+    The returned TensorMap only has off-diagonal blocks with keys where:
+        - l1 < l2, or
+        - a1 <= a2 if l1 == l2
+
+    ensuring that if an off-diagonal block (l1, l2, a1, a2) exists (i.e. where
+    l1 != l2 or a1 != a2), then the exactly symmetric (and redundant) block (l2,
+    l1, a2, a1) has been dropped.
+
+    :param tensor: the input TensorMap corresponding to the overlap-type matrix
+        in equistore format. Must have keys with names
+        ("spherical_harmonics_l1", "spherical_harmonics_l2", "species_center_1",
+        "species_center_2",)
+
+    :return: the TensorMap with redundant off-diagonal blocks dropped.
     """
     # Get the key names and check they have the assumed form
     keys = tensor.keys
@@ -715,15 +730,18 @@ def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
 
     # Define a filter for the keys *TO DROP*
     keys_to_drop_filter = []
-    for key in keys:
-        l1, l2, a1, a2 = key
-
-        # Keep keys where l1 <= l2 and a1 <= a2
-        if a1 < a2:  # keep
+    for l1, l2, a1, a2 in keys:
+        # Keep keys where:
+        # l1 < l2, or 
+        # a1 <= a2 if l1 == l2
+        if l1 < l2: # keep
             keys_to_drop_filter.append(False)
-        elif a1 == a2 and l1 <= l2:  # keep
-            keys_to_drop_filter.append(False)
-        else:  # drop
+        elif l1 == l2:
+            if a1 <= a2:  # keep
+                keys_to_drop_filter.append(False)
+            else:  # drop
+                keys_to_drop_filter.append(True)
+        else:  # l1 > l2: drop
             keys_to_drop_filter.append(True)
 
     # Drop these blocks
@@ -737,7 +755,7 @@ def drop_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     return new_tensor
 
 
-def drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> TensorMap:
+def overlap_drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
     Returns a new TensorMap where redundant atom center pairs from diagonal
     blocks have been dropped. In the returned TensorMap, diagonal blocks will
