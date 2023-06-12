@@ -830,12 +830,12 @@ def coeff_vector_tensormap_to_ndarray(
     tests: Optional[int] = 0,
 ) -> np.ndarray:
     """
-    Convert a equistore TensorMap of basis function coefficients (or 
+    Convert a equistore TensorMap of basis function coefficients (or
     projections) to numpy ndarray format.
 
     :param frame: ase.Atoms object containing the atomic structure for which the
         coefficients (or projections) were calculated.
-    :param tensor: the TensorMap containing the basis function coefficients data 
+    :param tensor: the TensorMap containing the basis function coefficients data
         and metadata.
     :param lmax: dict containing the maximum spherical harmonics (l) value for
         each atomic species.
@@ -845,8 +845,8 @@ def coeff_vector_tensormap_to_ndarray(
         the raw input array and processed TensorMap to check for correct
         conversion.
 
-    :return np.ndarray: vector of coefficients converted from TensorMap format, 
-        of shape (N,), where N is the number of basis functions the electron 
+    :return np.ndarray: vector of coefficients converted from TensorMap format,
+        of shape (N,), where N is the number of basis functions the electron
     density is expanded onto
     """
     # Check the samples names and determine whether or not the structure index
