@@ -731,9 +731,7 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     # Define a filter for the keys *TO DROP*
     keys_to_drop_filter = []
     for l1, l2, a1, a2 in keys:
-        # Keep keys where:
-        # l1 < l2, or 
-        # a1 <= a2 if l1 == l2
+        # Keep keys where l1 < l2, or a1 <= a2 if l1 == l2
         if l1 < l2: # keep
             keys_to_drop_filter.append(False)
         elif l1 == l2:
@@ -755,86 +753,88 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     return new_tensor
 
 
-def overlap_drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> TensorMap:
-    """
-    Returns a new TensorMap where redundant atom center pairs from diagonal
-    blocks have been dropped. In the returned TensorMap, diagonal blocks will
-    only have samples with atom center pairs with i1 <= i2, where i1 corresponds
-    to the index of 'center_1', and i2 to 'center_2'.
+# NOTE: this function is no longer in use. Left here for reference.
+# def overlap_drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> TensorMap:
+#     """
+#     Returns a new TensorMap where redundant atom center pairs from diagonal
+#     blocks have been dropped. In the returned TensorMap, diagonal blocks will
+#     only have samples with atom center pairs with i1 <= i2, where i1 corresponds
+#     to the index of 'center_1', and i2 to 'center_2'.
 
-    The input TensorMap is assumed to have key names ('spherical_harmonics_l1',
-    'spherical_harmonics_l2', 'species_center_1', 'species_center_2'). Diagonal
-    blocks are ones where l1 == l2 and a1 == a2. The sample names are also
-    assumed to be ('structure', 'center_1', 'center_2') or ('center_1',
-    'center_2').
-    """
-    # Get the key names and check they have the assumed form
-    keys = tensor.keys
-    assert np.all(
-        keys.names
-        == (
-            "spherical_harmonics_l1",
-            "spherical_harmonics_l2",
-            "species_center_1",
-            "species_center_2",
-        )
-    )
-    # Check the form of the sample names
-    if np.all(tensor.sample_names == ("structure", "center_1", "center_2")):
-        structure_idx_present = True
-    elif np.all(tensor.sample_names == ("center_1", "center_2")):
-        structure_idx_present = False
-    else:
-        raise ValueError(
-            "``tensor`` sample names must be ('structure', 'center_1', 'center_2')"
-            " or ('center_1', 'center_2')"
-        )
+#     The input TensorMap is assumed to have key names ('spherical_harmonics_l1',
+#     'spherical_harmonics_l2', 'species_center_1', 'species_center_2'). Diagonal
+#     blocks are ones where l1 == l2 and a1 == a2. The sample names are also
+#     assumed to be ('structure', 'center_1', 'center_2') or ('center_1',
+#     'center_2').
+#     """
+    
+#     # Get the key names and check they have the assumed form
+#     keys = tensor.keys
+#     assert np.all(
+#         keys.names
+#         == (
+#             "spherical_harmonics_l1",
+#             "spherical_harmonics_l2",
+#             "species_center_1",
+#             "species_center_2",
+#         )
+#     )
+#     # Check the form of the sample names
+#     if np.all(tensor.sample_names == ("structure", "center_1", "center_2")):
+#         structure_idx_present = True
+#     elif np.all(tensor.sample_names == ("center_1", "center_2")):
+#         structure_idx_present = False
+#     else:
+#         raise ValueError(
+#             "``tensor`` sample names must be ('structure', 'center_1', 'center_2')"
+#             " or ('center_1', 'center_2')"
+#         )
 
-    # Now iterate over blocks. Manipulate diagonal blocks only.
-    blocks = []
-    for key in keys:
-        # Unpack the key
-        l1, l2, a1, a2 = key
+#     # Now iterate over blocks. Manipulate diagonal blocks only.
+#     blocks = []
+#     for key in keys:
+#         # Unpack the key
+#         l1, l2, a1, a2 = key
 
-        # If an off-diagonal block, just store it
-        if not (l1 == l2 and a1 == a2):
-            blocks.append(tensor[key].copy())
-            continue
+#         # If an off-diagonal block, just store it
+#         if not (l1 == l2 and a1 == a2):
+#             blocks.append(tensor[key].copy())
+#             continue
 
-        # Otherwise, manipulate the samples of the diagonal block
-        block = tensor[key]
+#         # Otherwise, manipulate the samples of the diagonal block
+#         block = tensor[key]
 
-        # Create a samples filter for samples *TO KEEP*
-        samples_filter = []
-        for sample in block.samples:
-            # Get the atom center indices, accounting for whether or not the
-            # structure index is included in the sample names
-            if structure_idx_present:
-                _, i1, i2 = sample
-            else:
-                i1, i2 = sample
-            if i1 <= i2:  # keep
-                samples_filter.append(True)
-            else:  # discard
-                samples_filter.append(False)
-        new_samples = block.samples[samples_filter]
+#         # Create a samples filter for samples *TO KEEP*
+#         samples_filter = []
+#         for sample in block.samples:
+#             # Get the atom center indices, accounting for whether or not the
+#             # structure index is included in the sample names
+#             if structure_idx_present:
+#                 _, i1, i2 = sample
+#             else:
+#                 i1, i2 = sample
+#             if i1 <= i2:  # keep
+#                 samples_filter.append(True)
+#             else:  # discard
+#                 samples_filter.append(False)
+#         new_samples = block.samples[samples_filter]
 
-        # Check the number of output blocks is correct
-        S_old = len(block.samples)
-        S_new = len(new_samples)
-        assert S_new == np.sqrt(S_old) / 2 * (np.sqrt(S_old) + 1)
+#         # Check the number of output blocks is correct
+#         S_old = len(block.samples)
+#         S_new = len(new_samples)
+#         assert S_new == np.sqrt(S_old) / 2 * (np.sqrt(S_old) + 1)
 
-        # Create and store the new block
-        blocks.append(
-            TensorBlock(
-                values=block.values[samples_filter],
-                samples=new_samples,
-                components=block.components,
-                properties=block.properties,
-            )
-        )
+#         # Create and store the new block
+#         blocks.append(
+#             TensorBlock(
+#                 values=block.values[samples_filter],
+#                 samples=new_samples,
+#                 components=block.components,
+#                 properties=block.properties,
+#             )
+#         )
 
-    return TensorMap(keys=keys, blocks=blocks)
+#     return TensorMap(keys=keys, blocks=blocks)
 
 
 # ===== convert equistore to numpy format =====
