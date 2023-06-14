@@ -7,13 +7,159 @@ import equistore
 from equistore import Labels, TensorBlock, TensorMap
 from rholearn import utils
 
-VALID_LOSS_FNS = ["MSELoss", "CoulombLoss", "DensityLoss"]
+VALID_LOSS_FNS = ["DensityLoss", "CoeffLoss"]
+
+
+def transform_overlap_for_densityloss(overlap: TensorMap) -> TensorMap:
+    """
+    Reshapes and permutes the axes of the blocks of the overlap matrix such that
+    it is ready for the tensor dot operation involved in the evaluation of the
+    loss using the :py:class:`DensityLoss` class.
+
+    This method assumes that the passed overlap-type matrices are of equistore
+    TensorMap format and have the following data structure:
+
+        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
+          'species_center_1', 'species_center_2')
+        - sample names: ('structure', 'center_1', 'center_2')
+        - component names: [('spherical_harmonics_m1',),
+          ('spherical_harmonics_m2',)]
+        - property names: ('n1', 'n2')
+
+    and only correspond to one structure. This should be the case for TensorMaps
+    processed with the functions in the :py:mod:`rhoparse.convert` module. The
+    output TensorMap has a special data structure that conceptually goes against
+    the equistore philosophy (see
+    https://lab-cosmo.github.io/equistore/latest/get-started/concepts.html), but
+    has been designed to allow for faster evaluation of the loss when using the
+    :py:class:`DensityLoss` class in this module. The data strutcure of the
+    output TensorMap is:
+
+        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
+          'species_center_1', 'species_center_2') - i.e. same as the input.
+        - sample names: ('structure', 'center_1',)
+        - component names: [('spherical_harmonics_m1',), ('n1',), ('center_2',),
+          ('spherical_harmonics_m2',),]
+        - property names: ('n2',)
+
+    i.e. the notable changes are that the center and radial channel indices now
+    exist along orthogonal axes and the axes have been permuted.
+    """
+    # Iterate over blocks and manipulate each in turn
+    keys, new_blocks = overlap.keys, []
+    for key in keys:
+        # Retrieve the block
+        block = overlap[key]
+
+        # Get the structure index
+        A = np.unique(block.samples["structure"])[0]
+
+        # Get the axes dimensions
+        i1 = np.unique(block.samples["center_1"])
+        i2 = np.unique(block.samples["center_2"])
+        m1 = np.unique(block.components[0]["spherical_harmonics_m1"])
+        m2 = np.unique(block.components[1]["spherical_harmonics_m2"])
+        n1 = np.unique(block.properties["n1"])
+        n2 = np.unique(block.properties["n2"])
+
+        # Reshape the block and permute the axes such that the data for the
+        # first of the two centers is on the 'left' and the second on the 'right'.
+        s_block = block.values.reshape(
+            len(i1), len(i2), len(m1), len(m2), len(n1), len(n2)
+        )
+        # Shape before: (n_i1, n_i2, n_m1, n_m2, n_n1, n_n2)
+        # Shape after : (n_i1, n_m1, n_n1, n_i2, n_m2, n_n2)
+        s_block = torch.permute(s_block, (0, 2, 4, 1, 3, 5)).contiguous()
+
+        # Build a new TensorBlock with updated metadata
+        new_block = TensorBlock(
+            samples=Labels(
+                names=["structure", "center_1"], values=np.array([[A, i] for i in i1])
+            ),
+            components=[
+                Labels(names=["spherical_harmonics_m1"], values=m1.reshape(-1, 1)),
+                Labels(names=["n1"], values=n1.reshape(-1, 1)),
+                Labels(names=["center_2"], values=i2.reshape(-1, 1)),
+                Labels(names=["spherical_harmonics_m2"], values=m2.reshape(-1, 1)),
+            ],
+            properties=Labels(names=["n2"], values=n2.reshape(-1, 1)),
+            values=s_block,
+        )
+        new_blocks.append(new_block)
+
+    return TensorMap(keys, new_blocks)
+
+
+class CoeffLoss(torch.nn.Module):
+    """
+    Computes the mean squared loss on the electron density *coefficients* for a
+    batch of one or more structures.
+
+    For a given structure, A, the loss on the electron density is given by:
+
+    .. math::
+
+        L = (\Delta c)^2
+
+    where :math:`\Delta c` is the difference between predicted (i.e. ML) and
+    reference (i.e. density fitted RI) electron density coefficients.
+
+    If evaluating the loss for multiple structures, the total loss is given by
+    the sum of individual losses for each structure.
+    """
+
+    def __init__(self):
+        super(CoeffLoss, self).__init__()
+
+    @staticmethod
+    def _check_forward_args(input: TensorMap, target: TensorMap):
+        """
+        Checks input and target types and asserts they have equal metadata
+        """
+        if not equistore.equal_metadata(input, target):
+            raise ValueError(
+                "``input`` and ``target`` must have equal metadata in the same order."
+            )
+
+    def forward(
+        self, input: TensorMap, target: TensorMap, unsafe: bool = False
+    ) -> float:
+        """
+        Calculates the mean squared loss between 2 TensorMaps.
+
+        Assumes both `input` and `target` TensorMaps are have a torch-backend,
+        and have equal metadata in the same order.
+
+        :param input: a :py:class:`TensorMap` corresponding to the ML-predicted
+            electron density coefficients.
+        :param target: a :py:class:`TensorMap` corresponding to the RI-fitted
+            electron density coefficients.
+        :param unsafe: bool, if True, skips input checks for speed.
+
+        :return loss: a :py:class:`torch.Tensor` containing a single float
+            values, corresponding to the total loss metric.
+        """
+        # Input checks
+        if not unsafe:
+            self._check_forward_args(input, target)
+
+        # Use the "sum" reduction method to calculate the loss for each block
+        torch_mse = torch.nn.MSELoss(reduction="sum")
+        loss = 0
+        for key in input.keys:
+            loss += torch_mse(input=input[key].values, target=target[key].values)
+
+        return loss
 
 
 class DensityLoss(torch.nn.Module):
     """
-    Computes the loss on the electron density, given a set of overlap-type
-    matrices.
+    Computes the mean squared loss on the electron density for a batch of one or
+    more structures.
+
+    As the basis functions the electron density is expanded on are
+    non-orthogonal, evaluation of this loss requires use of overlap-type
+    matrices that capture the coupling between the basis functions.
 
     For a given structure, A, the loss on the electron density is given by:
 
@@ -24,404 +170,127 @@ class DensityLoss(torch.nn.Module):
     where :math:`\Delta c` is the difference between predicted (i.e. ML) and
     reference (i.e. density fitted RI) electron density coefficients, and :math:
     `\hat{O}` is a matrix corresponding to an overlap-type metric, i.e.
-    corresponding to either the overlap matrices, S, or the Coulomb matrices, J,
-    between pairs of basis functions.
+    corresponding to either the overlap matrices, :math:`\hat{S}`, or the
+    Coulomb matrices, :math:`\hat{J}`, between pairs of basis functions.
 
-    This class assumes that the overlap-type matrices are stored in equistore
+    If evaluating the loss for multiple structures, the total loss is given by
+    the sum of individual losses for each structure.
+
+    This class assumes that the passed overlap-type matrices are of equistore
     TensorMap format and have the following data structure:
 
         - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
-          'species_center_1', 'species_center_2')
-        - sample names: ('center_1', 'center_2')
-        - component names: [('spherical_harmonics_m1',),
-          ('spherical_harmonics_m2',)]
-        - property names: ('n1', 'n2')
-    
+          'species_center_1', 'species_center_2') - i.e. same as the input.
+        - sample names: ('center_1',)
+        - component names: [('spherical_harmonics_m1',), ('n1',), ('center_2',),
+          ('spherical_harmonics_m2',),]
+        - property names: ('n2',)
+
+    This data structure is designed specifically for fast tensordot evaluation
+    of the loss. The method :py:func:`transform_overlap_for_densityloss` should
+    be used to pre-process the overlap-type matrices for use in this class.
+
     It is also assumed that, due to the symmetric nature of overlap-type
-    matrices, the TensorMap has been symmetrized and only the following data
-    stored:
+    matrices, they have been symmetrized such that for blocks with key indices
+    (l1, l2, a1, a2), only blocks with keys where l1 <= l2, and where a1 <= a2
+    in the case where l1 == l2 are stored.
 
-        - 
+    This symmetrization can be performed with the functions in the the
+    :py:mod:`rhoparse.convert` module. Due to such symmetrization, contributions
+    to the loss of diagonal blocks (i.e. where l1 == l2 and a1 == a2) is counted
+    once, but those from off-diagonal blocks (i.e. where l1 != l2 or a1 != a2)
+    are counted twice (2x multiplier).
 
-    :param overlap_dir: Path to directory containing overlap-type matrices. Each
-        overlap matrix in this directory should be an equistore TensorMap and be
-        named according to the f"{file_prefix}_{A}.npz" convention, where
-        `file_prefix` is passed as an argument to the constructor and `A` is the
-        numeric index (zero-indexed) of the structure it corresponds to.
-    :param file_prefix: a `str` of the name prefix of the overlap-type matrices
-        in `overlap_dir`.
+    Due to the size of the overlap matrices, loss evaluation can be very
+    memory-intensive. This class is built to allow for loss to be evaluated in
+    batches of one structure or more.
     """
 
-    def __init__(self, overlap_dir: str, file_prefix: str):
-
-        if not os.path.exists(overlap_dir):
-            raise FileNotFoundError(
-                f"Overlap directory {overlap_dir} does not exist."
-            )
-
-        self.overlap_dir = overlap_dir
-        self.file_prefix = file_prefix
-
-
-    def load_matrices(self, structure_idxs: List[int]):
-        """
-        Loads the overlap-type matrices corresponding to the structures with
-        numeric indices `structure_idxs`.
-        """
-        # for A in structure_idxs:
-
-
-
-
-class MSELoss(torch.nn.Module):
-    """
-    A global loss function so takes TensorMaps as arguments. Calculates the MSE
-    (i.e. L2) loss between 2 TensorMaps. Built on top of torch's MSELoss
-    calculator. For each block in the input and the corresponding block in the
-    target TensorMap, the MSELoss is calculated.
-
-    If ``reduction="sum"``, the final global loss is just given by the simple
-    sum of these losses for the individual blocks.
-
-    ..math::
-        L = \sum_{b \in blocks} \sum_{i \in b} (\tilde{y}_i - y_i)^2
-
-    If ``reduction="mean_by_values"``, the final global loss is calculated by
-    summing the losses of each block, then dividing by the total number of
-    elements across all blocks.
-
-    ..math::
-        L = \frac{1}{\sum_{b \in blocks} n_b}
-            \sum_{b \in blocks} (\tilde{y}_i - y_i)^2
-
-    If ``reduction="mean_by_blocks"``, the final global loss is calculated by
-    summing the mean losses of each block, then dividing by the number of
-    blocks.
-
-    ..math::
-        L = \frac{1}{N_{blocks}} \sum_{b \in blocks} \frac{1}{n_b} \sum_{i in b}
-        (\tilde{y}_i - y_i)^2
-    """
-
-    def __init__(self, reduction: str):
-        super(MSELoss, self).__init__()
-        MSELoss._check_input_args(reduction)
-        self.reduction = reduction
+    def __init__(self):
+        super(DensityLoss, self).__init__()
 
     @staticmethod
-    def _check_input_args(reduction: str):
-        if not (reduction in ["sum"]):
-            raise ValueError("only ``reduction='sum'`` currently supported")
+    def _check_forward_args(input: TensorMap, target: TensorMap, overlap: TensorMap):
+        """
+        Checks inputs to the forward method, i.e. checks metadata is valid.
+        """
+        # Check metadata of input and target
+        if not equistore.equal_metadata(input, target):
+            raise ValueError(
+                "``input`` and ``target`` must have equal metadata in the same order."
+            )
+        # Check metadata of overlap
+        if overlap.sample_names != ("center_1",):
+            raise ValueError("``overlap`` must have sample names ('center_1',).")
+        if len(overlap.components) != 4:
+            raise ValueError(
+                "``overlap`` must have 4 components, corresponding to the axes "
+                "('spherical_harmonics_m1',), ('n1',), ('center_2',), "
+                "('spherical_harmonics_m2',)"
+            )
+        for i, names in enumerate(
+            [
+                ("spherical_harmonics_m1",),
+                ("n1",),
+                ("center_2",),
+                ("spherical_harmonics_m2",),
+            ]
+        ):
+            if overlap.components[i].names != names:
+                raise ValueError(
+                    "``overlap`` component {} must have names {}.".format(i, names)
+                )
+        if overlap.property_names != ("n2",):
+            raise ValueError("``overlap`` must have property names ('n2',).")
 
     def forward(
         self,
         input: TensorMap,
         target: TensorMap,
-    ):
+        overlap: TensorMap,
+        unsafe: bool = False,
+    ) -> float:
         """
-        Calculates the MSE Loss between 2 TensorMaps, using the reduction method
-        specified at class instantiation.
-
-        :param input: a :py:class:`TensorMap` corresponding to the predicted ML
-            e-density. Block values must be torch tensors.
-        :param target: a :py:class:`TensorMap` corresponding to the target QM
-            e-density. Must by definition have the same data structure (i.e. in
-            terms of keys, samples, components, properties) as ``input``. Block
-            values must be torch tensors.
-
-        :return loss: a :py:class:`torch.Tensor` corresponding to the total loss
-            metric.
+        Calculates the squared error loss between the input (ML) and target (QM)
+        electron densities.
         """
-        # Input checks
-        if not isinstance(input, TensorMap):
-            raise TypeError(
-                "``input`` arg to ``forward`` must be equistore ``TensorMap``"
-            )
-        if not isinstance(target, TensorMap):
-            raise TypeError(
-                "``input`` arg to ``forward`` must be equistore ``TensorMap``"
-            )
+        if not unsafe:
+            self._check_forward_args(input, target, overlap)
 
-        # Use the "sum" reduction method to initially calculate the loss for
-        # each block, then modify according to the chosen reduction method.
-        loss_fn = torch.nn.MSELoss(reduction="sum")
+        # Calculate the delta coefficients, i.e. the difference between the
+        # input and target coefficients. `equistore.subtract` checks the
+        # metadata of the input and target TensorMaps for us.
+        delta_c = equistore.subtract(input, target)
+
         loss = 0
-        for key in input.keys:
-            loss += loss_fn(input=input[key].values, target=target[key].values)
+        for key in overlap.keys:
+            l1, l2, a1, a2 = key
 
-        return loss
+            # Retrieve the pairs of delta blocks we're evaluating the loss for
+            delta_c_block_1 = delta_c.block(
+                spherical_harmonics_l=l1, species_center=a1
+            ).values
+            delta_c_block_2 = delta_c.block(
+                spherical_harmonics_l=l2, species_center=a2
+            ).values
 
+            # Retrieve the corresponding overlap block that measures the
+            # correlations between pairs of basis functions in the corresponding
+            # delta blocks
+            s_block = overlap[key]
 
-class CoulombLoss(torch.nn.Module):
-    """
-    A global loss calculator for calculating the global Coulomb loss metric
-    between 2 TensorMaps. Note: doesn't yet account for gradients associated
-    with the TensorBlocks.
-
-    This class must be initialized by providing the input ``coulomb_matrices``
-    TensorMap, as well as an ``output_like`` TensorMap which is equivalent in
-    block dimensions and metadata to the TensorMaps that will be passed to the
-    ``forward`` function in runtime. Initialization with ``output_like`` allows
-    the ``coulomb_matrices`` to be heavily preprocessed, seeign significant
-    speed up in the ``forward`` call.
-
-    The 2 TensorMaps passed to ``forward`` must be of the same dimensions (in
-    keys and blocks), and correspond to the ``input`` (i.e. ML) and ``target``
-    (i.e. QM) electron density, using a TensorMap of Coulomb matrices that
-    describes the repulsive interactions between various environments in the
-    ``target`` (i.e. QM) e-density.
-
-    The global loss, $L$, is given by summing over the structures, A, in the
-    data. Then, for each combination of $i$ (atoms in A), $a$ (chemical
-    species), $l$ (spherical harmonics channel channel), $m$ (spherical
-    harmonics component), and $n$ (radial channel), the $\Delta{c}$ (i.e.
-    coefficient describing the difference between the target QM and predicted ML
-    e-density) the product with all other $\Delta{c}$ and corresponding J_{12}
-    (i.e. Coulomb)-coefficient is calculated.
-
-    ..math::
-        L =
-            \sum_{A \in TrS} \sum{i_1 a_1 l_1 m_1 n_1} \sum{i_2 a_2 l_2 m_2 n_2}
-                \delta c_{a_1 l_1 m_1 n_1}^{A i_1} \times \delta c_{a_2 l_2 m_2
-                n_2}^{A i_2} \times J_{a_1 l_1 m_1 n_1 a_2 l_2 m_2 n_2}^{A i_1
-                i_2}
-    """
-
-    def __init__(
-        self,
-        coulomb_matrices: TensorMap,
-        output_like: TensorMap,
-    ):
-        super(CoulombLoss, self).__init__()
-        CoulombLoss._check_init_args(coulomb_matrices, output_like)
-        self.coulomb_keys = CoulombLoss.get_coulomb_keys(
-            coulomb_matrices,
-            output_like,
-        )
-        self.output_keys = output_like.keys
-        self.output_samples = CoulombLoss.get_output_samples(output_like)
-        self.output_shapes = CoulombLoss.get_output_shapes(output_like)
-        self.processed_coulomb = CoulombLoss.process_coulomb_matrices(
-            coulomb_matrices,
-            self.coulomb_keys,
-            self.output_keys.names,
-            self.output_samples,
-            self.output_shapes,
-        )
-
-    @staticmethod
-    def _check_init_args(
-        coulomb_matrices: TensorMap,
-        output_like: TensorMap,
-    ):
-        # Check types
-        if not isinstance(coulomb_matrices, TensorMap):
-            raise TypeError(
-                "``coulomb_matrices`` must be an equistore ``TensorMap`` object"
-            )
-        if not isinstance(output_like, TensorMap):
-            raise TypeError("``output_like`` must be an equistore ``TensorMap`` object")
-
-        # Check all the keys of ``output_like`` appear in the keys of ``coulomb_matrices``.
-        names = output_like.keys.names
-        tmp_c_block_keys = set()
-        for l1, l2, a1, a2 in coulomb_matrices.keys:
-            tmp_c_block_keys.update({(l1, a1)})
-            tmp_c_block_keys.update({(l2, a2)})
-        for l, a in output_like.keys:
-            if (l, a) not in tmp_c_block_keys:
-                raise ValueError(
-                    f"key ({l}, {a}) in ``output_like`` not in keys of ``coulomb_matrices``"
-                )
-
-    @staticmethod
-    def get_coulomb_keys(
-        coulomb_matrices: TensorMap,
-        output_like: TensorMap,
-    ) -> Labels:
-        """
-        Defines the keys of the Coulomb matrices TensorMap that should be kept,
-        according to the keys of the ``output_like`` block.
-        """
-        # Take only combinations (l1, l2, a1, a2) but not (l2, l1, a2, a1) due
-        # to the symmetry of the coulomb matrices
-        coulomb_keys = []
-        for idx, (l1, a1) in enumerate(output_like.keys):
-            for l2, a2 in output_like.keys[idx:]:
-                coulomb_keys.append([l1, l2, a1, a2])
-
-        # The Labels object needs to be associated with a TensorBlock so they
-        # are searchable
-        # TODO: remove this once checked OK
-        # return utils.searchable_labels(
-        #     Labels(names=coulomb_matrices.keys.names, values=np.array(coulomb_keys))
-        # )
-        return Labels(names=coulomb_matrices.keys.names, values=np.array(coulomb_keys))
-
-    @staticmethod
-    def get_output_samples(output_like: TensorMap) -> dict:
-        return {key: block.samples for key, block in output_like}
-
-    @staticmethod
-    def get_output_shapes(output_like: TensorMap) -> dict:
-        return {key: block.values.shape for key, block in output_like}
-
-    @staticmethod
-    def process_coulomb_matrices(
-        coulomb_matrices: TensorMap,
-        coulomb_keys: Labels,
-        output_key_names: tuple,
-        output_samples: dict,
-        output_shapes: dict,
-    ) -> dict:
-        """
-        Takes the full Coulomb matrices and processes them. Slices each block
-        along the samples axis, only keeping samples that appear in the output
-        blocks. Reshapes these blocks ready for ``torch.tensordot`` operations
-        when ``forward()`` is called.
-        """
-        processed_coulomb = {}
-        for key in coulomb_keys:
-            # Unpack l and a indices from the key
-            (l1, l2, a1, a2) = key
-
-            coulomb_block = coulomb_matrices[key]
-
-            # Define the keys of the corresponding pair of blocks in the
-            # output_like tensor
-            key_out_block_1 = utils.key_tuple_to_npvoid(
-                (l1, a1), names=output_key_names
-            )
-            key_out_block_2 = utils.key_tuple_to_npvoid(
-                (l2, a2), names=output_key_names
-            )
-
-            # Get the unique structure indices for each output block in the pair
-            structures_1 = np.unique(output_samples[key_out_block_1]["structure"])
-            structures_2 = np.unique(output_samples[key_out_block_2]["structure"])
-
-            # Find the structure indices common to both blocks
-            shared_structure_idxs = set(structures_1).intersection(set(structures_2))
-            if len(shared_structure_idxs) == 0:
-                continue
-
-            structures_dict = {}
-            for A in shared_structure_idxs:
-                # Create a samples filter (i.e. [True, False, ...]), where true
-                # corresponds to samples that contain a structure index shared by the
-                # pair of output blocks
-                samples_filter = coulomb_block.samples["structure"] == A
-                # Slice the Coulomb block according to this filter
-                sliced_coulomb_block = coulomb_block.values[samples_filter]
-                # Define new shape dimensions
-                i1, i2 = (
-                    np.sum(output_samples[key_out_block_1]["structure"] == A),
-                    np.sum(output_samples[key_out_block_2]["structure"] == A),
-                )  # sliced samples dimension
-                m1, m2 = (
-                    output_shapes[key_out_block_1][1],
-                    output_shapes[key_out_block_2][1],
-                )  # unsliced components (2nd) dimension
-                n1, n2 = (
-                    output_shapes[key_out_block_1][2],
-                    output_shapes[key_out_block_2][2],
-                )  # unsliced properties (3rd) dimension
-                # Reshape the Coulomb block
-                sliced_coulomb_block = sliced_coulomb_block.reshape(
-                    i1, i2, m1, m2, n1, n2
-                )
-                # Permute the dimensions and make contiguous
-                # 0 1 2 3 4 5  -->  0 2 4 1 3 5  before
-                # a x b y c z  -->  a b c x y z  after
-                sliced_coulomb_block = torch.permute(
-                    sliced_coulomb_block, (0, 2, 4, 1, 3, 5)
-                ).contiguous()
-                # Store the sliced and reshaped block in a dict
-                structures_dict[A] = sliced_coulomb_block
-            processed_coulomb[key] = structures_dict
-
-        return processed_coulomb
-
-    @staticmethod
-    def _coulomb_loss_block_pair(
-        delta_block1: TensorBlock,
-        delta_block2: TensorBlock,
-        coulomb_dict: dict,
-    ):
-        """
-        Calculates the coulomb loss metric between two blocks (that each correspond
-        to specific values for the angular channel and species, (l1, a1) and (l2,
-        a2) respectively), and the coulomb metric that corresponds to the
-        electrostatic repulsion between these blocks (i.e. a coulomb block for (l1,
-        l2, a1, a2)).
-
-        :param delta_block1: a :py:class:`TensorBlock` corresponding to the delta
-            e-density (i.e. input/predicted ML density minus the target QM density)
-            for a given angular channel and species (l1, a1). Block values must be
-            torch tensors.
-        :param delta_block2: a :py:class:`TensorBlock` corresponding to the delta
-            e-density (i.e. input ML minus target QM) for a given angular channel
-            and species (l2, a2). May or may not be the same block as
-            ``rho_block2``. Block values must be torch tensors.
-        :param coulomb_block: a :py:class:`TensorBlock` corresponding to the
-            repulsive interactions between atomic environments for a given (l1, l2,
-            a1, a2) in the target QM e-density. Block values must be torch tensors.
-
-        :return loss: a :py:class:`float` corresponding to the loss metric for the
-            input combination of blocks.
-        """
-        # Calculate the loss for this block pair by summing over structures
-        loss = 0
-        for A, coulomb_block in coulomb_dict.items():
-            # Slice the delta rho blocks by structure
-            block1 = delta_block1.values[delta_block1.samples["structure"] == A]
-            block2 = delta_block2.values[delta_block2.samples["structure"] == A]
-            # Calculate the loss
-            loss += torch.tensordot(
-                torch.tensordot(block1, coulomb_block, dims=3), block2, dims=3
-            )
-        return loss
-
-    def forward(self, input: TensorMap, target: TensorMap):
-        """
-        Calculates the Coulomb loss between 2 TensorMaps.
-
-        :param input: a :py:class:`TensorMap` corresponding to the predicted ML
-            e-density. Block values must be torch tensors.
-        :param target: a :py:class:`TensorMap` corresponding to the target QM
-            e-density. Must by definition have the same data structure (i.e. in
-            terms of keys, samples, components, properties) as ``input``. Block
-            values must be torch tensors.
-
-        :return loss: a :py:class:`torch.Tensor` corresponding to the total loss
-            metric.
-        """
-        # Input checks
-        if not isinstance(input, TensorMap):
-            raise TypeError(
-                "``input`` arg to ``forward`` must be equistore ``TensorMap``"
-            )
-        if not isinstance(target, TensorMap):
-            raise TypeError(
-                "``input`` arg to ``forward`` must be equistore ``TensorMap``"
-            )
-
-        # Get delta electron density TensorMap
-        delta_rho = equistore.subtract(input, target)
-
-        # Calculate loss
-        loss = 0
-        for (l1, l2, a1, a2), coulomb_dict in self.processed_coulomb.items():
-            delta_block1 = delta_rho.block(spherical_harmonics_l=l1, species_center=a1)
-            delta_block2 = delta_rho.block(spherical_harmonics_l=l2, species_center=a2)
-            block_loss = CoulombLoss._coulomb_loss_block_pair(
-                delta_block1=delta_block1,
-                delta_block2=delta_block2,
-                coulomb_dict=coulomb_dict,
+            # Calculate the loss for this pair of blocks by dot product. As the
+            # overlap matrix has been symmetrized we only evaluate off-diagonal
+            # blocks once. As such, multiply the result for off-diagonals by 2
+            # to account for this.
+            loss_block = torch.tensordot(
+                torch.tensordot(delta_c_block_1, s_block, dims=3),
+                delta_c_block_2,
+                dims=3,
             )
             if l1 == l2 and a1 == a2:  # diagonal block
-                loss += block_loss
+                loss += loss_block
             else:  # off-diagonal block
-                loss += 2 * block_loss
+                loss += 2 * loss_block
 
         return loss
