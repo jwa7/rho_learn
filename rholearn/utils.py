@@ -483,7 +483,7 @@ def num_elements_tensormap(tensor: TensorMap) -> int:
             n_elems += np.prod(block.values.shape)
     elif isinstance(tensor.block(0).values, torch.Tensor):
         for block in tensor.blocks():
-            n_elems += torch.prod(block.values.shape)
+            n_elems += torch.prod(torch.tensor(block.values.shape))
 
     return int(n_elems)
 
@@ -495,5 +495,9 @@ def trim_memory() -> int:
     # Garbage collect
     gc.collect()
     # Release memory back to the OS
-    libc = ctypes.CDLL("libc.so.6")
-    return libc.malloc_trim(0)
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        return libc.malloc_trim(0)
+    except OSError:
+        # libc = ctypes.CDLL("libc++.dylib")  # for MacOS ?
+        return
