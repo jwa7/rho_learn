@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Union, Sequence
 
 import numpy as np
 import torch
@@ -7,7 +7,7 @@ import equistore
 from equistore import Labels, TensorBlock, TensorMap
 from rholearn import utils
 
-VALID_LOSS_FNS = ["DensityLoss", "CoeffLoss"]
+VALID_LOSS_FNS = ["CoeffLoss", "DensityLoss"]
 
 
 def transform_overlap_for_densityloss(overlap: TensorMap) -> TensorMap:
@@ -67,18 +67,25 @@ def transform_overlap_for_densityloss(overlap: TensorMap) -> TensorMap:
         s_block = block.values.reshape(
             len(i1), len(i2), len(m1), len(m2), len(n1), len(n2)
         )
-        # Shape before: (n_i1, n_i2, n_m1, n_m2, n_n1, n_n2)
-        # Shape after : (n_i1, n_m1, n_n1, n_i2, n_m2, n_n2)
+        # Shape before: (1, n_i1, n_i2, n_m1, n_m2, n_n1, n_n2)
+        # Shape after : (1, n_i1, n_m1, n_n1, n_i2, n_m2, n_n2)
         s_block = torch.permute(s_block, (0, 2, 4, 1, 3, 5)).contiguous()
+        # s_block = torch.permute(s_block, (0, 1, 3, 5, 2, 4, 6)).contiguous()
 
         # Build a new TensorBlock with updated metadata
         new_block = TensorBlock(
+            # samples=Labels(
+            #     names=["structure"], values=np.array([[A]])
+            # ),
             samples=Labels(
-                names=["structure", "center_1"], values=np.array([[A, i] for i in i1])
+                names=["structure", "center_1"],
+                values=np.array([[A, i] for i in i1]),
             ),
             components=[
+                # Labels(names=["center_1"], values=i1.reshape(-1, 1)),
                 Labels(names=["spherical_harmonics_m1"], values=m1.reshape(-1, 1)),
                 Labels(names=["n1"], values=n1.reshape(-1, 1)),
+                # Labels(names=["structure", "center_2"], values=np.array([[A, i] for i in i2])),
                 Labels(names=["center_2"], values=i2.reshape(-1, 1)),
                 Labels(names=["spherical_harmonics_m2"], values=m2.reshape(-1, 1)),
             ],
@@ -92,27 +99,33 @@ def transform_overlap_for_densityloss(overlap: TensorMap) -> TensorMap:
 
 class CoeffLoss(torch.nn.Module):
     """
-    Computes the mean squared loss on the electron density *coefficients* for a
-    batch of one or more structures.
+    Computes the squared loss on the electron density *coefficients* for a batch
+    of one or more structures.
 
-    For a given structure, A, the loss on the electron density is given by:
+    For a given structure, A, the loss on the coefficients is given by:
 
     .. math::
 
         L = (\Delta c)^2
 
-    where :math:`\Delta c` is the difference between predicted (i.e. ML) and
-    reference (i.e. density fitted RI) electron density coefficients.
+    where :math:`\Delta c` is the difference between input/predicted (i.e. ML)
+    and target/reference (i.e. density fitted RI) electron density coefficients.
 
     If evaluating the loss for multiple structures, the total loss is given by
     the sum of individual losses for each structure.
+
+    :param input: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of ML-predicted electron density
+        coefficients.
+    :param target: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of reference electron density coefficients.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(CoeffLoss, self).__init__()
 
     @staticmethod
-    def _check_forward_args(input: TensorMap, target: TensorMap):
+    def _check_forward_args(input: TensorMap, target: TensorMap) -> None:
         """
         Checks input and target types and asserts they have equal metadata
         """
@@ -122,10 +135,13 @@ class CoeffLoss(torch.nn.Module):
             )
 
     def forward(
-        self, input: TensorMap, target: TensorMap, unsafe: bool = False
-    ) -> float:
+        self,
+        input: Union[TensorMap, List[TensorMap]],
+        target: Union[TensorMap, List[TensorMap]],
+        unsafe: bool = False,
+    ) -> torch.Tensor:
         """
-        Calculates the mean squared loss between 2 TensorMaps.
+        Calculates the squared loss between 2 TensorMaps.
 
         Assumes both `input` and `target` TensorMaps are have a torch-backend,
         and have equal metadata in the same order.
@@ -139,6 +155,12 @@ class CoeffLoss(torch.nn.Module):
         :return loss: a :py:class:`torch.Tensor` containing a single float
             values, corresponding to the total loss metric.
         """
+        # Collate TensorMaps if passed as a list or tuple
+        if isinstance(input, Sequence):
+            input = equistore.join(input, "samples")
+        if isinstance(target, Sequence):
+            target = equistore.join(target, "samples")
+
         # Input checks
         if not unsafe:
             self._check_forward_args(input, target)
@@ -203,94 +225,140 @@ class DensityLoss(torch.nn.Module):
 
     Due to the size of the overlap matrices, loss evaluation can be very
     memory-intensive. This class is built to allow for loss to be evaluated in
-    batches of one structure or more.
+    batches of one structure or more. In the case of evaluating the loss for a
+    batch of more than one structure, `input`, `target` and `overlap` should be
+    passed as a list of TensorMap, where each element corresponds to a
+    respective structure in the batch.
+
+    :param input: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of ML-predicted electron density
+        coefficients.
+    :param target: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of reference electron density coefficients.
+    :param overlap: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of overlap-type matrices.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(DensityLoss, self).__init__()
 
     @staticmethod
-    def _check_forward_args(input: TensorMap, target: TensorMap, overlap: TensorMap):
+    def _check_forward_args(
+        input: TensorMap, target: TensorMap, overlap: TensorMap
+    ) -> None:
         """
-        Checks inputs to the forward method, i.e. checks metadata is valid.
+        Checks metadata of arguments to forward are valid.
         """
-        # Check metadata of input and target
-        if not equistore.equal_metadata(input, target):
-            raise ValueError(
-                "``input`` and ``target`` must have equal metadata in the same order."
-            )
-        # Check metadata of overlap
-        if overlap.sample_names != ("center_1",):
-            raise ValueError("``overlap`` must have sample names ('center_1',).")
-        if len(overlap.components) != 4:
-            raise ValueError(
-                "``overlap`` must have 4 components, corresponding to the axes "
-                "('spherical_harmonics_m1',), ('n1',), ('center_2',), "
-                "('spherical_harmonics_m2',)"
-            )
-        for i, names in enumerate(
-            [
+        for inp, targ, over in zip(input, target, overlap):
+            # If passing a single TensorMap, check that each has data for a single structure
+            if isinstance(inp, TensorMap):
+                if len(equistore.unique_metadata(inp, "samples", "structure")) > 1:
+                    raise ValueError(
+                        "each `input` TensorMap must have data for a single structure, not a batch."
+                    )
+
+            if isinstance(targ, TensorMap):
+                if len(equistore.unique_metadata(targ, "samples", "structure")) > 1:
+                    raise ValueError(
+                        "each `target` TensorMap must have data for a single structure, not a batch."
+                    )
+            if isinstance(over, TensorMap):
+                if len(equistore.unique_metadata(over, "samples", "structure")) > 1:
+                    raise ValueError(
+                        "each `overlap` TensorMap must have data for a single structure, not a batch."
+                    )
+
+            # Check metadata of input and target
+            if not equistore.equal_metadata(inp, targ):
+                raise ValueError(
+                    "`input` and `target` TensorMaps must have equal metadata."
+                )
+
+            # Check metadata of overlap. Sample names may have the "tensor" index
+            # present as a by-product of using the join function. This can be
+            # removed once the join function is updated in equistore (TODO).
+            if over.sample_names != (
+                "structure",
+                "center_1",
+            ):
+                raise ValueError(
+                    "each `overlap` TensorMap must have sample names ('structure', 'center_1',), "
+                    f"got {over.sample_names}."
+                )
+            c_names = [
                 ("spherical_harmonics_m1",),
                 ("n1",),
                 ("center_2",),
                 ("spherical_harmonics_m2",),
             ]
-        ):
-            if overlap.components[i].names != names:
+            if not np.all(over.components_names == c_names):
                 raise ValueError(
-                    "``overlap`` component {} must have names {}.".format(i, names)
+                    "each `overlap` TensorMap must have 4 components, corresponding to the axes "
+                    f"{c_names}, got {overlap.components_names}."
                 )
-        if overlap.property_names != ("n2",):
-            raise ValueError("``overlap`` must have property names ('n2',).")
+            if over.property_names != ("n2",):
+                raise ValueError(
+                    "each `overlap` TensorMap must have property names ('n2',), "
+                    f"got {overlap.property_names}."
+                )
 
     def forward(
         self,
-        input: TensorMap,
-        target: TensorMap,
-        overlap: TensorMap,
+        input: Union[TensorMap, List[TensorMap]],
+        target: Union[TensorMap, List[TensorMap]],
+        overlap: Union[TensorMap, List[TensorMap]],
         unsafe: bool = False,
-    ) -> float:
+    ) -> torch.Tensor:
         """
         Calculates the squared error loss between the input (ML) and target (QM)
         electron densities.
         """
+        # Convert to a list if passed as a single TensorMap
+        if isinstance(input, TensorMap):
+            input = [input]
+        if isinstance(target, TensorMap):
+            target = [target]
+        if isinstance(overlap, TensorMap):
+            overlap = [overlap]
+
+        # Check input args
         if not unsafe:
             self._check_forward_args(input, target, overlap)
 
-        # Calculate the delta coefficients, i.e. the difference between the
-        # input and target coefficients. `equistore.subtract` checks the
-        # metadata of the input and target TensorMaps for us.
-        delta_c = equistore.subtract(input, target)
-
+        # Iterate over structures in the batch
         loss = 0
-        for key in overlap.keys:
-            l1, l2, a1, a2 = key
+        for inp, targ, over in zip(input, target, overlap):
+            # Calculate the delta coefficients, i.e. the difference between the
+            # input and target coefficients. `equistore.subtract` checks the
+            # metadata of the input and target TensorMaps for us.
+            delta_c = equistore.subtract(inp, targ)
 
-            # Retrieve the pairs of delta blocks we're evaluating the loss for
-            delta_c_block_1 = delta_c.block(
-                spherical_harmonics_l=l1, species_center=a1
-            ).values
-            delta_c_block_2 = delta_c.block(
-                spherical_harmonics_l=l2, species_center=a2
-            ).values
+            # Iterate over blocks in the overlap matrix
+            for key, block in over:
+                s_block = block.values
+                l1, l2, a1, a2 = key
 
-            # Retrieve the corresponding overlap block that measures the
-            # correlations between pairs of basis functions in the corresponding
-            # delta blocks
-            s_block = overlap[key]
+                # Retrieve the pairs of delta blocks the overlap matrix is
+                # measuring coupling between
+                delta_c_block_1 = delta_c.block(
+                    spherical_harmonics_l=l1, species_center=a1
+                ).values
+                delta_c_block_2 = delta_c.block(
+                    spherical_harmonics_l=l2, species_center=a2
+                ).values
 
-            # Calculate the loss for this pair of blocks by dot product. As the
-            # overlap matrix has been symmetrized we only evaluate off-diagonal
-            # blocks once. As such, multiply the result for off-diagonals by 2
-            # to account for this.
-            loss_block = torch.tensordot(
-                torch.tensordot(delta_c_block_1, s_block, dims=3),
-                delta_c_block_2,
-                dims=3,
-            )
-            if l1 == l2 and a1 == a2:  # diagonal block
-                loss += loss_block
-            else:  # off-diagonal block
-                loss += 2 * loss_block
+                # Calculate the loss for this pair of blocks by dot product. As the
+                # overlap matrix has been symmetrized we only evaluate off-diagonal
+                # blocks once. As such, multiply the result for off-diagonals by 2
+                # to account for this.
+                loss_block = torch.tensordot(
+                    torch.tensordot(delta_c_block_1, s_block, dims=3),
+                    delta_c_block_2,
+                    dims=3,
+                )
+                if l1 == l2 and a1 == a2:  # diagonal block
+                    loss += loss_block
+                else:  # off-diagonal block
+                    loss += 2 * loss_block
 
         return loss
