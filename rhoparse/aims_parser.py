@@ -17,11 +17,13 @@ import numpy as np
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
+from rholearn import io
+
 
 # ===== AIMS input file generation =====
 
 
-def generate_input_geometry_files(frames: List[ase.Atoms], save_dir: str):
+def generate_input_geometry_files(frames: List[ase.Atoms], save_dir: str, structure_idxs: Optional[List[int]] = None):
     """
     Takes a list of ASE Atoms objects (i.e. ``frames``) for a set of structures
     and generates input geometry files in the AIMS format.
@@ -37,13 +39,29 @@ def generate_input_geometry_files(frames: List[ase.Atoms], save_dir: str):
         files for.
     :param save_dir: a `str` of the absolute path to the directory where the
         AIMS input geometry files should be saved.
+    :param structure_idxs: an optional :py:class:`list` of :py:class:`int` of
+        the indices of the structures in ``frames`` to generate AIMS input files
+        for. If ``None``, then "geometry.in" files are saved in directories
+        indexed by 0, 1, ..., N-1, where N is the number of structures in
+        ``frames``. If not ``None``, then the explicit indices passed in
+        `structure_idxs` are used to index the directories, mapping one-to-one
+        to the structures in ``frames``.
     """
-
     # Create the save directory if it doesn't already exist
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
 
-    for A in range(len(frames)):  # Iterate over structures
+    # Define the structure indices used to name the sub-directories
+    if structure_idxs is None:
+        structure_idxs = range(len(frames))  # 0, 1, ..., N-1
+    else:
+        if len(frames) != len(structure_idxs):
+            raise ValueError(
+                f"The number of structures in `frames` ({len(frames)}) must match "
+                f"the number of indices in `structure_idxs` ({len(structure_idxs)})"
+            )
+
+    for A, frame in zip(structure_idxs, frames):  # Iterate over structures
         # Create a directory named simply by the structure index
         structure_dir = os.path.join(save_dir, f"{A}")
         if not os.path.exists(structure_dir):
@@ -52,7 +70,7 @@ def generate_input_geometry_files(frames: List[ase.Atoms], save_dir: str):
         # Write the AIMS input file. By using the ".in" suffix/extension in the
         # filename, ASE will automatically produce an input file that follows
         # AIMS formatting.
-        ase.io.write(os.path.join(structure_dir, "geometry.in"), frames[A])
+        ase.io.write(os.path.join(structure_dir, "geometry.in"), frame)
 
 
 # ===== AIMS output file parsing =====
@@ -101,14 +119,14 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
 
             # AIMS unique identifier for the run
             if split[:2] == "aims_uuid :".split():
-                calc_info["aims"]["run_id"] = split[3]
+                calc_info["aims"]["run_id"] = split[2]
 
             # AIMS version
-            if split[:2] == "FHI-aims version      :".split():
+            if split[:3] == "FHI-aims version      :".split():
                 calc_info["aims"]["version"] = split[3]
 
             # AIMS commit version
-            if split[:2] == "Commit number         :".split():
+            if split[:3] == "Commit number         :".split():
                 calc_info["aims"]["commit"] = split[3]
 
             # Net and non-zero number of real-space integration points
@@ -483,6 +501,58 @@ def calc_density_fitting_error(aims_output_dir: str) -> float:
 
     # Calculate and return the relative error (normalized by the number of electrons)
     return np.dot(error, partition) / np.dot(scf_rho, partition)
+
+
+def process_aims_ri_results(frame: ase.Atoms, aims_output_dir: str) -> None:
+    """
+    Calls a series of functions to process the results of an AIMS RI calculation
+    and saves them in the relative directory `aims_output_dir/processed/`.
+    
+    First, the calculation info is extracted from aims.out and stored in a
+    dictionary. To this dict are added the RI basis set definition, then the
+    dict is pickled to file "calc.pickle".
+
+    Then, the RI basis set coefficients, projections, and overlap matrix are
+    processed and saved as numpy arrays "c.npy", "w.npy", and "s.npy"
+    respectively.
+
+    :param frame: the ASE.atoms frame for which the AIMS RI calculation was
+        performed.
+    :param aims_output_dir: the path to the directory containing the AIMS output
+        files.
+    """
+    # Create a directory for the processed data
+    processed_dir = os.path.join(aims_output_dir, "processed")
+    if not os.path.exists(processed_dir):
+        os.mkdir(processed_dir)
+
+    # Parse calc info
+    calc = extract_calculation_info(aims_output_dir)
+    if not calc["scf"]["converged"]:
+        io.pickle_dict(os.path.join(processed_dir, "calc.pickle"), calc)
+        raise ValueError("SCF did not converge")
+
+    # Parse basis set info
+    lmax, nmax = extract_basis_set_info(frame, aims_output_dir)
+    calc["lmax"] = lmax
+    calc["nmax"] = nmax
+
+    # Calculate the density fitting error
+    calc["df_error"] = calc_density_fitting_error(aims_output_dir)
+
+    # Convert coeffs, projs, overlaps to numpy arrays
+    c, w, s = process_aux_basis_func_data(aims_output_dir)
+
+    # Save to file
+    np.save(os.path.join(processed_dir, "c.npy"), c)
+    np.save(os.path.join(processed_dir, "w.npy"), w)
+    np.save(os.path.join(processed_dir, "s.npy"), s)
+    io.pickle_dict(os.path.join(processed_dir, "calc.pickle"), calc)
+
+    # Clear from memory
+    del c, w, s, calc
+
+    return
 
 
 # ===== Convert numpy to AIMS format =====
