@@ -21,7 +21,7 @@ def make_contiguous_numpy(tensor: TensorMap) -> TensorMap:
     """
 
     new_blocks = []
-    for key, block in tensor:
+    for key, block in tensor.items():
         new_block = TensorBlock(
             samples=block.samples,
             components=block.components,

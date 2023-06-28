@@ -29,7 +29,7 @@ def recombine_coulomb_metrics(data_dir: str):
     # Combine them
     combined_keys, combined_blocks = [], []
     for tensor in cm_list:
-        for key, block in tensor:
+        for key, block in tensor.items():
             combined_keys.append([k for k in key])
             combined_blocks.append(block.copy())
 

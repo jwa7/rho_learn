@@ -334,7 +334,7 @@ class DensityLoss(torch.nn.Module):
             delta_c = equistore.subtract(inp, targ)
 
             # Iterate over blocks in the overlap matrix
-            for key, block in over:
+            for key, block in over.items():
                 s_block = block.values
                 l1, l2, a1, a2 = key
 

@@ -907,7 +907,7 @@ def coeff_vector_tensormap_to_ndarray(
     results_dict = {}
 
     # Loop over the blocks and split up the values tensors
-    for key, block in tensor:
+    for key, block in tensor.items():
         l, a = key
         symbol = NUM_TO_SYM[a]
         tmp_dict = {}

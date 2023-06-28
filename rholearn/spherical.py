@@ -666,7 +666,7 @@ def acdc_standardize_keys(descriptor):
         )
     blocks = []
     keys = []
-    for key, block in descriptor:
+    for key, block in descriptor.items():
         key = tuple(key)
         if not "inversion_sigma" in key_names:
             key = (1,) + key
