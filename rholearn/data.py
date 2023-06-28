@@ -1,5 +1,5 @@
 """
-Module for creating torch datasets and dataloaders.
+Module for creating a custom torch datasets specifically for density data.
 """
 import os
 from typing import List, Optional, Tuple
