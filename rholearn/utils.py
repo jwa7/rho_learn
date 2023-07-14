@@ -101,19 +101,6 @@ def key_tuple_to_npvoid(key: tuple, names: List[str]) -> np.void:
     return tensor.keys[0]
 
 
-# ===== fxns for equistore Labels objects comparisons
-
-
-def labels_intersection(a: Labels, b: Labels):
-    """
-    For 2 :py:class:`Labels` objects ``a`` and ``b``, returns a new Labels
-    object of the indices that they share, i.e. the intersection.
-    """
-    # Find the intersection
-    intersection_idxs = [i for i in [a.position(b_i) for b_i in b] if i is not None]
-    return a[intersection_idxs]
-
-
 # ===== TensorMap + TensorBlock functions
 
 
@@ -230,7 +217,7 @@ def drop_key_name(tensor: TensorMap, key_name: str) -> TensorMap:
     """
     keys = tensor.keys
     # Check that the key_name is present and unique
-    if not len(np.unique(keys[key_name])) == 1:
+    if not len(np.unique(keys.column(key_name))) == 1:
         raise ValueError(
             f"key_name {key_name} is not unique in the keys."
             " Can only drop a key_name where the value is the"
@@ -243,8 +230,8 @@ def drop_key_name(tensor: TensorMap, key_name: str) -> TensorMap:
     # Build the new TensorMap
     new_keys = Labels(
         names=keys.names[:drop_idx] + keys.names[drop_idx + 1 :],
-        values=np.array(
-            [k.tolist()[:drop_idx] + k.tolist()[drop_idx + 1 :] for k in keys]
+        values=np.concatenate(
+            [keys.values[:, :drop_idx], keys.values[:, drop_idx + 1 :]], axis=1
         ),
     )
     new_tensor = TensorMap(
@@ -299,37 +286,39 @@ def drop_metadata_name(
         drop_idx = tensor.blocks()[0].properties.names.index(name)
     # Construct new blocks with the dropped name
     new_blocks = []
-    for key in tensor.keys:
-        new_samples = tensor[key].samples
-        new_properties = tensor[key].properties
+    for key, block in tensor.items():
         if axis == "samples":
             new_samples = Labels(
-                names=tensor[key].samples.names[:drop_idx]
-                + tensor[key].samples.names[drop_idx + 1 :],
-                values=np.array(
+                names=block.samples.names[:drop_idx]
+                + block.samples.names[drop_idx + 1 :],
+                values=np.concatenate(
                     [
-                        s.tolist()[:drop_idx] + s.tolist()[drop_idx + 1 :]
-                        for s in tensor[key].samples
-                    ]
+                        block.samples.values[:, :drop_idx],
+                        block.samples.values[:, drop_idx + 1 :],
+                    ],
+                    axis=1,
                 ),
             )
+            new_properties = block.properties
         else:
+            new_samples = block.samples
             new_properties = Labels(
-                names=tensor[key].properties.names[:drop_idx]
-                + tensor[key].properties.names[drop_idx + 1 :],
+                names=block.properties.names[:drop_idx]
+                + block.properties.names[drop_idx + 1 :],
                 values=np.array(
                     [
-                        p.tolist()[:drop_idx] + p.tolist()[drop_idx + 1 :]
-                        for p in tensor[key].properties
-                    ]
+                        block.properties.values[:, :drop_idx]
+                        + block.properties.values[:, drop_idx + 1 :]
+                    ],
+                    axis=1,
                 ),
             )
         new_blocks.append(
             TensorBlock(
                 samples=new_samples,
-                components=tensor[key].components,
+                components=block.components,
                 properties=new_properties,
-                values=tensor[key].values,
+                values=block.values,
             )
         )
     new_tensor = TensorMap(
@@ -423,6 +412,25 @@ def sort_tensormap(tensor: TensorMap) -> TensorMap:
             )
         )
     return TensorMap(keys=keys, blocks=blocks)
+
+
+def feature_labels_tensormap(tensor: TensorMap) -> TensorMap:
+    """
+    Returns a TensorMap with minimal data, and dummy metadata, except the keys
+    and properties correspond to the input tensor.
+    """
+    blocks = []
+    for key in tensor.keys:
+        props = tensor[key].properties
+        blocks.append(
+            TensorBlock(
+                samples=Labels(names=["_"], values=np.array([0]).reshape(-1, 1)),
+                components=[],
+                properties=props,
+                values=np.zeros((1, len(props))),
+            )
+        )
+    return TensorMap(keys=tensor.keys, blocks=blocks)
 
 
 # ===== other utility functions
