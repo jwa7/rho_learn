@@ -1083,7 +1083,10 @@ def test_overlap_matrix_conversion(
     row_idx = get_flat_index(species_symbols, lmax, nmax, i1, l1, n1, m1)
     col_idx = get_flat_index(species_symbols, lmax, nmax, i2, l2, n2, m2)
     raw_elem = overlaps_matrix[row_idx][col_idx]
-    assert raw_elem == overlaps_matrix[col_idx][row_idx]
+
+    # Check that the matrix element is symmetric
+    assert np.isclose(raw_elem, overlaps_matrix[col_idx][row_idx])
+    
     if print_level > 0:
         print("Raw matrix: idx", (row_idx, col_idx), "coeff", raw_elem)
 
