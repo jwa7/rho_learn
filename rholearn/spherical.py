@@ -684,9 +684,9 @@ def acdc_standardize_keys(descriptor):
         )
 
     if not "inversion_sigma" in key_names:
-        key_names = ("inversion_sigma",) + key_names
+        key_names = ["inversion_sigma"] + key_names
     if not "order_nu" in key_names:
-        key_names = ("order_nu",) + key_names
+        key_names = ["order_nu"] + key_names
 
     return TensorMap(
         keys=Labels(names=key_names, values=np.asarray(keys, dtype=np.int32)),
@@ -779,7 +779,7 @@ def cg_combine(
     X_grads = {}
 
     # loops over sparse blocks of x_a
-    for index_a, block_a in x_a:
+    for index_a, block_a in x_a.items():
         lam_a = index_a["spherical_harmonics_l"]
         sigma_a = index_a["inversion_sigma"]
         order_a = index_a["order_nu"]
@@ -789,7 +789,7 @@ def cg_combine(
         samples_a = block_a.samples
 
         # and x_b
-        for index_b, block_b in x_b:
+        for index_b, block_b in x_b.items():
             lam_b = index_b["spherical_harmonics_l"]
             sigma_b = index_b["inversion_sigma"]
             order_b = index_b["order_nu"]
@@ -963,17 +963,17 @@ def cg_increment(
 
     if nu == 1:
         feature_names = (
-            tuple(root + "_1" for root in feature_roots)
-            + ("l_1",)
-            + tuple(root + "_2" for root in feature_roots)
-            + ("l_2",)
+            [root + "_1" for root in feature_roots]
+            + ["l_1"]
+            + [root + "_2" for root in feature_roots]
+            + ["l_2"]
         )
     else:
         feature_names = (
-            tuple(x_nu.block(0).properties.names)
-            + ("k_" + str(nu + 1),)
-            + tuple(root + "_" + str(nu + 1) for root in feature_roots)
-            + ("l_" + str(nu + 1),)
+            [x_nu.block(0).properties.names]
+            + ["k_" + str(nu + 1)]
+            + [root + "_" + str(nu + 1) for root in feature_roots]
+            + ["l_" + str(nu + 1)]
         )
 
     return cg_combine(
