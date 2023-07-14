@@ -12,6 +12,7 @@ import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
 from rholearn import utils
+from rhoparse import convention
 
 
 SYM_TO_NUM = {"H": 1, "C": 6, "O": 8, "N": 7}
@@ -210,15 +211,15 @@ def coeff_vector_ndarray_to_tensormap(
 
     # Build the TensorMap keys
     keys = Labels(
-        names=["spherical_harmonics_l", "species_center"],
+        names=convention.COEFF_VECTOR.keys.names,
         values=np.array([[l, SYM_TO_NUM[symbol]] for l, symbol in results_dict.keys()]),
     )
 
     # Define the sample names, with or without the structure index
     if structure_idx is None:  # don't include structure idx in the metadata
-        sample_names = ["center"]
+        sample_names = convention.COEFF_VECTOR.sample_names[1:]
     else:  # include
-        sample_names = ["structure", "center"]
+        sample_names = convention.COEFF_VECTOR.sample_names
 
     # Build the TensorMap blocks
     blocks = []
@@ -235,12 +236,13 @@ def coeff_vector_ndarray_to_tensormap(
             samples=Labels(names=sample_names, values=sample_values),
             components=[
                 Labels(
-                    names=["spherical_harmonics_m"],
+                    names=convention.COEFF_VECTOR.block(0).components[0].names,
                     values=np.arange(-l, +l + 1).reshape(-1, 1),
                 ),
             ],
             properties=Labels(
-                names=["n"], values=np.arange(nmax[(symbol, l)]).reshape(-1, 1)
+                names=convention.COEFF_VECTOR.property_names,
+                values=np.arange(nmax[(symbol, l)]).reshape(-1, 1),
             ),
             values=np.ascontiguousarray(
                 np.concatenate([raw_block[i] for i in atom_idxs], axis=0)
@@ -456,12 +458,7 @@ def overlap_matrix_ndarray_to_tensormap(
 
     # Contruct the TensorMap keys
     keys = Labels(
-        names=[
-            "spherical_harmonics_l1",
-            "spherical_harmonics_l2",
-            "species_center_1",
-            "species_center_2",
-        ],
+        names=convention.OVERLAP_MATRIX.keys.names,
         values=np.array(
             [
                 [l1, l2, SYM_TO_NUM[symbol_1], SYM_TO_NUM[symbol_2]]
@@ -472,9 +469,9 @@ def overlap_matrix_ndarray_to_tensormap(
 
     # Define the sample names, with or without the structure index
     if structure_idx is None:  # don't include structure idx in the metadata
-        sample_names = ["center_1", "center_2"]
+        sample_names = convention.OVERLAP_MATRIX.sample_names[1:]
     else:  # include
-        sample_names = ["structure", "center_1", "center_2"]
+        sample_names = convention.OVERLAP_MATRIX.sample_names
 
     # Contruct the TensorMap blocks
     blocks = []
@@ -508,16 +505,16 @@ def overlap_matrix_ndarray_to_tensormap(
             ),
             components=[
                 Labels(
-                    names=["spherical_harmonics_m1"],
+                    names=convention.OVERLAP_MATRIX.block(0).components[0].names,
                     values=np.arange(-l1, +l1 + 1).reshape(-1, 1),
                 ),
                 Labels(
-                    names=["spherical_harmonics_m2"],
+                    names=convention.OVERLAP_MATRIX.block(0).components[1].names,
                     values=np.arange(-l2, +l2 + 1).reshape(-1, 1),
                 ),
             ],
             properties=Labels(
-                names=["n1", "n2"],
+                names=convention.OVERLAP_MATRIX.property_names,
                 values=np.array(
                     [
                         [n1, n2]
@@ -558,30 +555,15 @@ def overlap_is_symmetric(tensor: TensorMap) -> bool:
     false otherwise.
 
     This class assumes that the overlap-type matrices are stored in equistore
-    TensorMap format and have the following data structure:
-
-        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
-          'species_center_1', 'species_center_2')
-        - sample names: either ('structure', 'center_1', 'center_2') or
-          ('center_1', 'center_2')
-        - component names: [('spherical_harmonics_m1',),
-          ('spherical_harmonics_m2',)]
-        - property names: ('n1', 'n2')
+    TensorMap format and has the data structure as given in the example
+    TensorMap found in `rhoparse.convention.OVERLAP_MATRIX`.
 
     :param tensor: the overlap matrix in TensorMap format. Will be checked for
         symmetry.
     """
     # Get the key names and check they have the assumed form
     keys = tensor.keys
-    assert np.all(
-        keys.names
-        == (
-            "spherical_harmonics_l1",
-            "spherical_harmonics_l2",
-            "species_center_1",
-            "species_center_2",
-        )
-    )
+    assert np.all(keys.names == convention.OVERLAP_MATRIX.keys.names)
 
     # Iterate over the blocks
     checked = set()  # for storing the keys that have been checked
@@ -619,13 +601,8 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
     false otherwise. The relevant data of one of the blocks is permuted and
     checked for exact equivalence with the other block.
 
-    Assumes both blocks have the following data structure:
-
-        - sample names: either ('structure', 'center_1', 'center_2') or
-          ('center_1', 'center_2')
-        - component names: [('spherical_harmonics_m1',),
-          ('spherical_harmonics_m2',)]
-        - property names: ('n1', 'n2')
+    Assumes both blocks have the data structure shown in the only block of the
+    example TensorMap found in `rhoparse.convention.OVERLAP_MATRIX`.
 
     If symmetric, the data tensor of ``block2`` should be exactly equivalent to
     that of ``block2`` after permuting:
@@ -638,38 +615,36 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
     """
     # Check the samples names and determine whether or not the structure index
     # is included
-    if block1.samples.names == (
-        "structure",
-        "center_1",
-        "center_2",
-    ) and block2.samples.names == ("structure", "center_1", "center_2"):
+    if np.all(
+        block1.samples.names == convention.OVERLAP_MATRIX.sample_names
+    ) and np.all(block2.samples.names == convention.OVERLAP_MATRIX.sample_names):
         structure_idx_present = True
-    elif block1.samples.names == ("center_1", "center_2") and block2.samples.names == (
-        "center_1",
-        "center_2",
-    ):
+    elif np.all(
+        block1.samples.names == convention.OVERLAP_MATRIX.sample_names[1:]
+    ) and np.all(block2.samples.names == convention.OVERLAP_MATRIX.sample_names[1:]):
         structure_idx_present = False
     else:
         raise ValueError(
-            "the sample names of both blocks must be either ('structure', 'center_1', 'center_2')"
-            " or ('center_1', 'center_2')"
+            f"the sample names of both blocks must be either "
+            f"{convention.OVERLAP_MATRIX.sample_names}"
+            f" or {convention.OVERLAP_MATRIX.sample_names[1:]}"
         )
     # Check the component names
+    c_names = [c.names for c in convention.OVERLAP_MATRIX.block(0).components]
     for block in [block1, block2]:
         if not (
-            np.all(block.components[0].names == ("spherical_harmonics_m1",))
-            and np.all(block.components[1].names == ("spherical_harmonics_m2",))
+            np.all(block.components[0].names == c_names[0])
+            and np.all(block.components[1].names == c_names[1])
         ):
-            raise ValueError(
-                "the component names of both blocks must be [('spherical_harmonics_m1',),"
-                " ('spherical_harmonics_m2',)]"
-            )
+            raise ValueError(f"the component names of both blocks must be {c_names}")
     # Check the property names
     if not (
-        np.all(block1.properties.names == ("n1", "n2"))
-        and np.all(block2.properties.names == ("n1", "n2"))
+        np.all(block1.properties.names == convention.OVERLAP_MATRIX.property_names)
+        and np.all(block2.properties.names == convention.OVERLAP_MATRIX.property_names)
     ):
-        raise ValueError("the property names of both blocks must be ('n1', 'n2')")
+        raise ValueError(
+            f"the property names of both blocks must be {convention.OVERLAP_MATRIX.property_names}"
+        )
 
     # Create a samples filter for how the samples map to eachother between
     # blocks
@@ -700,7 +675,7 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     for a given structure. Assumes blocks have keys with names
     ("spherical_harmonics_l1", "spherical_harmonics_l2", "species_center_1",
     "species_center_2",) corresponding to indices of the form (l1, l2, a1, a2).
-    
+
     The returned TensorMap only has off-diagonal blocks with keys where:
         - l1 < l2, or
         - a1 <= a2 if l1 == l2
@@ -718,21 +693,13 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
     # Get the key names and check they have the assumed form
     keys = tensor.keys
-    assert np.all(
-        keys.names
-        == (
-            "spherical_harmonics_l1",
-            "spherical_harmonics_l2",
-            "species_center_1",
-            "species_center_2",
-        )
-    )
+    assert np.all(keys.names == convention.OVERLAP_MATRIX.keys.names)
 
     # Define a filter for the keys *TO DROP*
     keys_to_drop_filter = []
     for l1, l2, a1, a2 in keys:
         # Keep keys where l1 < l2, or a1 <= a2 if l1 == l2
-        if l1 < l2: # keep
+        if l1 < l2:  # keep
             keys_to_drop_filter.append(False)
         elif l1 == l2:
             if a1 <= a2:  # keep
@@ -743,7 +710,10 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
             keys_to_drop_filter.append(True)
 
     # Drop these blocks
-    new_tensor = equistore.drop_blocks(tensor, keys=keys[keys_to_drop_filter])
+    new_tensor = equistore.drop_blocks(
+        tensor,
+        keys=Labels(names=keys.names, values=keys.values[keys_to_drop_filter]),
+    )
 
     # Check the number of output blocks is correct
     K_old = len(tensor.keys)
@@ -751,90 +721,6 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     assert K_new == np.sqrt(K_old) / 2 * (np.sqrt(K_old) + 1)
 
     return new_tensor
-
-
-# NOTE: this function is no longer in use. Left here for reference.
-# def overlap_drop_redundant_atom_center_pairs_diagonal_blocks(tensor: TensorMap) -> TensorMap:
-#     """
-#     Returns a new TensorMap where redundant atom center pairs from diagonal
-#     blocks have been dropped. In the returned TensorMap, diagonal blocks will
-#     only have samples with atom center pairs with i1 <= i2, where i1 corresponds
-#     to the index of 'center_1', and i2 to 'center_2'.
-
-#     The input TensorMap is assumed to have key names ('spherical_harmonics_l1',
-#     'spherical_harmonics_l2', 'species_center_1', 'species_center_2'). Diagonal
-#     blocks are ones where l1 == l2 and a1 == a2. The sample names are also
-#     assumed to be ('structure', 'center_1', 'center_2') or ('center_1',
-#     'center_2').
-#     """
-    
-#     # Get the key names and check they have the assumed form
-#     keys = tensor.keys
-#     assert np.all(
-#         keys.names
-#         == (
-#             "spherical_harmonics_l1",
-#             "spherical_harmonics_l2",
-#             "species_center_1",
-#             "species_center_2",
-#         )
-#     )
-#     # Check the form of the sample names
-#     if np.all(tensor.sample_names == ("structure", "center_1", "center_2")):
-#         structure_idx_present = True
-#     elif np.all(tensor.sample_names == ("center_1", "center_2")):
-#         structure_idx_present = False
-#     else:
-#         raise ValueError(
-#             "``tensor`` sample names must be ('structure', 'center_1', 'center_2')"
-#             " or ('center_1', 'center_2')"
-#         )
-
-#     # Now iterate over blocks. Manipulate diagonal blocks only.
-#     blocks = []
-#     for key in keys:
-#         # Unpack the key
-#         l1, l2, a1, a2 = key
-
-#         # If an off-diagonal block, just store it
-#         if not (l1 == l2 and a1 == a2):
-#             blocks.append(tensor[key].copy())
-#             continue
-
-#         # Otherwise, manipulate the samples of the diagonal block
-#         block = tensor[key]
-
-#         # Create a samples filter for samples *TO KEEP*
-#         samples_filter = []
-#         for sample in block.samples:
-#             # Get the atom center indices, accounting for whether or not the
-#             # structure index is included in the sample names
-#             if structure_idx_present:
-#                 _, i1, i2 = sample
-#             else:
-#                 i1, i2 = sample
-#             if i1 <= i2:  # keep
-#                 samples_filter.append(True)
-#             else:  # discard
-#                 samples_filter.append(False)
-#         new_samples = block.samples[samples_filter]
-
-#         # Check the number of output blocks is correct
-#         S_old = len(block.samples)
-#         S_new = len(new_samples)
-#         assert S_new == np.sqrt(S_old) / 2 * (np.sqrt(S_old) + 1)
-
-#         # Create and store the new block
-#         blocks.append(
-#             TensorBlock(
-#                 values=block.values[samples_filter],
-#                 samples=new_samples,
-#                 components=block.components,
-#                 properties=block.properties,
-#             )
-#         )
-
-#     return TensorMap(keys=keys, blocks=blocks)
 
 
 # ===== convert equistore to numpy format =====
@@ -869,18 +755,19 @@ def coeff_vector_tensormap_to_ndarray(
     """
     # Check the samples names and determine whether or not the structure index
     # is included
-    if tensor.sample_names == ("structure", "center"):
+    if tensor.sample_names == convention.COEFF_VECTOR.sample_names:
         structure_idx_present = True
         structure_idxs = equistore.unique_metadata(tensor, "samples", "structure")
         assert len(structure_idxs) == 1
         structure_idx = structure_idxs[0]
-    elif tensor.sample_names == ("center",):
+    elif tensor.sample_names == convention.COEFF_VECTOR.sample_names[1:]:
         structure_idx_present = False
         structure_idx = None
     else:
         raise ValueError(
-            "the sample names of the input tensor must be either ('structure', 'center',)"
-            " or ('center',)"
+            "the sample names of the input tensor must be either "
+            f"{convention.COEFF_VECTOR.sample_names} or "
+            f"{convention.COEFF_VECTOR.sample_names[1:]}"
         )
 
     # Define some useful variables
