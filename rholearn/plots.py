@@ -184,7 +184,7 @@ def plot_coeff_hist(
     # value
     results = [{l: np.array([]) for l in L} for tensor in tensors]
     for tensor_i, tensor in enumerate(tensors):
-        for key, block in tensor:
+        for key, block in tensor.items():
             l = key["spherical_harmonics_l"]
             vals = block.values.flatten()
             results[tensor_i][l] = np.concatenate([results[tensor_i][l], vals])

@@ -116,16 +116,16 @@ class WignerDReal:
 
         1. Loop over atoms (index ``i``, of chemical species ``a``) in the
         structure. ``i`` takes values 0 to N (** exclusive **), where N is the
-        number of atoms in the structure. 
+        number of atoms in the structure.
 
         2. Loop over spherical harmonics channel (index ``l``) for each atom.
         ``l`` takes values from 0 to ``lmax[a] + 1`` (** exclusive **), where
         ``a`` is the chemical species of atom ``i``, given by the chemical
-        symbol at the ``i``th position of ``symbol_list``. 
+        symbol at the ``i``th position of ``symbol_list``.
 
         3. Loop over radial channel (index ``n``) for each atom ``i`` and
         spherical harmonics channel ``l`` combination. ``n`` takes values from 0
-        to ``nmax[(a, l)]`` (** exclusive **). 
+        to ``nmax[(a, l)]`` (** exclusive **).
 
         4. Loop over spherical harmonics component (index ``m``) for each atom.
         ``m`` takes values from ``-l`` to ``l`` (** inclusive **).
@@ -133,9 +133,9 @@ class WignerDReal:
         :param frame: the atomic structure in ASE format for which the
             coefficients are defined.
         :param coeffs: the coefficients in the spherical basis, as a flat
-            vector. 
+            vector.
         :param lmax: dict containing the maximum spherical harmonics (l) value
-            for each atom type. 
+            for each atom type.
         :param nmax: dict containing the maximum radial channel (n) value for
             each combination of atom type and l.
 
@@ -143,7 +143,7 @@ class WignerDReal:
             vector with the same order as the input vector.
         """
         # Initialize empty vector for storing the rotated ISCs
-        rot_vect = np.empty_like(coeffs)        
+        rot_vect = np.empty_like(coeffs)
 
         # Iterate over atomic species of the atoms in the frame
         curr_idx = 0
@@ -162,7 +162,7 @@ class WignerDReal:
                     rot_isc = isc @ wig_mat
                     rot_vect[curr_idx : curr_idx + (2 * l + 1)][:] = rot_isc[:]
                     # Update the start index for the next ISC
-                    curr_idx += (2 * l + 1)
+                    curr_idx += 2 * l + 1
 
         return rot_vect
 
@@ -666,7 +666,7 @@ def acdc_standardize_keys(descriptor):
         )
     blocks = []
     keys = []
-    for key, block in descriptor:
+    for key, block in descriptor.items():
         key = tuple(key)
         if not "inversion_sigma" in key_names:
             key = (1,) + key
@@ -679,19 +679,14 @@ def acdc_standardize_keys(descriptor):
                 values=block.values,
                 samples=block.samples,
                 components=block.components,
-                properties=Labels(
-                    property_names,
-                    np.asarray(block.properties.view(dtype=np.int32)).reshape(
-                        -1, len(property_names)
-                    ),
-                ),
+                properties=Labels(property_names, block.properties.values),
             )
         )
 
     if not "inversion_sigma" in key_names:
-        key_names = ("inversion_sigma",) + key_names
+        key_names = ["inversion_sigma"] + key_names
     if not "order_nu" in key_names:
-        key_names = ("order_nu",) + key_names
+        key_names = ["order_nu"] + key_names
 
     return TensorMap(
         keys=Labels(names=key_names, values=np.asarray(keys, dtype=np.int32)),
@@ -784,7 +779,7 @@ def cg_combine(
     X_grads = {}
 
     # loops over sparse blocks of x_a
-    for index_a, block_a in x_a:
+    for index_a, block_a in x_a.items():
         lam_a = index_a["spherical_harmonics_l"]
         sigma_a = index_a["inversion_sigma"]
         order_a = index_a["order_nu"]
@@ -794,7 +789,7 @@ def cg_combine(
         samples_a = block_a.samples
 
         # and x_b
-        for index_b, block_b in x_b:
+        for index_b, block_b in x_b.items():
             lam_b = index_b["spherical_harmonics_l"]
             sigma_b = index_b["inversion_sigma"]
             order_b = index_b["order_nu"]
@@ -968,17 +963,17 @@ def cg_increment(
 
     if nu == 1:
         feature_names = (
-            tuple(root + "_1" for root in feature_roots)
-            + ("l_1",)
-            + tuple(root + "_2" for root in feature_roots)
-            + ("l_2",)
+            [root + "_1" for root in feature_roots]
+            + ["l_1"]
+            + [root + "_2" for root in feature_roots]
+            + ["l_2"]
         )
     else:
         feature_names = (
-            tuple(x_nu.block(0).properties.names)
-            + ("k_" + str(nu + 1),)
-            + tuple(root + "_" + str(nu + 1) for root in feature_roots)
-            + ("l_" + str(nu + 1),)
+            [x_nu.block(0).properties.names]
+            + ["k_" + str(nu + 1)]
+            + [root + "_" + str(nu + 1) for root in feature_roots]
+            + ["l_" + str(nu + 1)]
         )
 
     return cg_combine(

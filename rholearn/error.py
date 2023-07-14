@@ -28,7 +28,7 @@ def absolute_error(input: TensorMap, target: TensorMap) -> float:
 
     # Sum the abs residuals
     abs_error = 0.0
-    for key, block in abs_diff:
+    for key, block in abs_diff.items():
         vals = block.values
         if isinstance(vals, np.ndarray):
             abs_error += np.sum(vals)

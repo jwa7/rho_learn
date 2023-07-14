@@ -21,9 +21,10 @@ DATA_SETTINGS = {
     "axis": "samples",         # which axis to split the data along
     "names": ["structure"],    # what index to split the data by - i.e. "structure"
     "n_groups": 3,             # num groups for data split (i.e. 3 for train-test-val)
-    "group_sizes": [500, 300, 1],  # the abs/rel group sizes for the data splits
+    "group_sizes": [0.5, 0.4, 0.1],  # the abs/rel group sizes for the data splits
     "n_exercises": 2,  # the number of learning exercises to perform
     "n_subsets": 3,    # how many subsets to use for each exercise
+    "shuffle": True,   # whether to shuffle structure indices for the train/test split
     "seed": 10,        # random seed for data split
 }
 
@@ -37,16 +38,16 @@ ML_SETTINGS = {
         "device": torch.device("cpu"),  # which device to load tensors to
     },
     "model": {  # Model architecture
-        "type": "linear",  # linear or nonlinear
+        "type": "nonlinear",  # linear or nonlinear
         "args": {  # if using linear, pass an empty dict
-            # "hidden_layer_widths": [10, 10, 10],
-            # "activation_fn": "SiLU"
+            "hidden_layer_widths": [10, 10, 10],
+            "activation_fn": "SiLU"
         },
     },
     "optimizer": {
-        "algorithm": torch.optim.LBFGS,
+        "algorithm": torch.optim.AdamW,
         "args": {
-            "lr": 1.25,
+            "lr": 0.1,
         },
     },
     "loss": {
@@ -54,6 +55,11 @@ ML_SETTINGS = {
         "args": {
             "reduction": "sum",  # reduction can be used with MSELoss
         },
+    },
+    "loading": {
+        "batch_size": 50,  # number of samples per batch
+        # "num_workers": 0,  # number of workers for data loading
+        # "prefetch_factor": None,  # number of batches to prefetch
     },
     "training": {
         "n_epochs": 10,  # number of total epochs to run

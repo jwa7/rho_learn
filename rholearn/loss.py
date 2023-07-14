@@ -5,176 +5,13 @@ import torch
 
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
+
 from rholearn import utils
 
-VALID_LOSS_FNS = ["CoeffLoss", "DensityLoss"]
+VALID_LOSS_FNS = ["RhoLoss", "CoeffLoss"]
 
 
-def transform_overlap_for_densityloss(overlap: TensorMap) -> TensorMap:
-    """
-    Reshapes and permutes the axes of the blocks of the overlap matrix such that
-    it is ready for the tensor dot operation involved in the evaluation of the
-    loss using the :py:class:`DensityLoss` class.
-
-    This method assumes that the passed overlap-type matrices are of equistore
-    TensorMap format and have the following data structure:
-
-        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
-          'species_center_1', 'species_center_2')
-        - sample names: ('structure', 'center_1', 'center_2')
-        - component names: [('spherical_harmonics_m1',),
-          ('spherical_harmonics_m2',)]
-        - property names: ('n1', 'n2')
-
-    and only correspond to one structure. This should be the case for TensorMaps
-    processed with the functions in the :py:mod:`rhoparse.convert` module. The
-    output TensorMap has a special data structure that conceptually goes against
-    the equistore philosophy (see
-    https://lab-cosmo.github.io/equistore/latest/get-started/concepts.html), but
-    has been designed to allow for faster evaluation of the loss when using the
-    :py:class:`DensityLoss` class in this module. The data strutcure of the
-    output TensorMap is:
-
-        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
-          'species_center_1', 'species_center_2') - i.e. same as the input.
-        - sample names: ('structure', 'center_1',)
-        - component names: [('spherical_harmonics_m1',), ('n1',), ('center_2',),
-          ('spherical_harmonics_m2',),]
-        - property names: ('n2',)
-
-    i.e. the notable changes are that the center and radial channel indices now
-    exist along orthogonal axes and the axes have been permuted.
-    """
-    # Iterate over blocks and manipulate each in turn
-    keys, new_blocks = overlap.keys, []
-    for key in keys:
-        # Retrieve the block
-        block = overlap[key]
-
-        # Get the structure index
-        A = np.unique(block.samples["structure"])[0]
-
-        # Get the axes dimensions
-        i1 = np.unique(block.samples["center_1"])
-        i2 = np.unique(block.samples["center_2"])
-        m1 = np.unique(block.components[0]["spherical_harmonics_m1"])
-        m2 = np.unique(block.components[1]["spherical_harmonics_m2"])
-        n1 = np.unique(block.properties["n1"])
-        n2 = np.unique(block.properties["n2"])
-
-        # Reshape the block and permute the axes such that the data for the
-        # first of the two centers is on the 'left' and the second on the 'right'.
-        s_block = block.values.reshape(
-            len(i1), len(i2), len(m1), len(m2), len(n1), len(n2)
-        )
-        # Shape before: (1, n_i1, n_i2, n_m1, n_m2, n_n1, n_n2)
-        # Shape after : (1, n_i1, n_m1, n_n1, n_i2, n_m2, n_n2)
-        s_block = torch.permute(s_block, (0, 2, 4, 1, 3, 5)).contiguous()
-        # s_block = torch.permute(s_block, (0, 1, 3, 5, 2, 4, 6)).contiguous()
-
-        # Build a new TensorBlock with updated metadata
-        new_block = TensorBlock(
-            # samples=Labels(
-            #     names=["structure"], values=np.array([[A]])
-            # ),
-            samples=Labels(
-                names=["structure", "center_1"],
-                values=np.array([[A, i] for i in i1]),
-            ),
-            components=[
-                # Labels(names=["center_1"], values=i1.reshape(-1, 1)),
-                Labels(names=["spherical_harmonics_m1"], values=m1.reshape(-1, 1)),
-                Labels(names=["n1"], values=n1.reshape(-1, 1)),
-                # Labels(names=["structure", "center_2"], values=np.array([[A, i] for i in i2])),
-                Labels(names=["center_2"], values=i2.reshape(-1, 1)),
-                Labels(names=["spherical_harmonics_m2"], values=m2.reshape(-1, 1)),
-            ],
-            properties=Labels(names=["n2"], values=n2.reshape(-1, 1)),
-            values=s_block,
-        )
-        new_blocks.append(new_block)
-
-    return TensorMap(keys, new_blocks)
-
-
-class CoeffLoss(torch.nn.Module):
-    """
-    Computes the squared loss on the electron density *coefficients* for a batch
-    of one or more structures.
-
-    For a given structure, A, the loss on the coefficients is given by:
-
-    .. math::
-
-        L = (\Delta c)^2
-
-    where :math:`\Delta c` is the difference between input/predicted (i.e. ML)
-    and target/reference (i.e. density fitted RI) electron density coefficients.
-
-    If evaluating the loss for multiple structures, the total loss is given by
-    the sum of individual losses for each structure.
-
-    :param input: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
-        corresponding to the batch of ML-predicted electron density
-        coefficients.
-    :param target: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
-        corresponding to the batch of reference electron density coefficients.
-    """
-
-    def __init__(self) -> None:
-        super(CoeffLoss, self).__init__()
-
-    @staticmethod
-    def _check_forward_args(input: TensorMap, target: TensorMap) -> None:
-        """
-        Checks input and target types and asserts they have equal metadata
-        """
-        if not equistore.equal_metadata(input, target):
-            raise ValueError(
-                "``input`` and ``target`` must have equal metadata in the same order."
-            )
-
-    def forward(
-        self,
-        input: Union[TensorMap, List[TensorMap]],
-        target: Union[TensorMap, List[TensorMap]],
-        unsafe: bool = False,
-    ) -> torch.Tensor:
-        """
-        Calculates the squared loss between 2 TensorMaps.
-
-        Assumes both `input` and `target` TensorMaps are have a torch-backend,
-        and have equal metadata in the same order.
-
-        :param input: a :py:class:`TensorMap` corresponding to the ML-predicted
-            electron density coefficients.
-        :param target: a :py:class:`TensorMap` corresponding to the RI-fitted
-            electron density coefficients.
-        :param unsafe: bool, if True, skips input checks for speed.
-
-        :return loss: a :py:class:`torch.Tensor` containing a single float
-            values, corresponding to the total loss metric.
-        """
-        # Collate TensorMaps if passed as a list or tuple
-        if isinstance(input, Sequence):
-            input = equistore.join(input, "samples")
-        if isinstance(target, Sequence):
-            target = equistore.join(target, "samples")
-
-        # Input checks
-        if not unsafe:
-            self._check_forward_args(input, target)
-
-        # Use the "sum" reduction method to calculate the loss for each block
-        torch_mse = torch.nn.MSELoss(reduction="sum")
-        loss = 0
-        for key in input.keys:
-            loss += torch_mse(input=input[key].values, target=target[key].values)
-
-        return loss
-
-
-class DensityLoss(torch.nn.Module):
+class RhoLoss(torch.nn.Module):
     """
     Computes the mean squared loss on the electron density for a batch of one or
     more structures.
@@ -240,7 +77,7 @@ class DensityLoss(torch.nn.Module):
     """
 
     def __init__(self) -> None:
-        super(DensityLoss, self).__init__()
+        super(RhoLoss, self).__init__()
 
     @staticmethod
     def _check_forward_args(
@@ -277,26 +114,23 @@ class DensityLoss(torch.nn.Module):
             # Check metadata of overlap. Sample names may have the "tensor" index
             # present as a by-product of using the join function. This can be
             # removed once the join function is updated in equistore (TODO).
-            if over.sample_names != (
-                "structure",
-                "center_1",
-            ):
+            if over.sample_names != ["structure", "center_1"]:
                 raise ValueError(
                     "each `overlap` TensorMap must have sample names ('structure', 'center_1',), "
                     f"got {over.sample_names}."
                 )
             c_names = [
-                ("spherical_harmonics_m1",),
-                ("n1",),
-                ("center_2",),
-                ("spherical_harmonics_m2",),
+                ["spherical_harmonics_m1"],
+                ["n1"],
+                ["center_2"],
+                ["spherical_harmonics_m2"],
             ]
             if not np.all(over.components_names == c_names):
                 raise ValueError(
                     "each `overlap` TensorMap must have 4 components, corresponding to the axes "
                     f"{c_names}, got {overlap.components_names}."
                 )
-            if over.property_names != ("n2",):
+            if over.property_names != ["n2"]:
                 raise ValueError(
                     "each `overlap` TensorMap must have property names ('n2',), "
                     f"got {overlap.property_names}."
@@ -307,7 +141,7 @@ class DensityLoss(torch.nn.Module):
         input: Union[TensorMap, List[TensorMap]],
         target: Union[TensorMap, List[TensorMap]],
         overlap: Union[TensorMap, List[TensorMap]],
-        unsafe: bool = False,
+        check_args: bool = True,
     ) -> torch.Tensor:
         """
         Calculates the squared error loss between the input (ML) and target (QM)
@@ -322,7 +156,7 @@ class DensityLoss(torch.nn.Module):
             overlap = [overlap]
 
         # Check input args
-        if not unsafe:
+        if check_args:
             self._check_forward_args(input, target, overlap)
 
         # Iterate over structures in the batch
@@ -334,7 +168,7 @@ class DensityLoss(torch.nn.Module):
             delta_c = equistore.subtract(inp, targ)
 
             # Iterate over blocks in the overlap matrix
-            for key, block in over:
+            for key, block in over.items():
                 s_block = block.values
                 l1, l2, a1, a2 = key
 
@@ -362,3 +196,171 @@ class DensityLoss(torch.nn.Module):
                     loss += 2 * loss_block
 
         return loss
+
+
+class CoeffLoss(torch.nn.Module):
+    """
+    Computes the squared loss on the electron density *coefficients* for a batch
+    of one or more structures.
+
+    For a given structure, A, the loss on the coefficients is given by:
+
+    .. math::
+
+        L = (\Delta c)^2
+
+    where :math:`\Delta c` is the difference between input/predicted (i.e. ML)
+    and target/reference (i.e. density fitted RI) electron density coefficients.
+
+    If evaluating the loss for multiple structures, the total loss is given by
+    the sum of individual losses for each structure.
+
+    :param input: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of ML-predicted electron density
+        coefficients.
+    :param target: a :py:class:`TensorMap` or list of :py:class:`TensorMap`
+        corresponding to the batch of reference electron density coefficients.
+    """
+
+    def __init__(self) -> None:
+        super(CoeffLoss, self).__init__()
+
+    @staticmethod
+    def _check_forward_args(input: TensorMap, target: TensorMap) -> None:
+        """
+        Checks input and target types and asserts they have equal metadata
+        """
+        if not equistore.equal_metadata(input, target):
+            raise ValueError(
+                "``input`` and ``target`` must have equal metadata in the same order."
+            )
+
+    def forward(
+        self,
+        input: Union[TensorMap, List[TensorMap]],
+        target: Union[TensorMap, List[TensorMap]],
+        check_args: bool = True,
+    ) -> torch.Tensor:
+        """
+        Calculates the squared loss between 2 TensorMaps.
+
+        Assumes both `input` and `target` TensorMaps are have a torch-backend,
+        and have equal metadata in the same order.
+
+        :param input: a :py:class:`TensorMap` corresponding to the ML-predicted
+            electron density coefficients.
+        :param target: a :py:class:`TensorMap` corresponding to the RI-fitted
+            electron density coefficients.
+        :param check_args: bool, if False, skips input checks for speed. Default
+            true.
+
+        :return loss: a :py:class:`torch.Tensor` containing a single float
+            values, corresponding to the total loss metric.
+        """
+        # Collate TensorMaps if passed as a list or tuple
+        if isinstance(input, Sequence):
+            input = equistore.join(input, "samples")
+        if isinstance(target, Sequence):
+            target = equistore.join(target, "samples")
+
+        # Input checks
+        if check_args:
+            self._check_forward_args(input, target)
+
+        # Use the "sum" reduction method to calculate the loss for each block
+        torch_mse = torch.nn.MSELoss(reduction="sum")
+        loss = 0
+        for key in input.keys:
+            loss += torch_mse(input=input[key].values, target=target[key].values)
+
+        return loss
+
+
+# ===== Fxns to tranform data for loss evaluation =====
+
+
+def transform_overlap_for_rholoss(overlap: TensorMap) -> TensorMap:
+    """
+    Reshapes and permutes the axes of the blocks of the overlap matrix such that
+    it is ready for the tensor dot operation involved in the evaluation of the
+    loss using the :py:class:`RhoLoss` class.
+
+    This method assumes that the passed overlap-type matrices are of equistore
+    TensorMap format and have the following data structure:
+
+        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
+          'species_center_1', 'species_center_2')
+        - sample names: ('structure', 'center_1', 'center_2')
+        - component names: [('spherical_harmonics_m1',),
+          ('spherical_harmonics_m2',)]
+        - property names: ('n1', 'n2')
+
+    and only correspond to one structure. This should be the case for TensorMaps
+    processed with the functions in the :py:mod:`rhoparse.convert` module. The
+    output TensorMap has a special data structure that conceptually goes against
+    the equistore philosophy (see
+    https://lab-cosmo.github.io/equistore/latest/get-started/concepts.html), but
+    has been designed to allow for faster evaluation of the loss when using the
+    :py:class:`RhoLoss` class in this module. The data strutcure of the
+    output TensorMap is:
+
+        - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
+          'species_center_1', 'species_center_2') - i.e. same as the input.
+        - sample names: ('structure', 'center_1',)
+        - component names: [('spherical_harmonics_m1',), ('n1',), ('center_2',),
+          ('spherical_harmonics_m2',),]
+        - property names: ('n2',)
+
+    i.e. the notable changes are that the center and radial channel indices now
+    exist along orthogonal axes and the axes have been permuted.
+    """
+    # Iterate over blocks and manipulate each in turn
+    keys, new_blocks = overlap.keys, []
+    for key in keys:
+        # Retrieve the block
+        block = overlap[key]
+
+        # Get the structure index
+        A = np.unique(block.samples["structure"])[0]
+
+        # Get the axes dimensions
+        i1 = np.unique(block.samples["center_1"])
+        i2 = np.unique(block.samples["center_2"])
+        m1 = np.unique(block.components[0]["spherical_harmonics_m1"])
+        m2 = np.unique(block.components[1]["spherical_harmonics_m2"])
+        n1 = np.unique(block.properties["n1"])
+        n2 = np.unique(block.properties["n2"])
+
+        # Reshape the block and permute the axes such that the data for the
+        # first of the two centers is on the 'left' and the second on the 'right'.
+        s_block = block.values.reshape(
+            len(i1), len(i2), len(m1), len(m2), len(n1), len(n2)
+        )
+        # Shape before: (1, n_i1, n_i2, n_m1, n_m2, n_n1, n_n2)
+        # Shape after : (1, n_i1, n_m1, n_n1, n_i2, n_m2, n_n2)
+        s_block = torch.permute(s_block, (0, 2, 4, 1, 3, 5)).contiguous()
+        # s_block = torch.permute(s_block, (0, 1, 3, 5, 2, 4, 6)).contiguous()
+
+        # Build a new TensorBlock with updated metadata
+        new_block = TensorBlock(
+            # samples=Labels(
+            #     names=["structure"], values=np.array([[A]])
+            # ),
+            samples=Labels(
+                names=["structure", "center_1"],
+                values=np.array([[A, i] for i in i1]),
+            ),
+            components=[
+                # Labels(names=["center_1"], values=i1.reshape(-1, 1)),
+                Labels(names=["spherical_harmonics_m1"], values=m1.reshape(-1, 1)),
+                Labels(names=["n1"], values=n1.reshape(-1, 1)),
+                # Labels(names=["structure", "center_2"], values=np.array([[A, i] for i in i2])),
+                Labels(names=["center_2"], values=i2.reshape(-1, 1)),
+                Labels(names=["spherical_harmonics_m2"], values=m2.reshape(-1, 1)),
+            ],
+            properties=Labels(names=["n2"], values=n2.reshape(-1, 1)),
+            values=s_block,
+        )
+        new_blocks.append(new_block)
+
+    return TensorMap(keys, new_blocks)
