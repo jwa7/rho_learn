@@ -181,3 +181,16 @@ def load_torch_object(
         setattr(torch_obj, attr, new_attr_dict)
 
     return torch_obj
+
+
+def log(log_path: str, line: str):
+    """
+    Writes the string in `line` to the file at `log_path`, inserting a newline
+    character at the end.
+    """
+    if os.path.exists(log_path):
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
+    else:
+        with open(log_path, "w") as f:
+            f.write(line + "\n")
