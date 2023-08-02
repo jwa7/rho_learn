@@ -27,6 +27,7 @@ class RhoModel(torch.nn.Module):
         keys: Labels,
         in_features: Sequence[Labels],
         out_features: Sequence[Labels],
+        components: Sequence[Sequence[Labels]],
         hidden_layer_widths: Optional[
             Union[Sequence[Sequence[int]], Sequence[int]]
         ] = None,
@@ -34,17 +35,19 @@ class RhoModel(torch.nn.Module):
     ):
         super(RhoModel, self).__init__()
         RhoModel._check_init_args(
-            model_type,
-            keys,
-            in_features,
-            out_features,
-            hidden_layer_widths,
-            activation_fn,
+            model_type=model_type,
+            keys=keys,
+            in_features=in_features,
+            out_features=out_features,
+            components=components,
+            hidden_layer_widths=hidden_layer_widths,
+            activation_fn=activation_fn,
         )
         self.model_type = model_type
         self.keys = keys
         self.in_features = in_features
         self.out_features = out_features
+        self.components = components
 
         # Assign attributes specific to nonlinear model
         in_invariant_features = None
@@ -72,13 +75,14 @@ class RhoModel(torch.nn.Module):
 
         # Initialize list of block models
         self.models = RhoModel.initialize_models(
-            model_type,
-            keys,
-            in_features,
-            out_features,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
+            model_type=model_type,
+            keys=keys,
+            in_features=in_features,
+            out_features=out_features,
+            components=components,
+            in_invariant_features=in_invariant_features,
+            hidden_layer_widths=hidden_layer_widths,
+            activation_fn=activation_fn,
         )
 
     @staticmethod
@@ -87,11 +91,15 @@ class RhoModel(torch.nn.Module):
         keys: Labels,
         in_features: Sequence[Labels],
         out_features: Sequence[Labels],
+        components: Sequence[Sequence[Labels]],
         hidden_layer_widths: Optional[
             Union[Sequence[Sequence[int]], Sequence[int]]
         ] = None,
         activation_fn: Optional[str] = None,
     ):
+        """
+        Checks the args passed to __init__.
+        """
         # Check the length of keys labels
         if not (len(keys) == len(in_features) == len(out_features)):
             raise ValueError(
@@ -105,6 +113,10 @@ class RhoModel(torch.nn.Module):
         if not isinstance(out_features, Sequence):
             if not np.all([isinstance(f, Labels) for f in out_features]):
                 raise TypeError("``out_features`` must be a Sequence[Labels]")
+        if not isinstance(components, Sequence):
+            raise TypeError("``components`` must be a Sequence[Sequence[Labels]]")
+        if not np.all([isinstance(c, Sequence) for c in components]):
+            raise TypeError("``components`` must be a Sequence[Sequence[Labels]]")
 
         # Check model type
         if model_type not in VALID_MODEL_TYPES:
@@ -145,6 +157,7 @@ class RhoModel(torch.nn.Module):
         keys: Labels,
         in_features: Sequence[Labels],
         out_features: Sequence[Labels],
+        components: Sequence[Sequence[Labels]],
         in_invariant_features: Optional[Sequence[Labels]] = None,
         hidden_layer_widths: Optional[Sequence[Sequence[int]]] = None,
         activation_fn: Optional[str] = None,
@@ -163,9 +176,10 @@ class RhoModel(torch.nn.Module):
                     model_type=model_type,
                     in_features=in_feat,
                     out_features=out_feat,
+                    components=comp,
                     bias=True if key["spherical_harmonics_l"] == 0 else False,
                 )
-                for key, in_feat, out_feat in zip(keys, in_features, out_features)
+                for key, in_feat, out_feat, comp in zip(keys, in_features, out_features, comp)
             ]
         # Nonlinear base model
         elif model_type == "nonlinear":
@@ -175,15 +189,17 @@ class RhoModel(torch.nn.Module):
                     model_type=model_type,
                     in_features=in_feat,
                     out_features=out_feat,
+                    components=comp,
                     bias=True if key["spherical_harmonics_l"] == 0 else False,
                     in_invariant_features=in_inv_feat,
                     hidden_layer_widths=hidden_layers,
                     activation_fn=activation_fn,
                 )
-                for key, in_feat, out_feat, in_inv_feat, hidden_layers in zip(
+                for key, in_feat, out_feat, comp, in_inv_feat, hidden_layers in zip(
                     keys,
                     in_features,
                     out_features,
+                    components,
                     in_invariant_features,
                     hidden_layer_widths,
                 )
@@ -210,33 +226,46 @@ class RhoModel(torch.nn.Module):
         The ``check_args`` flag can be used to disable the input checking, which
         could be useful for perfomance reasons.
         """
+        # Define the keys to predict on as the intersection of the input keys
+        # and those used to initialize the model
+        intersect_keys = input.keys.intersection(self.keys)
+
         # Perform input checks
         if check_args:
             # Check input TensorMap
             if not isinstance(input, TensorMap):
                 raise TypeError("``input`` must be an equistore TensorMap")
-            if not np.all([input_key in self.keys for input_key in input.keys]):
+            if len(intersect_keys) == 0:
                 raise ValueError(
-                    "the keys of the ``input`` TensorMap given to forward() must match"
-                    " the keys used to initialize the RhoModel object. Model keys:"
-                    f" {self.keys}, input keys: {input.keys}"
+                    "None of the keys in `input` passed to `forward()` are common "
+                    "to the keys used to initialize the model."
                 )
 
-            for key, in_feat in zip(self.keys, self.in_features):
-                if input[key].properties != in_feat:
+            # TODO: check input key in self.key, not other way around
+            for key in intersect_keys:
+                if input[key].components != self.components[self.keys.position(key)]:
+                    raise ValueError(
+                        "the components of the ``input`` TensorMap given to forward()"
+                        " must match the components of the corresponding block used to"
+                        f" initialize the RhoModel object. For block {key}, model components"
+                        f" {self.components[self.keys.position(key)]}; input components"
+                        f" {input[key].components}"
+                    )
+                if input[key].properties != self.in_features[self.keys.position(key)]:
                     raise ValueError(
                         "the feature labels of the ``input`` TensorMap given to forward()"
-                        " must match the feature labels used to initialize the"
-                        f" RhoModel object. For block {key}, model feature labels:"
-                        f" {in_feat}; input feature labels: {input[key].properties}"
+                        " must match the feature labels of the corresponding block used to"
+                        f" initialize the RhoModel object. For block {key}, model feature"
+                        f" labels: {self.in_features[self.keys.position(key)]}; input "
+                        f"feature labels: {input[key].properties}"
                     )
         # Linear base model
         if self.model_type == "linear":
             output = TensorMap(
-                keys=self.keys,
+                keys=intersect_keys,
                 blocks=[
-                    model(input[key], check_args=check_args)
-                    for key, model in zip(self.keys, self.models)
+                    self.models[self.keys.position(key)](input[key])
+                    for key in intersect_keys
                 ],
             )
         # Nonlinear base model
@@ -247,16 +276,16 @@ class RhoModel(torch.nn.Module):
                 specie: input.block(spherical_harmonics_l=0, species_center=specie)
                 for specie in np.unique(input.keys["species_center"])
             }
-            # Return prediction TensorMap
+            # Return prediction TensorMap using only the keys in the input
             output = TensorMap(
-                keys=self.keys,
+                keys=intersect_keys,
                 blocks=[
-                    model(
+                    self.models[self.keys.position(key)](
                         input[key],
                         invariant=invariants[key["species_center"]],
                         check_args=check_args,
                     )
-                    for key, model in zip(self.keys, self.models)
+                    for key in intersect_keys
                 ],
             )
         else:
@@ -290,6 +319,7 @@ class RhoModelBlock(torch.nn.Module):
         model_type: str,
         in_features: Labels,
         out_features: Labels,
+        components: Sequence[Labels],
         bias: bool,
         in_invariant_features: Optional[Labels] = None,
         hidden_layer_widths: Optional[Sequence[int]] = None,
@@ -302,6 +332,7 @@ class RhoModelBlock(torch.nn.Module):
             model_type,
             in_features,
             out_features,
+            components,
             bias,
             in_invariant_features,
             hidden_layer_widths,
@@ -315,6 +346,7 @@ class RhoModelBlock(torch.nn.Module):
         self.model_type = model_type
         self.in_features = in_features
         self.out_features = out_features
+        self.components = components
         self.bias = bias
 
         # Assign attributes specific to nonlinear model
@@ -328,6 +360,7 @@ class RhoModelBlock(torch.nn.Module):
             model_type,
             in_features,
             out_features,
+            components,
             bias,
             in_invariant_features,
             hidden_layer_widths,
@@ -340,6 +373,7 @@ class RhoModelBlock(torch.nn.Module):
         model_type: str,
         in_features: Labels,
         out_features: Labels,
+        components: Sequence[Labels],
         bias: bool,
         in_invariant_features: Optional[Labels] = None,
         hidden_layer_widths: Optional[Sequence[int]] = None,
@@ -358,6 +392,9 @@ class RhoModelBlock(torch.nn.Module):
             raise TypeError(
                 "``out_features`` must be passed as an equistore Labels object"
             )
+        if not isinstance(components, Sequence):
+            raise TypeError("``components`` must be passed as a Sequence[Labels]")
+
         if not isinstance(bias, bool):
             raise TypeError("``bias`` must be passed as a bool")
         if not isinstance(model_type, str):
@@ -402,6 +439,7 @@ class RhoModelBlock(torch.nn.Module):
         model_type: str,
         in_features: Labels,
         out_features: Labels,
+        components: Sequence[Labels],
         bias: bool,
         in_invariant_features: Optional[Labels] = None,
         hidden_layer_widths: Optional[Sequence[int]] = None,
@@ -461,6 +499,13 @@ class RhoModelBlock(torch.nn.Module):
                     " must match the feature labels used to initialize the"
                     " RhoModelBlock object. Model feature labels:"
                     f"{self.in_features}, input feature labels: {input.properties}"
+                )
+            if input.components != self.components:
+                raise ValueError(
+                    "the component labels of the ``input`` TensorBlock given to forward()"
+                    " must match the component labels used to initialize the"
+                    " RhoModelBlock object. Model component labels:"
+                    f"{self.components}, input component labels: {input.components}"
                 )
 
         if self.model_type == "linear":
