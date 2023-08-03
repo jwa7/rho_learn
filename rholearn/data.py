@@ -42,6 +42,8 @@ class RhoData(torch.utils.data.Dataset):
         matrices. Optional, only required if evaluating the loss of
         non-orthogonal basis functions. In this directory, coefficients must be
         stored at relative path A/s.npz, where A is the structure index.
+    :param out_invariant_means_path: str, optional. Absolute path to file containing the
+        invariant means of the output/features (i.e. electron density).
     **torch_kwargs: dict of kwargs for loading TensorMaps to torch backend.
         `dtype`, `device`, and `requires_grad` are required.
     """
@@ -52,6 +54,7 @@ class RhoData(torch.utils.data.Dataset):
         input_dir: str,
         output_dir: str,
         overlap_dir: Optional[str] = None,
+        out_invariant_means_path: Optional[str] = None,
         **torch_kwargs,
     ):
         super(RhoData, self).__init__()
@@ -64,6 +67,7 @@ class RhoData(torch.utils.data.Dataset):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.overlap_dir = overlap_dir
+        self.out_invariant_means_path = out_invariant_means_path
         self.dtype = torch_kwargs.get("dtype")
         self.device = torch_kwargs.get("device")
         self.requires_grad = torch_kwargs.get("requires_grad")
@@ -142,6 +146,22 @@ class RhoData(torch.utils.data.Dataset):
             create_array=equistore.core.io.create_torch_array,
         )
         return structure_idx, input, output, overlap
+
+    def get_out_invariant_means(self) -> TensorMap:
+        """
+        Returns a TensorMap of the output (i.e. elctron density) invariant means.
+        
+        Only applicable if the RhoData object was initialized with the path
+        containing this file.
+        """
+        if self.out_invariant_means_path is None:
+            raise ValueError(
+                "Output invariant means path not provided to RhoData constructor."
+            )
+        return equistore.core.io.load_custom_array(
+            self.out_invariant_means_path,
+            create_array=equistore.core.io.create_torch_array,
+        )
 
 
 class RhoLoader:

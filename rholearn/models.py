@@ -28,6 +28,7 @@ class RhoModel(torch.nn.Module):
         in_features: Sequence[Labels],
         out_features: Sequence[Labels],
         components: Sequence[Sequence[Labels]],
+        out_invariant_means: Optional[TensorMap] = None,
         hidden_layer_widths: Optional[
             Union[Sequence[Sequence[int]], Sequence[int]]
         ] = None,
@@ -40,6 +41,7 @@ class RhoModel(torch.nn.Module):
             in_features=in_features,
             out_features=out_features,
             components=components,
+            out_invariant_means=out_invariant_means,
             hidden_layer_widths=hidden_layer_widths,
             activation_fn=activation_fn,
         )
@@ -48,6 +50,7 @@ class RhoModel(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.components = components
+        self.out_invariant_means = out_invariant_means
 
         # Assign attributes specific to nonlinear model
         in_invariant_features = None
@@ -80,6 +83,7 @@ class RhoModel(torch.nn.Module):
             in_features=in_features,
             out_features=out_features,
             components=components,
+            out_invariant_means=out_invariant_means,
             in_invariant_features=in_invariant_features,
             hidden_layer_widths=hidden_layer_widths,
             activation_fn=activation_fn,
@@ -92,6 +96,7 @@ class RhoModel(torch.nn.Module):
         in_features: Sequence[Labels],
         out_features: Sequence[Labels],
         components: Sequence[Sequence[Labels]],
+        out_invariant_means: Optional[TensorMap] = None,
         hidden_layer_widths: Optional[
             Union[Sequence[Sequence[int]], Sequence[int]]
         ] = None,
@@ -117,6 +122,18 @@ class RhoModel(torch.nn.Module):
             raise TypeError("``components`` must be a Sequence[Sequence[Labels]]")
         if not np.all([isinstance(c, Sequence) for c in components]):
             raise TypeError("``components`` must be a Sequence[Sequence[Labels]]")
+        if out_invariant_means is not None:
+            if not isinstance(out_invariant_means, TensorMap):
+                raise TypeError("``out_invariant_means`` must be a TensorMap")
+            for key in out_invariant_means.keys:
+                if key not in keys:
+                    raise ValueError(
+                        "`out_invariant_means`` must only contain blocks present in ``keys``"
+                    )
+                if key["spherical_harmonics_l"] != 0:
+                    raise ValueError(
+                        "``out_invariant_means`` must only contain invariant features"
+                    )
 
         # Check model type
         if model_type not in VALID_MODEL_TYPES:
@@ -158,6 +175,7 @@ class RhoModel(torch.nn.Module):
         in_features: Sequence[Labels],
         out_features: Sequence[Labels],
         components: Sequence[Sequence[Labels]],
+        out_invariant_means: Optional[TensorMap] = None,
         in_invariant_features: Optional[Sequence[Labels]] = None,
         hidden_layer_widths: Optional[Sequence[Sequence[int]]] = None,
         activation_fn: Optional[str] = None,
@@ -168,50 +186,52 @@ class RhoModel(torch.nn.Module):
         ``model_type``. For the invariant (lambda=0) blocks, a learnable bias is
         used in the models, but for covariant blocks no bias is applied.
         """
-        # Linear base model
-        if model_type == "linear":
-            models = [
-                RhoModelBlock(
+        block_models = []
+        for key_i, key in enumerate(keys):
+            # Get the means used to standardize the invariants, if applicable
+            inv_means_block = None
+            if out_invariant_means is not None:
+                if key in out_invariant_means.keys:
+                    inv_means_block = out_invariant_means[key]
+
+            # Use a learnable bias, only for invariant blocks
+            bias = True if key["spherical_harmonics_l"] == 0 else False
+
+            # Define the block model
+            if model_type == "linear":
+                block_model = RhoModelBlock(
                     key=key,
                     model_type=model_type,
-                    in_features=in_feat,
-                    out_features=out_feat,
-                    components=comp,
-                    bias=True if key["spherical_harmonics_l"] == 0 else False,
+                    in_features=in_features[key_i],
+                    out_features=out_features[key_i],
+                    components=components[key_i],
+                    out_invariant_means=inv_means_block,
+                    bias=bias,
                 )
-                for key, in_feat, out_feat, comp in zip(keys, in_features, out_features, comp)
-            ]
-        # Nonlinear base model
-        elif model_type == "nonlinear":
-            models = [
-                RhoModelBlock(
+            else:  # nonlinear
+                assert model_type == "nonlinear"
+                block_model = RhoModelBlock(
                     key=key,
                     model_type=model_type,
-                    in_features=in_feat,
-                    out_features=out_feat,
-                    components=comp,
-                    bias=True if key["spherical_harmonics_l"] == 0 else False,
-                    in_invariant_features=in_inv_feat,
-                    hidden_layer_widths=hidden_layers,
+                    in_features=in_features[key_i],
+                    out_features=out_features[key_i],
+                    components=components[key_i],
+                    out_invariant_means=inv_means_block,
+                    bias=bias,
+                    in_invariant_features=in_invariant_features[key_i],
+                    hidden_layer_widths=hidden_layer_widths[key_i],
                     activation_fn=activation_fn,
                 )
-                for key, in_feat, out_feat, comp, in_inv_feat, hidden_layers in zip(
-                    keys,
-                    in_features,
-                    out_features,
-                    components,
-                    in_invariant_features,
-                    hidden_layer_widths,
-                )
-            ]
-        else:
-            raise ValueError(
-                "only 'linear' and 'nonlinear' base model types implemented for RhoModel"
-            )
-        # Return in a ModuleList so that the models are properly registered
-        return torch.nn.ModuleList(models)
+            block_models.append(block_model)
 
-    def forward(self, input: TensorMap, check_args: bool = True) -> TensorMap:
+        return torch.nn.ModuleList(block_models)
+
+    def forward(
+        self,
+        input: TensorMap,
+        check_args: bool = True,
+        add_back_inv_means: bool = False,
+    ) -> TensorMap:
         """
         Makes a prediction on the ``input`` TensorMap.
 
@@ -224,8 +244,13 @@ class RhoModel(torch.nn.Module):
         final linear output layer.
 
         The ``check_args`` flag can be used to disable the input checking, which
-        could be useful for perfomance reasons.
+        could be useful for perfomance.
+
+        If `add_back_inv_means` is true, the output invariant means used to
+        initialize the model are added back on to the invariant blocks of the
+        prediction. This may be used for validation inference.
         """
+
         # Define the keys to predict on as the intersection of the input keys
         # and those used to initialize the model
         intersect_keys = input.keys.intersection(self.keys)
@@ -240,8 +265,6 @@ class RhoModel(torch.nn.Module):
                     "None of the keys in `input` passed to `forward()` are common "
                     "to the keys used to initialize the model."
                 )
-
-            # TODO: check input key in self.key, not other way around
             for key in intersect_keys:
                 if input[key].components != self.components[self.keys.position(key)]:
                     raise ValueError(
@@ -264,7 +287,9 @@ class RhoModel(torch.nn.Module):
             output = TensorMap(
                 keys=intersect_keys,
                 blocks=[
-                    self.models[self.keys.position(key)](input[key])
+                    self.models[self.keys.position(key)](
+                        input[key], add_back_inv_means=add_back_inv_means
+                    )
                     for key in intersect_keys
                 ],
             )
@@ -272,18 +297,20 @@ class RhoModel(torch.nn.Module):
         elif self.model_type == "nonlinear":
             # Store the invariant (\lambda = 0) blocks in a dict, indexed by
             # the unique chemical species present in the ``input`` TensorMap
-            invariants = {
+            in_invariants = {
                 specie: input.block(spherical_harmonics_l=0, species_center=specie)
                 for specie in np.unique(input.keys["species_center"])
             }
+
             # Return prediction TensorMap using only the keys in the input
             output = TensorMap(
                 keys=intersect_keys,
                 blocks=[
                     self.models[self.keys.position(key)](
                         input[key],
-                        invariant=invariants[key["species_center"]],
+                        in_invariant=in_invariants[key["species_center"]],
                         check_args=check_args,
+                        add_back_inv_means=add_back_inv_means,
                     )
                     for key in intersect_keys
                 ],
@@ -320,7 +347,8 @@ class RhoModelBlock(torch.nn.Module):
         in_features: Labels,
         out_features: Labels,
         components: Sequence[Labels],
-        bias: bool,
+        out_invariant_means: Optional[TensorBlock] = None,
+        bias: Optional[bool] = None,
         in_invariant_features: Optional[Labels] = None,
         hidden_layer_widths: Optional[Sequence[int]] = None,
         activation_fn: Optional[str] = None,
@@ -328,15 +356,16 @@ class RhoModelBlock(torch.nn.Module):
     ):
         super(RhoModelBlock, self).__init__()
         RhoModelBlock._check_init_args(
-            key,
-            model_type,
-            in_features,
-            out_features,
-            components,
-            bias,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
+            key=key,
+            model_type=model_type,
+            in_features=in_features,
+            out_features=out_features,
+            components=components,
+            out_invariant_means=out_invariant_means,
+            bias=bias,
+            in_invariant_features=in_invariant_features,
+            hidden_layer_widths=hidden_layer_widths,
+            activation_fn=activation_fn,
         )
         # Set torch default dtype
         torch.set_default_dtype(dtype)
@@ -347,6 +376,12 @@ class RhoModelBlock(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.components = components
+        if out_invariant_means is None:
+            self.out_invariant_means = None
+        else:
+            self.out_invariant_means = torch.tensor(
+                out_invariant_means.values, requires_grad=False, dtype=dtype
+            )
         self.bias = bias
 
         # Assign attributes specific to nonlinear model
@@ -357,14 +392,14 @@ class RhoModelBlock(torch.nn.Module):
 
         # Initialize block model
         self.model = RhoModelBlock.initialize_model(
-            model_type,
-            in_features,
-            out_features,
-            components,
-            bias,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
+            model_type=model_type,
+            in_features=in_features,
+            out_features=out_features,
+            components=components,
+            bias=bias,
+            in_invariant_features=in_invariant_features,
+            hidden_layer_widths=hidden_layer_widths,
+            activation_fn=activation_fn,
         )
 
     @staticmethod
@@ -374,7 +409,8 @@ class RhoModelBlock(torch.nn.Module):
         in_features: Labels,
         out_features: Labels,
         components: Sequence[Labels],
-        bias: bool,
+        out_invariant_means: Optional[TensorBlock] = None,
+        bias: Optional[bool] = None,
         in_invariant_features: Optional[Labels] = None,
         hidden_layer_widths: Optional[Sequence[int]] = None,
         activation_fn: Optional[str] = None,
@@ -394,6 +430,20 @@ class RhoModelBlock(torch.nn.Module):
             )
         if not isinstance(components, Sequence):
             raise TypeError("``components`` must be passed as a Sequence[Labels]")
+        if out_invariant_means is not None:
+            if not isinstance(out_invariant_means, TensorBlock):
+                raise TypeError(
+                    "``out_invariant_means`` must be passed as an equistore TensorBlock"
+                )
+                if out_invariant_means.properties != out_features:
+                    raise ValueError(
+                        "``out_invariant_means`` must have the same properties as"
+                        + " ``out_features``"
+                    )
+                if out_invariant_means.values.shape != (1, 1, len(out_features)):
+                    raise ValueError(
+                        "``out_invariant_means`` must have shape (1, 1, `len(out_features))`"
+                    )
 
         if not isinstance(bias, bool):
             raise TypeError("``bias`` must be passed as a bool")
@@ -402,6 +452,8 @@ class RhoModelBlock(torch.nn.Module):
         # Check model type
         if model_type not in VALID_MODEL_TYPES:
             raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
+
+        # Check nonlinear model-specific args
         if model_type == "nonlinear":
             # Check in_invariant_features
             if in_invariant_features is None:
@@ -440,7 +492,7 @@ class RhoModelBlock(torch.nn.Module):
         in_features: Labels,
         out_features: Labels,
         components: Sequence[Labels],
-        bias: bool,
+        bias: Optional[bool] = None,
         in_invariant_features: Optional[Labels] = None,
         hidden_layer_widths: Optional[Sequence[int]] = None,
         activation_fn: Optional[str] = None,
@@ -456,7 +508,8 @@ class RhoModelBlock(torch.nn.Module):
                 bias=bias,
             )
         # Nonlinear base model
-        elif model_type == "nonlinear":
+        else:  # nonlinear
+            assert model_type == "nonlinear"
             model = NonLinearModel(
                 in_features=len(in_features),
                 out_features=len(out_features),
@@ -465,25 +518,23 @@ class RhoModelBlock(torch.nn.Module):
                 hidden_layer_widths=hidden_layer_widths,
                 activation_fn=activation_fn,
             )
-        else:
-            raise ValueError(
-                "only 'linear' and 'nonlinear' base model types implemented for RhoModelBlock"
-            )
+
         return model
 
     def forward(
         self,
         input: TensorBlock,
-        invariant: Optional[TensorBlock] = None,
+        in_invariant: Optional[TensorBlock] = None,
         check_args: bool = True,
+        add_back_inv_means: Optional[bool] = False,
     ):
         """
         Makes a prediction on the ``input`` TensorBlock, returning a prediction
         TensorBlock.
 
-        If ``model_type`` is ``linear``, then ``invariant`` is ignored. If
-        ``model_type`` is ``nonlinear``, then ``invariant`` must be passed as a
-        TensorBlock containing the invariant features to use as a nonlinear
+        If ``model_type`` is ``linear``, then ``in_invariant`` is ignored. If
+        ``model_type`` is ``nonlinear``, then ``in_invariant`` must be passed as a
+        TensorBlock containing the input invariant features to use as a nonlinear
         multiplier for the equivariant `input` block.
 
         The ``check_args`` flag can be used to disable the input checking, which
@@ -510,28 +561,45 @@ class RhoModelBlock(torch.nn.Module):
 
         if self.model_type == "linear":
             output = self.model(input.values, check_args)
-        elif self.model_type == "nonlinear":
+        else:  # nonlinear
+            assert self.model_type == "nonlinear"
             if check_args:
                 # Check samples exactly equivalent
-                if input.samples != invariant.samples:
+                if input.samples != in_invariant.samples:
                     raise ValueError(
-                        "``input`` and ``invariant`` TensorBlocks must have the"
+                        "``input`` and ``in_invariant`` TensorBlocks must have the"
                         + " the same samples Labels, in the same order."
                     )
-                # Check input invariant features match that of the model
-                if invariant.properties != self.in_invariant_features:
+                # Check input in_invariant features match that of the model
+                if in_invariant.properties != self.in_invariant_features:
                     raise ValueError(
-                        "the feature labels of the ``invariant`` TensorBlock given to forward()"
-                        " must match the invariant features used to initialize the"
+                        "the feature labels of the ``in_invariant`` TensorBlock given to forward()"
+                        " must match the in_invariant features used to initialize the"
                         " RhoModelBlock object. Model in_invariant_features:"
-                        f" {self.in_invariant_features}, invariant feature labels:"
-                        f" {invariant.properties}"
+                        f" {self.in_invariant_features}, in_invariant feature labels:"
+                        f" {in_invariant.properties}"
                     )
             output = self.model(
-                input=input.values, invariant=invariant.values, check_args=check_args
+                input=input.values,
+                in_invariant=in_invariant.values,
+                check_args=check_args,
             )
-        else:
-            raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
+
+        # Add back the invariant means, if this is an invariant block and if
+        # applicable
+        if add_back_inv_means and self.key["spherical_harmonics_l"] == 0:
+            if self.out_invariant_means is None:
+                raise ValueError(
+                    "``add_back_inv_means`` can only be used if the invariant means"
+                    f" are stored. This block has key {key} has none stored"
+                )
+            # Create block that agrees with the shape of the output block by
+            # duplicating the invariant means along the sample (0th) axis
+            inv_mean_block = torch.vstack(
+                [self.out_invariant_means for _ in range(len(self.out_features))]
+            )
+            # Add the means
+            output += inv_mean_block
 
         return TensorBlock(
             samples=input.samples,
@@ -612,7 +680,7 @@ class NonLinearModel(torch.nn.Module):
     linear layers in the NN architecture, but ``n_elems - 1`` number of
     nonlinear activation layers. Passing a list with 1 element therefore
     corresponds to a linear model, where all equivariant blocks are multiplied
-    by their corresponding invariants, but with no nonlinearities included.
+    by their corresponding in_invariant, but with no nonlinearities included.
 
     Finally, the ``activation_fn`` that should be used must be specified.
     """
@@ -717,19 +785,19 @@ class NonLinearModel(torch.nn.Module):
             raise ValueError(f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}")
 
     def forward(
-        self, input: torch.Tensor, invariant: torch.Tensor, check_args: bool = True
+        self, input: torch.Tensor, in_invariant: torch.Tensor, check_args: bool = True
     ) -> torch.Tensor:
         """
         Makes a forward prediction on the ``input`` tensor that corresponds to
-        an equivariant feature. Requires specification of an invariant feature
+        an equivariant feature. Requires specification of an input invariant feature
         tensor that is passed through a NN and used as a nonlinear multiplier to
         the ``input`` tensor, whilst preserving its equivariant behaviour.
 
-        The ``input`` and ``invariant`` tensors are torch tensors corresponding
+        The ``input`` and ``in_invariant`` tensors are torch tensors corresponding
         to i.e. the values of equistore TensorBlocks. As such, they must be 3D
         tensors, where the first dimension is the samples, the last the
         properties/features, and the 1st (middle) the components. The components
-        dimension of the invariant block must necessarily be of size 1, though
+        dimension of the in_invariant block must necessarily be of size 1, though
         that of the equivariant ``input`` can be >= 1, equal to (2 \lambda + 1),
         where \lambda is the spherical harmonic order.
 
@@ -740,19 +808,19 @@ class NonLinearModel(torch.nn.Module):
             # Check inputs are torch tensors
             if not isinstance(input, torch.Tensor):
                 raise TypeError("``input`` must be a torch Tensor")
-            if not isinstance(invariant, torch.Tensor):
-                raise TypeError("``invariant`` must be a torch Tensor")
+            if not isinstance(in_invariant, torch.Tensor):
+                raise TypeError("``in_invariant`` must be a torch Tensor")
             # Check the samples dimensions are the same size between the ``input``
-            # equivariant and the ``invariant``
-            if input.shape[0] != invariant.shape[0]:
+            # equivariant and the ``in_invariant``
+            if input.shape[0] != in_invariant.shape[0]:
                 raise ValueError(
                     "the samples (1st) dimension of the ``input`` equivariant"
-                    + " and the ``invariant`` tensors must be equivalent"
+                    + " and the ``in_invariant`` tensors must be equivalent"
                 )
-            # Check the components (i.e. 2nd) dimension of the invariant is 1
-            if invariant.shape[1] != 1:
+            # Check the components (i.e. 2nd) dimension of the in_invariant is 1
+            if in_invariant.shape[1] != 1:
                 raise ValueError(
-                    "the components dimension of the invariant block must"
+                    "the components dimension of the in_invariant block must"
                     + " necessarily be 1"
                 )
             # Check the components (i.e. 2nd) dimension of the input equivariant is
@@ -763,13 +831,13 @@ class NonLinearModel(torch.nn.Module):
                     + " necessarily be greater than 1 and odd, corresponding to (2l + 1)"
                 )
 
-        # H-stack the invariant along the components dimension so that there are
+        # H-stack the in_invariant along the components dimension so that there are
         # (2 \lambda + 1) copies and the dimensions match the equivariant
-        invariant = torch.hstack([invariant] * input.shape[1])
+        in_invariant = torch.hstack([in_invariant] * input.shape[1])
 
-        # Pass the invariant tensor through the NN to create a nonlinear
+        # Pass the in_invariant tensor through the NN to create a nonlinear
         # multiplier. Also pass the equivariant through a linear input layer.
-        nonlinear_multiplier = self.invariant_nn(invariant)
+        nonlinear_multiplier = self.invariant_nn(in_invariant)
         linear_input = self.input_layer(input)
 
         # Perform element-wise (Hadamard) multiplication of the transformed

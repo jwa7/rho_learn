@@ -2,10 +2,10 @@ import os
 import torch
 
 # Set the rholearn absolute path
-RHOLEARN_DIR = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/"
+rholearn_dir = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/"
 
 # Define the rascaline hypers for generating the lambda-SOAP features
-RASCAL_HYPERS = {
+rascal_hypers = {
     "cutoff": 3.0,  # Angstrom
     "max_radial": 6,  # Exclusive
     "max_angular": 5,  # Inclusive
@@ -15,11 +15,11 @@ RASCAL_HYPERS = {
     "center_atom_weight": 1.0,
 }
 
-DATA_SETTINGS = {
+data_settings = {
     # Where to read the xyz data from
-    "xyz": os.path.join(RHOLEARN_DIR, "docs/example/water/data/water_monomers_1k.xyz"),
+    "xyz": os.path.join(rholearn_dir, "docs/example/water/data/water_monomers_1k.xyz"),
     # Set path where the data should be stored
-    "data_dir": os.path.join(RHOLEARN_DIR, "docs/example/water/data"),
+    "data_dir": os.path.join(rholearn_dir, "docs/example/water/data"),
     "axis": "samples",         # which axis to split the data along
     "names": ["structure"],    # what index to split the data by - i.e. "structure"
     "n_groups": 3,             # num groups for data split (i.e. 3 for train-test-val)
@@ -30,9 +30,9 @@ DATA_SETTINGS = {
 }
 
 # Define ML settings
-ML_SETTINGS = {
+ml_settings = {
     # Set path where the simulation should be run
-    "run_dir": os.path.join(RHOLEARN_DIR, "docs/example/water/runs/tmp"),
+    "run_dir": os.path.join(rholearn_dir, "docs/example/water/runs/tmp"),
     "torch": {
         "requires_grad": True,  # needed to track gradients
         "dtype": torch.float64,  # recommended

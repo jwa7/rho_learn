@@ -1,11 +1,8 @@
 import os
 import torch
 
-# Set the rholearn absolute path
-RHOLEARN_DIR = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/"
-
-# Define the rascaline hypers for generating the lambda-SOAP features
-RASCAL_HYPERS = {
+# Define the rascaline hypers for generating lambda-SOAP features
+rascal_hypers = {
     "cutoff": 3.0,  # Angstrom
     "max_radial": 6,  # Exclusive
     "max_angular": 5,  # Inclusive
@@ -14,34 +11,49 @@ RASCAL_HYPERS = {
     "cutoff_function": {"ShiftedCosine": {"width": 0.5}},
     "center_atom_weight": 1.0,
 }
+# Set the rholearn absolute path and top level data directory
+rholearn_dir = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/"
+data_dir = os.path.join(rholearn_dir, "docs/example/water/data")
 
-DATA_SETTINGS = {
-    # Set path where the data should be stored
-    "data_dir": os.path.join(RHOLEARN_DIR, "docs/example/water/data"),
-    "axis": "samples",         # which axis to split the data along
-    "names": ["structure"],    # what index to split the data by - i.e. "structure"
-    "n_groups": 3,             # num groups for data split (i.e. 3 for train-test-val)
+torch_settings = {
+    "requires_grad": True,  # needed to track gradients
+    "dtype": torch.float64,  # recommended
+    "device": torch.device("cpu"),  # which device to load tensors to
+}
+
+# Define data settings
+data_settings = {
+
+    # Set path where various data is stored
+    "data_dir": data_dir,
+    "input_dir": os.path.join(data_dir, "lsoap"),
+    "output_dir": os.path.join(data_dir, "rho_std"),
+    "overlap_dir": os.path.join(data_dir, "rho"),
+    "out_inv_means_path": os.path.join(data_dir, "rho_std/inv_means.npz"),
+
+    # Other settings for splitting data
+    "axis": "samples",  # which axis to split the data along
+    "names": ["structure"],  # what index to split the data by - i.e. "structure"
+    "n_groups": 3,  # num groups for data split (i.e. 3 for train-test-val)
     "group_sizes": [0.5, 0.4, 0.1],  # the abs/rel group sizes for the data splits
     "n_exercises": 2,  # the number of learning exercises to perform
-    "n_subsets": 3,    # how many subsets to use for each exercise
-    "shuffle": True,   # whether to shuffle structure indices for the train/test split
-    "seed": 10,        # random seed for data split
+    "n_subsets": 3,  # how many subsets to use for each exercise
+    "shuffle": True,  # whether to shuffle structure indices for the train/test split
+    "seed": 10,  # random seed for data split
 }
 
 # Define ML settings
-ML_SETTINGS = {
+ml_settings = {
+
     # Set path where the simulation should be run
-    "run_dir": os.path.join(RHOLEARN_DIR, "docs/example/water/runs/demo_linear"),
-    "torch": {
-        "requires_grad": True,  # needed to track gradients
-        "dtype": torch.float64,  # recommended
-        "device": torch.device("cpu"),  # which device to load tensors to
-    },
+    "run_dir": os.path.join(rholearn_dir, "docs/example/water/runs/demo_linear"),
+
+    # Parameters for training objects
     "model": {  # Model architecture
         "type": "nonlinear",  # linear or nonlinear
         "args": {  # if using linear, pass an empty dict
             "hidden_layer_widths": [10, 10, 10],
-            "activation_fn": "SiLU"
+            "activation_fn": "SiLU",
         },
     },
     "optimizer": {
@@ -50,10 +62,11 @@ ML_SETTINGS = {
             "lr": 0.1,
         },
     },
-    "loss": {
-        "fn": "MSELoss",  # CoulombLoss or MSELoss
+    "scheduler": {
+        "algorithm": torch.optim.lr_scheduler.MultiStepLR,
         "args": {
-            "reduction": "sum",  # reduction can be used with MSELoss
+            "milestones": [150, 200],
+            "gamma": 0.5,
         },
     },
     "loading": {
@@ -61,10 +74,13 @@ ML_SETTINGS = {
         # "num_workers": 0,  # number of workers for data loading
         # "prefetch_factor": None,  # number of batches to prefetch
     },
+
+    # Parameters for training procedure
     "training": {
-        "n_epochs": 10,  # number of total epochs to run
+        "n_epochs": 120,  # number of total epochs to run
         "save_interval": 10,  # save model and optimizer state every x intervals
-        "restart_epoch": None,  # None, or the epoch checkpoint number if restarting
-        "standardize_invariant_features": True,
+        "restart_epoch": 110,  # None, or the epoch checkpoint number if restarting
+        "standardize_out_invariants": True,
+        "learn_on_rho_after": 100,  # epoch to start learning on rho instead of coeffs
     },
 }

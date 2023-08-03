@@ -2,10 +2,10 @@ import os
 import torch
 
 # Set the rholearn absolute path
-RHOLEARN_DIR = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/"
+rholearn_dir = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/"
 
 # Define the rascaline hypers for generating the lambda-SOAP features
-RASCAL_HYPERS = {
+rascal_hypers = {
     "cutoff": 5.0,  # Angstrom
     "max_radial": 6,  # Exclusive
     "max_angular": 5,  # Inclusive
@@ -15,11 +15,11 @@ RASCAL_HYPERS = {
     "center_atom_weight": 1.0,
 }
 
-DATA_SETTINGS = {
+data_settings = {
     # Set path where the data should be stored
-    "data_dir": os.path.join(RHOLEARN_DIR, "docs/example/azoswitch/data"),
+    "data_dir": os.path.join(rholearn_dir, "docs/example/azoswitch/data"),
     "coulomb_metrics": os.path.join(
-        RHOLEARN_DIR, "docs/example/azoswitch/data/coulomb_metrics.npz"
+        rholearn_dir, "docs/example/azoswitch/data/coulomb_metrics.npz"
     ),
     "axis": "samples",  # which axis to split the data along
     "names": ["structure"],  # what index to split the data by - i.e. "structure"
@@ -31,9 +31,9 @@ DATA_SETTINGS = {
 }
 
 # Define ML settings
-ML_SETTINGS = {
+ml_settings = {
     # Set path where the simulation should be run
-    "run_dir": os.path.join(RHOLEARN_DIR, "docs/example/azoswitch/runs/01_linear"),
+    "run_dir": os.path.join(rholearn_dir, "docs/example/azoswitch/runs/01_linear"),
     "torch": {
         "requires_grad": True,  # needed to track gradients
         "dtype": torch.float64,  # recommended
