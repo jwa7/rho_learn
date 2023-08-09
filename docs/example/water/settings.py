@@ -40,6 +40,9 @@ data_settings = {
     "n_subsets": 3,  # how many subsets to use for each exercise
     "shuffle": True,  # whether to shuffle structure indices for the train/test split
     "seed": 10,  # random seed for data split
+
+    "n_train_subsets": 5,      # the number of training subsets to use (i.e. for learning exercise)
+    "i_train_subset": 0,       # the subset number to run, from 0 to n_train_subsets - 1, inclusive
 }
 
 # Define ML settings
@@ -50,10 +53,10 @@ ml_settings = {
 
     # Parameters for training objects
     "model": {  # Model architecture
-        "type": "nonlinear",  # linear or nonlinear
+        "type": "linear",  # linear or nonlinear
         "args": {  # if using linear, pass an empty dict
-            "hidden_layer_widths": [10, 10, 10],
-            "activation_fn": "SiLU",
+            # "hidden_layer_widths": [10, 10, 10],
+            # "activation_fn": "SiLU",
         },
     },
     "optimizer": {
@@ -63,10 +66,12 @@ ml_settings = {
         },
     },
     "scheduler": {
+        # "use_scheduler": False,
         "algorithm": torch.optim.lr_scheduler.MultiStepLR,
         "args": {
-            "milestones": [150, 200],
+            "milestones": [50, 100, 150, 200],
             "gamma": 0.5,
+            # "last_epoch": -1
         },
     },
     "loading": {
@@ -77,10 +82,10 @@ ml_settings = {
 
     # Parameters for training procedure
     "training": {
-        "n_epochs": 120,  # number of total epochs to run
+        "n_epochs": 300,  # number of total epochs to run
         "save_interval": 10,  # save model and optimizer state every x intervals
-        "restart_epoch": 110,  # None, or the epoch checkpoint number if restarting
+        "restart_epoch": 0,  # The epoch checkpoint number if restarting, or 0
         "standardize_out_invariants": True,
-        "learn_on_rho_after": 100,  # epoch to start learning on rho instead of coeffs
+        "learn_on_rho_after": 50,  # epoch to start learning on rho instead of coeffs
     },
 }

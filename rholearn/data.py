@@ -172,18 +172,19 @@ class RhoLoader:
     def __init__(
         self,
         dataset,
-        subset_idxs: np.ndarray,
+        idxs: np.ndarray,
         batch_size: Optional[int] = None,
         **kwargs,
     ):
         self.dataset = dataset
-        batch_size = batch_size if batch_size is not None else len(subset_idxs)
+        self.idxs = idxs
+        batch_size = batch_size if batch_size is not None else len(idxs)
 
         self.dataloader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,
             collate_fn=self.collate_rho_data_batch,
-            sampler=SubsetRandomSampler(subset_idxs),
+            sampler=SubsetRandomSampler(idxs),
             **kwargs,
         )
 
@@ -371,18 +372,25 @@ def _cascade_round(array: np.ndarray) -> np.ndarray:
     return np.array(rounded_array)
 
 
-# Convert structure idxs to torch tensor, convert TensorMaps to torch
-# backend
-# return [torch.tensor(batch[0])] + [
-#     [
-#         equistore.to(
-#             tensormap,
-#             backend="torch",
-#             dtype=self.dataset.dtype,
-#             device=self.dataset.device,
-#             requires_grad=self.dataset.requires_grad,
-#         )
-#         for tensormap in tensormap_list
-#     ]
-#     for tensormap_list in batch[1:]
-# ]
+def get_log_subset_sizes(
+    n_max: int,
+    n_subsets: int,
+    base: Optional[float] = 10.0,
+) -> np.array:
+    """
+    Returns an ``n_subsets`` length array of subset sizes equally spaced along a
+    log of specified ``base`` (default base 10) scale from 0 up to ``n_max``.
+    Elements of the returned array are rounded to integer values. The final
+    element of the returned array may be less than ``n_max``.
+    """
+    # Generate subset sizes evenly spaced on a log scale, custom base
+    subset_sizes = np.logspace(
+        np.log(n_max / n_subsets) / np.log(base),
+        np.log(n_max) / np.log(base),
+        num=n_subsets,
+        base=base,
+        endpoint=True,
+        dtype=int,
+    )
+    return subset_sizes
+
