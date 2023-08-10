@@ -21,26 +21,25 @@ def evaluate_gaussian(target, center, width):
 
 def make_contiguous_numpy(tensor: TensorMap) -> TensorMap:
     """
-    Takes a TensorMap whose block values are ndarrays and ensures they are
-    contiguous. Allows tensors produced by slicing/splitting to be saved to file
-    using the equistore.save method.
+    Takes a TensorMap of numpy backend and makes the ndarray block and
+    gradient values contiguous in memory.
     """
-
     new_blocks = []
     for key, block in tensor.items():
         new_block = TensorBlock(
+            values=np.ascontiguousarray(block.values),
             samples=block.samples,
             components=block.components,
             properties=block.properties,
-            values=np.ascontiguousarray(block.values),
         )
         for parameter, gradient in block.gradients():
-            new_block.add_gradient(
-                parameter=parameter,
+            new_gradient = TensorBlock(
+                values=np.ascontiguousarray(gradient.values),
                 samples=gradient.samples,
                 components=gradient.components,
-                data=np.ascontiguousarray(gradient.data),
+                properties=gradient.properties,
             )
+            new_block.add_gradient(parameter, new_gradient)
         new_blocks.append(new_block)
 
     return TensorMap(
