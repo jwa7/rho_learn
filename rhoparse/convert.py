@@ -15,10 +15,6 @@ from rholearn import utils
 from rhoparse import convention
 
 
-SYM_TO_NUM = {"H": 1, "C": 6, "O": 8, "N": 7}
-NUM_TO_SYM = {1: "H", 6: "C", 8: "O", 7: "N"}
-
-
 def get_flat_index(
     symbol_list: list, lmax: dict, nmax: dict, i: int, l: int, n: int, m: int
 ) -> int:
@@ -889,7 +885,7 @@ def test_coeff_vector_conversion(
     # Pick out this element from the TensorMap
     tm_block = coeffs_tm.block(
         spherical_harmonics_l=l,
-        species_center=SYM_TO_NUM[symbol],
+        species_center=ase.Atoms(symbol).get_atomic_numbers()[0],
     )
     if structure_idx is None:
         s_idx = tm_block.samples.position((i,))
@@ -973,7 +969,7 @@ def test_overlap_matrix_conversion(
 
     # Check that the matrix element is symmetric
     assert np.isclose(raw_elem, overlaps_matrix[col_idx][row_idx])
-    
+
     if print_level > 0:
         print("Raw matrix: idx", (row_idx, col_idx), "coeff", raw_elem)
 
@@ -1000,3 +996,44 @@ def test_overlap_matrix_conversion(
         print(f"TensorMap: idx", (s_idx, c_idx_1, c_idx_2, p_idx), "coeff", tm_elem)
 
     return np.isclose(raw_elem, tm_elem)
+
+
+SYM_TO_NUM = {
+    "H": 1,
+    "He": 2,
+    "Li": 3,
+    "Be": 4,
+    "B": 5,
+    "C": 6,
+    "N": 7,
+    "O": 8,
+    "F": 9,
+    "Ne": 10,
+    "Na": 11,
+    "Mg": 12,
+    "Al": 13,
+    "Si": 14,
+    "P": 15,
+    "S": 16,
+    "Cl": 17,
+    "Ar": 18,
+    "K": 19,
+    "Ca": 20,
+    "Sc": 21,
+    "Ti": 22,
+    "V": 23,
+    "Cr": 24,
+    "Mn": 25,
+    "Fe": 26,
+    "Co": 27,
+    "Ni": 28,
+    "Cu": 29,
+    "Zn": 30,
+    "Ga": 31,
+    "Ge": 32,
+    "As": 33,
+    "Se": 34,
+    "Br": 35,
+    "Kr": 36,
+}
+NUM_TO_SYM = {num: sym for sym, num in SYM_TO_NUM.items()}
