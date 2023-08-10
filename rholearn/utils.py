@@ -10,6 +10,12 @@ import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
 
+# ===== mathematical functions
+
+def evaluate_gaussian(target, center, width):
+    return ( 1.0 / (width * np.sqrt(2 * np.pi)) ) * np.exp(- 0.5 * ( (target - center) / width )**2)
+
+
 # ===== tensors to contiguous
 
 
