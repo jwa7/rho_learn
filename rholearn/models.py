@@ -379,9 +379,7 @@ class RhoModelBlock(torch.nn.Module):
         if out_invariant_means is None:
             self.out_invariant_means = None
         else:
-            self.out_invariant_means = torch.tensor(
-                out_invariant_means.values, requires_grad=False, dtype=dtype
-            )
+            self.out_invariant_means = out_invariant_means.values
         self.bias = bias
 
         # Assign attributes specific to nonlinear model
