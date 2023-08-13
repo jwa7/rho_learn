@@ -270,7 +270,13 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
             # Example:
             # "Species H: Using default value for prodbas_acc =   1.000000E-04."
             if split[2:8] == "Using default value for prodbas_acc =".split():
-                calc_info["prodbas_acc"][split[1]] = float(split[8][:-1])
+                calc_info["prodbas_acc"][split[1][:-1]] = float(split[8][:-1])
+
+            # Cutoff radius for evaluating overlap matrix
+            # Example:
+            # "ri_fit: Found cutoff radius for calculating ovlp matrix:   2.00000"
+            if split[:8] == "ri_fit: Found cutoff radius for calculating ovlp matrix:".split():
+                calc_info["ri_fit_cutoff_radius"] = float(split[8])
 
             # Extract ri_fit info
             # Example:
@@ -860,9 +866,18 @@ def process_aims_ri_results(
         ri_calc_suffix = "" if ri_calc_idx is None else f"_{int(ri_calc_idx):04d}"
 
         # Save to file
-        np.save(os.path.join(processed_dir, f"ri_coeffs{ri_calc_suffix}.npy"), coeffs)
-        np.save(os.path.join(processed_dir, f"ri_projs{ri_calc_suffix}.npy"), projs)
-        np.save(os.path.join(processed_dir, "ri_ovlp.npy"), ovlp)
+        if "coeffs" in process_what:
+            np.save(os.path.join(processed_dir, f"ri_coeffs{ri_calc_suffix}.npy"), coeffs)
+        else:
+            assert coeffs is None
+        if "projs" in process_what:
+            np.save(os.path.join(processed_dir, f"ri_projs{ri_calc_suffix}.npy"), projs)
+        else:
+            assert projs is None
+        if "ovlp" in process_what:
+            np.save(os.path.join(processed_dir, "ri_ovlp.npy"), ovlp)
+        else:
+            assert ovlp is None
 
         # Clear from memory
         del coeffs, projs, ovlp
@@ -884,19 +899,19 @@ def coeff_vector_ndarray_to_aims_coeffs(
     converts it to the AIMS format.
 
     This involves reversing the order of the  coefficients contained in
-    idx_prodbas_details.out, and undoing the application of the Condon-Shortley
+    product_basis_idxs.out, and undoing the application of the Condon-Shortley
     convention. Essentially, this performs the reverse conversion of the
     :py:func:`process_aux_basis_func_data` function in this
     :py:mod:`aims_parser` module, but only applied to the coefficients vector.
 
-    This function requires that the files idx_prodbas_details.out and
-    prodbas_condon_shotley_list.out exist in the directory `aims_output_dir`.
+    This function requires that the file product_basis_idxs.out exists in the
+    directory `aims_output_dir`.
 
     If `save_dir` is not None, the converted coefficients are saved to this
-    directory under the filename "ri_restart_coeffs.out", in the AIMS output
-    file format for this data type - i.e. one value per line. The coefficients
-    saved under this filename allow the RI fitting procedure to be restarted
-    from them.
+    directory under the filename "ri_coeffs.in", in the AIMS output file format
+    for this data type - i.e. one value per line. The coefficients saved under
+    this filename allow the RI fitting procedure to be restarted from them using
+    the AIMS keyword "ri_fit_rebuild_from_coeffs".
 
     :param aims_output_dir: str, absolute path to the directory containing the
         AIMS calculation output files.
@@ -904,57 +919,47 @@ def coeff_vector_ndarray_to_aims_coeffs(
         convention.
     :param save_dir: optional str, the absolute path to the directory to save
         the coefficients to. If specified, they are saved as one coefficient per
-        line under the filename "ri_restart_coeffs.out".
+        line under the filename "ri_coeffs.in".
 
     :return np.ndarray: vector of RI coefficients in the AIMS format.
     """
     # Check various directories and paths exist
     if not os.path.isdir(aims_output_dir):
         raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
-    if not os.path.exists(os.path.join(aims_output_dir, "idx_prodbas_details.out")):
+    if not os.path.exists(os.path.join(aims_output_dir, "product_basis_idxs.out")):
         raise FileNotFoundError(
-            f"The file idx_prodbas_details.out does not exist in {aims_output_dir}."
-        )
-    if not os.path.exists(
-        os.path.join(aims_output_dir, "prodbas_condon_shotley_list.out")
-    ):
-        raise FileNotFoundError(
-            f"The file prodbas_condon_shotley_list.out does not exist in {aims_output_dir}."
+            f"The file product_basis_idxs.out does not exist in {aims_output_dir}."
         )
     if save_dir is not None:
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
 
-    # Load the auxiliary basis function (ABF) information. This is 2D array where
-    # columns correspond to, respectively, the auxiliary basis function index, atom
-    # index, angular momentum l value, radial channel index, and the angular
-    # momentum component m value.
-    abf_idxs = np.loadtxt(
-        os.path.join(aims_output_dir, "idx_prodbas_details.out"),
-        dtype=int,
-    )[:, 0]
-    abf_idxs -= 1  # Convert to zero indexing
-
-    # Load the indices of the auxiliary basis functions to which the Condon-Shortley
-    # convention should be applied
-    cs_abf_idxs = np.loadtxt(
-        os.path.join(aims_output_dir, "prodbas_condon_shotley_list.out"),
+    # Load the auxiliary/product basis function (ABF) information. This is 2D
+    # array where columns correspond to, respectively, the auxiliary basis
+    # function index, atom index, angular momentum l value, radial channel
+    # index, and the angular momentum component m value.
+    abf_info = np.loadtxt(
+        os.path.join(aims_output_dir, "product_basis_idxs.out"),
         dtype=int,
     )
-    cs_abf_idxs -= 1  # Convert to zero indexing
+    abf_idxs = abf_info[:, 0]
+    abf_idxs -= 1  # Convert to zero indexing
 
     # First, re-broadcast the coefficients back to the original AIMS ordering
     reverse_abf_idxs = [np.where(abf_idxs == i)[0][0] for i in range(len(abf_idxs))]
     aims_coeffs = coeffs[reverse_abf_idxs]
 
-    # Second, undo the Condon-Shortley convention for the coefficients of the ABFs
-    # in `cs_abf_idxs`
-    for cs_abf_idx in cs_abf_idxs:
-        aims_coeffs[cs_abf_idx] *= -1
+    # Second, undo the Condon-Shortley convention for the coefficients of ABFs
+    # where m is odd and positive
+    for abf in abf_info:
+        abf_idx = abf[0]
+        abf_m_value = abf[4]
+        if abf_m_value % 2 == 1 and abf_m_value > 0:
+            aims_coeffs[abf_idx] *= -1
 
     # Save the coefficient to file "ri_restart_coeffs.out" if `save_dir`
     # specified.
     if save_dir is not None:
-        np.savetxt(os.path.join(save_dir, "ri_restart_coeffs.out"), aims_coeffs)
+        np.savetxt(os.path.join(save_dir, "ri_coeffs.in"), aims_coeffs)
 
     return aims_coeffs
