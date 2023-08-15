@@ -12,14 +12,7 @@ from torch.utils.data.sampler import SubsetRandomSampler
 import equistore
 from equistore import Labels, TensorBlock, TensorMap
 
-# Consider dataloading
-# - num_workers * prefetch_factor * batch_size * (size per structure) < RAM
-
-
-# Define a filename convention for the input/output/overlap TensorMaps. In
-# general, for each structure indexed by A, these files would live at relative
-# paths A/x.npz, A/c.npz, and A/s.npz, respectively.
-FILENAMES = ["x", "c", "s"]
+from rholearn import loss
 
 
 class RhoData(torch.utils.data.Dataset):
@@ -35,8 +28,15 @@ class RhoData(torch.utils.data.Dataset):
     overlap matrices (if applicable) must be stored under the respective
     filenames passed in `filenames`, in equistore TensorMap (.npz) format.
 
+    `standardize_invariants` can be passed as a list containing "input" and/or
+    "output" to subtract the invariant means from the invariant blocks of the
+    input and output data, repsectively. The invariants means are only
+    calculated from the training data. As such, `train_idxs` must be specified.
+
     :param idxs: Sequence[int], Sequence of indices that define the complete
         dataset.
+    :param train_idxs: Sequence[int], Sequence of indices corresponding to the
+        training data.
     :param input_dir: str, absolute path to directory containing
         input/descriptor (i.e. lambda-SOAP) data. In this directory, descriptors
         must be stored at relative path A/{filenames[0]}.npz, where A is the
@@ -55,15 +55,14 @@ class RhoData(torch.utils.data.Dataset):
         by `idxs`. When __getitem__ is called, the dict is just accessed from
         memory. If false, data is loaded from disk upon each call to
         __getitem__.
-    :param standardize_invariants: Sequence[str], Sequence of strings indicating
-        which data to standardize. If "input" is in the list, the invariant
-        blocks of the input data are standardized using the invariant means of
-        the training data. If "output" is in the list, the invariant blocks of
-        the output data are standardized. In either or both of these cases,
-        `train_idxs` should be specified. If None, no standardization is
+    :param standardize_outputs: bool, whether to standardize the output data by
+        subtracting the invariant means of the output training data. If true,
+        the invariant blocks of the output data are standardized using the
+        invariant means of the training data. If false, no standardization is
         performed.
-    :param train_idxs: Sequence[int], Sequence of indices corresponding to the
-        training data. Only required if `standardize_invariants` is not None.
+    :param calc_out_train_std_dev: bool indicating whether to calculate the
+        standard deviation of the output training data. If true, the standard
+        deviation is calculated and stored in the attribute `out_train_std_dev`.
     :param filenames: Sequence[str], Sequence of strings indicating the filename
         convention for the input/output/overlap TensorMaps respectively. By
         default the filenames are set to ["x", "c", "s"], meaning for each
@@ -75,23 +74,33 @@ class RhoData(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        idxs: Sequence[int],
+        all_idxs: Sequence[int],
+        train_idxs: Sequence[int],
         input_dir: str,
         output_dir: str,
         overlap_dir: Optional[str] = None,
         keep_in_mem: bool = True,
-        standardize_invariants: Optional[Sequence[List]] = None,
-        train_idxs: Optional[Sequence[int]] = None,
-        filenames: Sequence[str] = FILENAMES,
+        standardize_outputs: bool = True,
+        calc_out_train_std_dev: bool = True,
+        filenames: Optional[Sequence[str]] = ["lsoap", "ri_coeffs", "ri_ovlp"],
         **torch_kwargs,
     ):
         super(RhoData, self).__init__()
 
         # Check input args
-        RhoData._check_input_args(input_dir, output_dir, overlap_dir)
+        RhoData._check_input_args(
+            all_idxs,
+            train_idxs,
+            input_dir,
+            output_dir,
+            overlap_dir,
+            standardize_outputs,
+            calc_out_train_std_dev,
+        )
 
         # Assign attributes
-        self._idxs = idxs
+        self._all_idxs = all_idxs
+        self._train_idxs = train_idxs
         self._input_dir = input_dir
         self._output_dir = output_dir
         self._overlap_dir = overlap_dir
@@ -101,14 +110,14 @@ class RhoData(torch.utils.data.Dataset):
         # Set the data directories and check files exist
         self.in_paths = {
             idx: os.path.join(self._input_dir, f"{idx}/{filenames[0]}.npz")
-            for idx in self._idxs
+            for idx in self._all_idxs
         }
         for path in self.in_paths.values():
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Descriptor coeffs at {path} does not exist.")
         self.out_paths = {
             idx: os.path.join(self._output_dir, f"{idx}/{filenames[1]}.npz")
-            for idx in self._idxs
+            for idx in self._all_idxs
         }
         for path in self.out_paths.values():
             if not os.path.exists(path):
@@ -118,7 +127,7 @@ class RhoData(torch.utils.data.Dataset):
         if overlap_dir is not None:
             self.overlap_paths = {
                 idx: os.path.join(self._overlap_dir, f"{idx}/{filenames[2]}.npz")
-                for idx in self._idxs
+                for idx in self._all_idxs
             }
             for path in self.overlap_paths.values():
                 if not os.path.exists(path):
@@ -131,27 +140,41 @@ class RhoData(torch.utils.data.Dataset):
         else:
             self._data_in_mem = False
 
-        # Calculate the means of the invariant blocks of training data if
-        # standardization is to be performed
-        if standardize_invariants is not None:
-            if train_idxs is None:
-                raise ValueError(
-                    "`train_idxs` must be specified if standardizing invariants."
-                )
-            self._calculate_invariant_means(
-                standardize_what=standardize_invariants, train_idxs=train_idxs
-            )
-            self._standardize_invariants(standardize_what=standardize_invariants)
+        # If standardizing the outputs or calculating the standard deviation of
+        # the output training data, the invariant means of the output training
+        # data will be required. Calculate and store these.
+        if standardize_outputs or calc_out_train_std_dev:
+            self._calculate_out_train_inv_means()
+
+        # Standardize the invariant blocks of all output data using the
+        # invariant means of the training data
+        if standardize_outputs:
+            self._standardize_output_data()
+            self._outputs_standardized = True
+        else:
+            self._outputs_standardized = False
+
+        # Calculate the standard deviation of the output training data
+        if calc_out_train_std_dev:
+            self._calculate_out_train_std_dev()
 
         gc.collect()
 
     @staticmethod
     def _check_input_args(
+        all_idxs: Sequence[int],
+        train_idxs: Sequence[int],
         input_dir: str,
         output_dir: str,
-        overlap_dir: Optional[str] = None,
+        overlap_dir: Optional[str],
+        standardize_outputs: bool,
+        calc_out_train_stddev: bool,
     ):
         """Checks args to the constructor."""
+        if not np.all([i in all_idxs for i in train_idxs]):
+            raise ValueError(
+                "all the idxs passed in `train_idxs` must be in `all_idxs`"
+            )
         if not os.path.exists(input_dir):
             raise NotADirectoryError(
                 f"Input/descriptor data directory {input_dir} does not exist."
@@ -164,6 +187,16 @@ class RhoData(torch.utils.data.Dataset):
             if not os.path.exists(overlap_dir):
                 raise NotADirectoryError(
                     f"Input/descriptor data directory {overlap_dir} does not exist."
+                )
+        else:
+            if standardize_outputs:
+                raise ValueError(
+                    "cannot standardize output data without specification of the `overlap_dir`"
+                )
+            if calc_out_train_stddev:
+                raise ValueError(
+                    "cannot calculate standard deviation of density without"
+                    " specification of the `overlap_dir`"
                 )
 
     def __loaditem__(self, idx: int) -> Tuple:
@@ -197,13 +230,15 @@ class RhoData(torch.utils.data.Dataset):
 
     def __len__(self) -> int:
         """Returns the length of the dataset."""
-        return len(self._idxs)
+        return len(self._all_idxs)
 
     def __getitem__(self, idx: int) -> Tuple:
         """
         Loads and returns the input/output data pair for the corresponding
         `idx`. Input, output, and overlap matrices (if applicable) are
         loaded with a torch backend.
+
+        Each item can be accessed with `self[idx]`.
         """
         if self._data_in_mem:
             return self._loaded_data[idx]
@@ -211,149 +246,164 @@ class RhoData(torch.utils.data.Dataset):
 
     def _load_data(self) -> None:
         """
-        Lazily loads the data for all items corresponding to `idxs` upon class
-        initialization. Stores it in a dict indexed by `self._idxs`.
+        Lazily loads the data for all items corresponding to `all_idxs` upon class
+        initialization. Stores it in a dict indexed by these indices
 
         Each item correpsonds to a tuple of the idx, and TensorMaps for the
         input, output, and (if applicable) overlap matrices.
         """
         self._loaded_data = {}
-        for idx in self._idxs:
+        for idx in self._all_idxs:
             self._loaded_data[idx] = self.__loaditem__(idx)
 
-    def _calculate_invariant_means(
-        self, standardize_what: Sequence[str], train_idxs: Sequence[int]
-    ) -> None:
+    def _calculate_out_train_inv_means(self) -> None:
         """
         Retrieves the `data="input"` or `data="output"` TensorMaps for the
         `train_idxs`, joins them, then only for the invariant blocks performs a
         reduction by taking the mean over samples. Stores the resulting
-        TensorMap in `self._in_invariant_means` or `self._out_invariant_means`,
+        TensorMap in `self._in_train_inv_means` or `self._out_train_inv_means`,
         """
-        if "input" in standardize_what:
-            # Retrieve the input training data and join
-            in_train_list = [self[idx][1] for idx in train_idxs]
-            in_train = equistore.join(
-                in_train_list,
-                axis="samples",
-                remove_tensor_name=True,
-            )
-            in_train = equistore.to(in_train, "numpy")
-            # Calc and store invariant means
-            in_inv_means = get_invariant_means(in_train)
-            in_inv_means = equistore.to(in_inv_means, "torch", **self._torch_kwargs)
-            self._in_invariant_means = in_inv_means
-            # Clear memory
-            del in_train_list, in_train, in_inv_means
-            gc.collect()
+        # Retrieve the output training data and join
+        out_train_list = [self[idx][2] for idx in self._train_idxs]
+        out_train = equistore.join(
+            out_train_list,
+            axis="samples",
+            remove_tensor_name=True,
+        )
+        out_train = equistore.to(out_train, "numpy")
 
-        if "output" in standardize_what:
-            # Retrieve the output training data and join
-            out_train_list = [self[idx][2] for idx in train_idxs]
-            out_train = equistore.join(
-                out_train_list,
-                axis="samples",
-                remove_tensor_name=True,
-            )
-            out_train = equistore.to(out_train, "numpy")
-            # Calc and store invariant means
-            out_inv_means = get_invariant_means(out_train)
-            out_inv_means = equistore.to(out_inv_means, "torch", **self._torch_kwargs)
-            self._out_invariant_means = out_inv_means
-            # Clear memory
-            del out_train_list, out_train, out_inv_means
-            gc.collect()
+        # Calc and store invariant means
+        out_train_inv_means = get_invariant_means(out_train)
+        out_train_inv_means = equistore.to(
+            out_train_inv_means, "torch", **self._torch_kwargs
+        )
+        self._out_train_inv_means = out_train_inv_means
 
-    def _standardize_invariants(self, standardize_what: Sequence[str]) -> None:
+        # Clear memory
+        del out_train_list, out_train, out_train_inv_means
+        gc.collect()
+
+    def _standardize_output_data(self) -> None:
         """
-        Standardizes the invariant blocks of the input and/or putout data.
+        Standardizes all the output data by subtracting baseline mean of the
+        output training data. As the means of all covariant blocks (lambda > 0)
+        are assumed to be zero, this in practice involves just subtracting the
+        invariant means of the output training data from the invariant blocks of
+        all output data.
 
         If `self.keep_in_mem=True`, the attribute appropraite data stored in
         `self._loaded_data` is overwritten with the standardized data.
 
         If `self.keep_in_mem=False`, the standardized data is written to file
-        alongside the unstandardized data. In this case, standardized inputs are
-        stored in `self._input_dir` under filenames "{filenames[0]}_std.npz", and
-        standardized outputs are stored in `self._output_dir` under filenames
-        "{filenames[0]}_std.npz".
+        alongside the unstandardized data. In this case, standardized outputs
+        are stored in `self._output_dir` under filenames
+        "{filenames[1]}_std.npz".
         """
-        if len(standardize_what) == 0:
-            return
         # Standardize and overwrite the unstd data already in memory
         if self._data_in_mem:
-            for idx in self._idxs:
+            for idx in self._all_idxs:
                 item = self._loaded_data[idx]
-                tmp_input, tmp_output = item[1], item[2]
-                if "input" in standardize_what:
-                    tmp_input = standardize_invariants(
-                        item[1],
-                        invariant_means=self._in_invariant_means,
-                        reverse=False,
-                    )
-                if "output" in standardize_what:
-                    tmp_output = standardize_invariants(
-                        item[2],
-                        invariant_means=self._out_invariant_means,
-                        reverse=False,
-                    )
+                tmp_output = standardize_invariants(
+                    item[2],
+                    invariant_means=self._out_train_inv_means,
+                    reverse=False,
+                )
                 if len(item) == 4:
-                    self._loaded_data[idx] = (item[0], tmp_input, tmp_output, item[3])
+                    self._loaded_data[idx] = (item[0], item[1], tmp_output, item[3])
                 else:
                     assert len(item) == 3
-                    self._loaded_data[idx] = (item[0], tmp_input, tmp_output)
-                del item, tmp_input, tmp_output
+                    self._loaded_data[idx] = (item[0], item[1], tmp_output)
+                del item, tmp_output
                 gc.collect()
 
-        # Calculate standardized data and write newly to file
+        # Calculate standardized data and write to file
         else:
-            for idx in self._idxs:
-                if "input" in standardize_what:
-                    in_std = standardize_invariants(
-                        self[idx][1],
-                        invariant_means=self._in_invariant_means,
-                        reverse=False,
+            for idx in self._all_idxs:
+                out_std = standardize_invariants(
+                    self[idx][2],
+                    invariant_means=self._out_train_inv_means,
+                    reverse=False,
+                )
+                equistore.save(
+                    os.path.join(
+                        self._output_dir, f"{idx}/{self._filenames[1]}_std.npz"
                     )
-                    equistore.save(
-                        os.path.join(
-                            self._input_dir, f"{idx}/{self._filenames[0]}_std.npz"
-                        )
-                    )
-                    del in_std
-                    gc.collect()
+                )
+                del out_std
+                gc.collect()
 
-                if "output" in standardize_what:
-                    out_std = standardize_invariants(
-                        self[idx][2],
-                        invariant_means=self._out_invariant_means,
-                        reverse=False,
-                    )
-                    equistore.save(
-                        os.path.join(
-                            self._output_dir, f"{idx}/{self._filenames[1]}_std.npz"
-                        )
-                    )
-                    del in_std
-                    gc.collect()
+    def _calculate_out_train_std_dev(self) -> None:
+        """
+        Calculates the standard deviaton of the output training data.
+
+        See property `RhoLoss.in_train_std_dev` for the mathematical expression.
+        """
+        # We can use the RhoLoss function to evaluate the error in the
+        # output data relative to the mean baseline of the training data
+        loss_fn = loss.RhoLoss()
+
+        # As this function is only ever called once for a given set of training
+        # indices, iterate over each training structure in turn to reduce memory
+        # overhead
+        stddev = 0
+        for idx in self._train_idxs:
+            # Load/retrieve the output training structure and overlap matrix
+            _, _, out_train, overlap = self[idx]
+
+            # If the output data hasn't been standardized, do it
+            if not self._outputs_standardized:
+                out_train = standardize_invariants(out_train, self._out_train_inv_means)
+
+            # Build a dummy TensorMap of zeros - this will be used for input
+            # into the RhoLoss loss function as the 'target'
+            out_zeros = equistore.zeros_like(out_train)
+
+            # Accumulate the 'loss' on the training ouput relative to the
+            # spherical baseline
+            stddev += loss_fn(input=out_train, target=out_zeros, overlap=overlap)
+
+            # Clear memory
+            del out_train, overlap, out_zeros
+            gc.collect()
+
+        # Calculate the final stddev and store
+        stddev = torch.sqrt(stddev / (len(self._train_idxs) - 1))
+        self._out_train_std_dev = stddev
 
     @property
-    def in_invariant_means(self) -> TensorMap:
+    def in_train_inv_means(self) -> TensorMap:
         """
-        Returns a TensorMap of the output (i.e. elctron density) invariant means.
-
-        Only applicable if the RhoData object was initialized with the path
-        containing this file.
+        Returns a TensorMap containing the invariant block means of the input
+        training data.
         """
-        return self._in_invariant_means
+        return self._in_train_inv_means
 
     @property
-    def out_invariant_means(self) -> TensorMap:
+    def out_train_inv_means(self) -> TensorMap:
         """
-        Returns a TensorMap of the output (i.e. elctron density) invariant means.
+        Returns a TensorMap containing the invariant block means of the output
+        training data.
+        """
+        return self._out_train_inv_means
 
-        Only applicable if the RhoData object was initialized with the path
-        containing this file.
+    @property
+    def out_train_std_dev(self) -> float:
         """
-        return self._out_invariant_means
+        Returns the standard deviation of the output training data, given by the
+        expression:
+
+        .. math:
+
+            \sqrt{
+                \frac{1}{N - 1} \sum_A^N ... \Delta \bar{c} \hat{S} \Delta
+                \bar{c}
+            }
+
+        where A is 1 of N training structures, and \Delta \bar{c} =
+        c^{\text{RI}} - \bar{c} is the vector of reference RI coefficients minus
+        the mean baseline, and \hat{S} is the overlap matrix.
+        """
+        return self._out_train_std_dev
 
 
 class RhoLoader:
@@ -369,10 +419,9 @@ class RhoLoader:
         get_overlaps: bool = False,
         **kwargs,
     ):
-        self.dataset = dataset
         self._idxs = idxs
-        self.batch_size = batch_size if batch_size is not None else len(idxs)
-        self.get_overlaps = get_overlaps
+        self._batch_size = batch_size if batch_size is not None else len(idxs)
+        self._get_overlaps = get_overlaps
 
         self.dataloader = torch.utils.data.DataLoader(
             dataset,
@@ -425,7 +474,7 @@ class RhoLoader:
         batch = list(zip(*batch))
 
         # Return the idxs, input, output, and overlaps
-        if self.get_overlaps:
+        if self._get_overlaps:
             return (
                 batch[0],
                 equistore.join(batch[1], axis="samples", remove_tensor_name=True),
@@ -517,22 +566,22 @@ def get_group_sizes(
     terms. If `group_sizes` is None, the group sizes returned are (to the
     nearest integer) evenly distributed across the number of unique indices;
     i.e. if there are 12 unique indices (`n_indices=10`), and `n_groups` is 3,
-    the group sizes returned will be np.array([4, 4, 4]). If `group_sizes` is
-    specified as a Sequence of floats (i.e. relative sizes, whose sum is <= 1),
-    the group sizes returned are converted to absolute sizes, i.e. multiplied by
-    `n_indices`. If `group_sizes` is specified as a Sequence of int, no
-    conversion is performed. A cascade round is used to make sure that the group
-    sizes are integers, with the sum of the Sequence preserved and the rounding
-    error minimized.
+    the group sizes returned will be np.array([4, 4, 4]).
+
+    If `group_sizes` is specified as a Sequence of floats (i.e. relative sizes,
+    whose sum is <= 1), the group sizes returned are converted to absolute
+    sizes, i.e. multiplied by `n_indices`. If `group_sizes` is specified as a
+    Sequence of int, no conversion is performed. A cascade round is used to make
+    sure that the group sizes are integers, with the sum of the Sequence
+    preserved and the rounding error minimized.
 
     :param n_groups: an int, the number of groups to split the data into :param
         n_indices: an int, the number of unique indices present in the data by
         which the data should be grouped.
     :param n_indices: a :py:class:`int` for the number of unique indices present
         in the input data for the specified `axis` and `names`.
-    :param group_sizes: a sequence of :py:class:`float` or
-        :py:class:`int` indicating the absolute or relative group sizes,
-        respectively.
+    :param group_sizes: a sequence of :py:class:`float` or :py:class:`int`
+        indicating the absolute or relative group sizes, respectively.
 
     :return: a :py:class:`numpy.ndarray` of :py:class:`int` indicating the
         absolute group sizes.
