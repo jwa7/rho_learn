@@ -226,7 +226,7 @@ def extract_calculation_info(aims_output_dir: str) -> dict:
             if split[:6] == "| Number of self-consistency cycles          :".split():
                 calc_info["scf"]["num_cycles"] = int(split[6])
 
-            # Kohn-Sham states, occupations, and eigenvalues (eV)
+            # Kohn-Sham states, occs, and eigenvalues (eV)
             # Example:
             # State    Occupation    Eigenvalue [Ha]    Eigenvalue [eV]
             # 1       2.00000         -19.211485         -522.77110
@@ -610,31 +610,29 @@ def calc_density_fitting_error(
     return np.dot(error, partition) / np.dot(rho_ref, partition)
 
 
-def get_mo_states_info(aims_output_dir: str) -> dict:
+def get_ks_orbital_info(aims_output_dir: str) -> dict:
     """
     Parses the details of the MO states from the AIMS output file
-    `aims_output_dir`/"mo_states_info.out". Each row of this file corresponds
-    to, respectively, the numeric MO index (1, ..., num_states, inclusive), the
-    KS state index (1 .. num_ks_states, inc), the spin state index (1 ..
-    num_spin_states, inc), the k-point index (1 .. num_k_points, inc), the
-    k_point weight, the KS occupation number, and the eigenvalue in eV.
+    `aims_output_dir`/"ks_orbital_info.out". Each row of this file corresponds
+    to, respectively, the numeric KS-orbital index (1, ..., num_states,
+    inclusive), the KS state index (1 .. num_ks_states, inc), the spin state
+    index (1 .. num_spin_states, inc), the k-point index (1 .. num_k_points,
+    inc), the k_point weight, the KS state occupation number, and the eigenvalue
+    in eV.
 
     Assumes that the order of the eigenvalues follows the nested loop hierarchy;
-    loop over KS states, loop over spin states, loop over k-points. The number
-    of KS states, spin states, and k-points are passed in the arguments
-    `num_ks_states`, `num_spin_states`, and `num_k_points` respectively.
-    `ks_occupations` is a list of the occupation numbers of each KS state.
+    loop over states, loop over spin states, loop over k-points.
     """
     # Load the eigenvalues
-    state_info = np.loadtxt(os.path.join(aims_output_dir, "mo_states_info.out"))
+    state_info = np.loadtxt(os.path.join(aims_output_dir, "ks_orbital_info.out"))
 
-    mo_state_dict = {}
+    ks_orbital_dict = {}
     for row in state_info:
         # Unpack the row
-        mo_idx, ks_state, spin_state, k_point, k_weight, occ, eigval = row[:7]
+        ks_orb_idx, ks_state, spin_state, k_point, k_weight, occ, eigval = row[:7]
 
         # Store the info
-        mo_state_dict[int(mo_idx)] = {
+        ks_orbital_dict[int(ks_orb_idx)] = {
             "ks_state": int(ks_state),
             "spin_state": int(spin_state),
             "k_point": int(k_point),
@@ -643,28 +641,28 @@ def get_mo_states_info(aims_output_dir: str) -> dict:
             "eig_eV": eigval,
         }
 
-    return mo_state_dict
+    return ks_orbital_dict
 
 
-def calc_density_fitting_error_by_mo_sum(
+def df_error_by_ks_orb_prob_dens_sum(
     aims_output_dir: str,
-    mo_idxs: Sequence[int],
-    occupations: Sequence[float],
+    ks_orb_idxs: Sequence[int],
+    occs: Sequence[float],
     ref_total_density: str,
-    mo_prob_densities: str,
-    mo_weights: Optional[Sequence[float]] = None,
+    ks_orb_prob_dens: str,
+    ks_orb_weights: Optional[Sequence[float]] = None,
 ) -> float:
     """
     First constructs a total electron density from an occupation-weighted sum of
-    the real-space MO probability densities, and then calculates the error in
-    this density relative to a reference total electron density. A returned
-    value of 1 corresponds to an error of 100%.
+    the real-space KS-orbital probability densities, and then calculates the
+    error in this density relative to a reference total electron density. A
+    returned value of 1 corresponds to an error of 100%.
 
-    Requires input of the MO orbital indices (running from 1 to n_states
-    inclusive) in the `mo_idxs` argument. Also requires input of the occupation
-    numbers of each orbital in the `occupations` argument. The MO orbitals may
-    be any set of orbitals that sum to the total density, for instance the KS-MO
-    orbitals decomposed (or not) by spin state and k-point.
+    Requires input of the KS-orbital indices (running from 1 to n_states
+    inclusive) in the `ks_orb_idxs` argument. Also requires input of the
+    occupation numbers of each orbital in the `occs` argument. The KS-orbitals
+    may be any set of orbitals that sum to the total density, for instance the
+    KS-orbitals decomposed (or not) by spin state and k-point.
 
     The reference total electron density can be either the SCF converged total
     density stored in the file "rho_ref.out", or the RI fitted total density in
@@ -673,92 +671,91 @@ def calc_density_fitting_error_by_mo_sum(
 
     The molecular orbital probabilty densities used to construct the total
     density can be either the SCF converged probability densities stored in
-    files "rho_scf_xxxx.out", or the RI fitted probability densities in files
-    "rho_rebuilt_ri_xxxx.out". These options are also controlled by setting
-    `mo_prob_densities` to "SCF" or "RI" respectively. "xxxx" points to a string
-    suffix corresponding to the each of the Kohn-Sham MO indices passed in
-    `mo_idxs`.
+    files "rho_ref_xxxx.out", or the RI fitted probability densities in files
+    "rho_rebuilt_xxxx.out". These options are also controlled by setting
+    `ks_orb_prob_dens` to "SCF" or "RI" respectively. "xxxx" points to a string
+    suffix corresponding to the each of the KS-orbital indices passed in
+    `ks_orb_idxs`.
 
     Also required is that the file "partition_tab.out" is present in
     `aims_output_dir`. This contains the integration weights for each grid point
     in real space.
 
     :param aims_output_dir: str for the absolute path to the directory
-        containing the AIMS output files from the RI calculation on a single
-        structure using keyword "ri_full_output" set to true.
-    :param mo_idxs: list of ``int`` to indicate the Kohn-Sham molecular orbital
-        indices for which MO probability densities exist.
-    :param occupations: list of ``float`` to indicate the occupation number of
-        each MO in `mo_idxs`.
+        containing the AIMS output files.
+    :param ks_orb_idxs: list of ``int`` to indicate the KS-orbital indices for
+        which probability densities exist.
+    :param occs: list of ``float`` to indicate the occupation number of each
+        KS-orbital in `ks_orb_idxs`.
     :param ref_total_density: ``str`` to indicate the reference total electron
         density to which the error in the other density is calculated. Must be
         either "SCF" or "RI".
-    :param mo_prob_densities: ``str`` to indicate the type of MO probability
-        densities to use to construct the total density and compare to the
-        reference total density. Must be either "SCF" or "RI".
-    :param mo_weights: optional ``list`` of ``float`` to indicate the weighting
-        for each MO. This is typically used to correct the occupation numberfor
-        different k-points. This should be a list of length .
+    :param ks_orb_prob_dens: ``str`` to indicate the type of KS-orbital
+        probability densities to use to construct the total density and compare
+        to the reference total density. Must be either "SCF" or "RI".
+    :param ks_orb_weights: optional ``list`` of ``float`` to indicate the
+        weighting for each KS-orbital. This is typically used to correct the
+        occupation number for different k-points.
 
     :return float: the error in the RI fitted density relative to the SCF
-        converged density.
+        converged density. A value of 1 corresponds to a 100% error.
     """
     # Check output directory exists
     if not os.path.isdir(aims_output_dir):
         raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
 
-    for arg in [ref_total_density, mo_prob_densities]:
+    for arg in [ref_total_density, ks_orb_prob_dens]:
         if arg not in ["SCF", "RI"]:
             raise ValueError(f"Invalid argument {arg} passed. Should be 'SCF' or 'RI'.")
 
-    if mo_weights is None:
-        mo_weights = [1.0] * len(mo_idxs)
+    if ks_orb_weights is None:
+        ks_orb_weights = [1.0] * len(ks_orb_idxs)
 
     # Load the reference total density
     if ref_total_density == "SCF":
-        ref_rho = np.loadtxt(os.path.join(aims_output_dir, "rho_ref.out"))
+        rho_ref = np.loadtxt(os.path.join(aims_output_dir, "rho_ref.out"))
     else:
         assert ref_total_density == "RI"
-        ref_rho = np.loadtxt(os.path.join(aims_output_dir, "rho_rebuilt.out"))
+        rho_ref = np.loadtxt(os.path.join(aims_output_dir, "rho_rebuilt.out"))
 
     # Load the integration weights
     partition = np.loadtxt(os.path.join(aims_output_dir, "partition_tab.out"))
-    assert np.all(partition[:, :3] == ref_rho[:, :3])
+    assert np.all(partition[:, :3] == rho_ref[:, :3])
 
-    # Loop over MO indices and load the MO probability densities
-    mo_summed_density = []
-    for mo_idx, occ, weight in zip(mo_idxs, occupations, mo_weights):
-        if mo_prob_densities == "SCF":
-            mo_a = np.loadtxt(
-                os.path.join(aims_output_dir, f"rho_scf_{int(mo_idx):04d}.out")
+    # Loop over MO indices and load the KS-orbital probability densities
+    ks_orb_prob_dens_summed = []
+    for ks_orb_idx, occ, weight in zip(ks_orb_idxs, occs, ks_orb_weights):
+        if ks_orb_prob_dens == "SCF":
+            kso_a = np.loadtxt(
+                os.path.join(aims_output_dir, f"rho_ref_{int(ks_orb_idx):04d}.out")
             )
         else:
-            assert mo_prob_densities == "RI"
-            mo_a = np.loadtxt(
+            assert ks_orb_prob_dens == "RI"
+            kso_a = np.loadtxt(
                 os.path.join(
-                    aims_output_dir, f"rho_rebuilt_ri_{int(mo_idx):04d}.out"
+                    aims_output_dir, f"rho_rebuilt_{int(ks_orb_idx):04d}.out"
                 )
             )
         # Check that the grid point coords are the same
-        assert np.all(mo_a[:, :3] == ref_rho[:, :3])
+        assert np.all(kso_a[:, :3] == rho_ref[:, :3])
 
         # Calculate and store the MO density (i.e. probability density *
         # occupation)
-        mo_summed_density.append(weight * occ * mo_a[:, 3])
+        ks_orb_prob_dens_summed.append(weight * occ * kso_a[:, 3])
 
     # Sum the MO densities at each grid point
-    mo_summed_density = np.sum(mo_summed_density, axis=0)
+    ks_orb_prob_dens_summed = np.sum(ks_orb_prob_dens_summed, axis=0)
 
     # Now it's confirmed that the grid point coordinates are consistent, throw
     # away the grid points for the ref total density and integration weights
-    ref_rho = ref_rho[:, 3]
+    rho_ref = rho_ref[:, 3]
     partition = partition[:, 3]
 
     # Get the absolute residual error between the ref and mo-built densities
-    error = np.abs(mo_summed_density - ref_rho)
+    error = np.abs(ks_orb_prob_dens_summed - rho_ref)
 
     # Calculate and return the relative error (normalized by the number of electrons)
-    return np.dot(error, partition) / np.dot(ref_rho, partition)
+    return np.dot(error, partition) / np.dot(rho_ref, partition)
 
 
 def process_aims_ri_results(
@@ -781,9 +778,9 @@ def process_aims_ri_results(
     respectively.
 
     If `ri_calc_idxs` is passed, indicating the indices of the RI calculation
-    within the main AIMS calculation, the processed coefficients and projections
-    are indexed by these values, e.g. "c_0000.npy", "w_0000.npy". Note that the
-    overlap matrix "s.npy" isn't, as this is fixed for all MOs.
+    within the main AIMS calculation, (1-indexed) the processed coefficients and
+    projections are indexed by these values, e.g. "c_0001.npy", "w_0001.npy".
+    Note that the overlap matrix "s.npy" isn't, as this is fixed for all MOs.
 
     This function assumes that within the directory `aims_output_dir` there is a
     single basis set definition, such that the overlap matrix is fixed
@@ -815,11 +812,11 @@ def process_aims_ri_results(
     calc["nmax"] = nmax
     calc["df_error"] = {}
 
-    # Parse eigenvalues if printed
-    if os.path.exists(os.path.join(aims_output_dir, "mo_states_info.out")):
-        calc["mo_states"] = get_mo_states_info(aims_output_dir)
-        calc["num_mo_states"] = len(calc["mo_states"].keys())
-        assert calc["num_mo_states"] == (
+    # Parse KS orbital information
+    if os.path.exists(os.path.join(aims_output_dir, "ks_orbital_info.out")):
+        calc["ks_orbitals"] = get_ks_orbital_info(aims_output_dir)
+        calc["num_ks_orbitals"] = len(calc["ks_orbitals"].keys())
+        assert calc["num_ks_orbitals"] == (
             calc["num_ks_states"] * calc["num_spin_states"] * calc["num_k_points"]["actual"]
         )
 
