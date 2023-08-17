@@ -1,16 +1,47 @@
-from typing import Union, Optional, Sequence
+"""
+Module containing the RhoModel class that makes predictions on TensorMaps.
+
+Also contains the function `load_rho_model` to load a saved RhoModel from file.
+"""
+import os
+from typing import Union, Optional, Sequence, Tuple
+import warnings
 
 import numpy as np
 import torch
 
+import equistore
 from equistore import Labels, TensorBlock, TensorMap
-from equistore.core.labels import LabelsEntry
 
 
 VALID_MODEL_TYPES = ["linear", "nonlinear"]
-VALID_ACTIVATION_FNS = ["Tanh", "GELU", "SiLU"]
 
-# ===== RhoModel for making predictions on the TensorMap level
+
+# ===== Loading a model from file
+
+
+def load_rho_model(path) -> torch.nn.Module:
+    """
+    Loads a saved model and ensures all TensorMaps are converted to a torch
+    backend.
+    """
+    model = torch.load(path)
+    # Convert each attribute to torch
+    if model._outputs_standardized:
+        attrs = ["_in_metadata", "_out_metadata", "_out_invariant_means"]
+    else:
+        attrs = ["_in_metadata", "_out_metadata"]
+    for attr in attrs:
+        setattr(
+            model,
+            attr,
+            equistore.to(getattr(model, attr), "torch", **model._torch_settings),
+        )
+
+    return model
+
+
+# ===== RhoModel class for making predictions on TensorMaps
 
 
 class RhoModel(torch.nn.Module):
@@ -24,599 +55,299 @@ class RhoModel(torch.nn.Module):
     def __init__(
         self,
         model_type: str,
-        keys: Labels,
-        in_features: Sequence[Labels],
-        out_features: Sequence[Labels],
-        components: Sequence[Sequence[Labels]],
-        out_invariant_means: Optional[TensorMap] = None,
+        input: TensorMap,
+        output: TensorMap,
+        bias_invariants: bool,
         hidden_layer_widths: Optional[
             Union[Sequence[Sequence[int]], Sequence[int]]
         ] = None,
-        activation_fn: Optional[str] = None,
+        activation_fn: Optional[torch.nn.Module] = None,
+        out_invariant_means: Optional[TensorMap] = None,
+        **torch_settings,
     ):
         super(RhoModel, self).__init__()
-        RhoModel._check_init_args(
-            model_type=model_type,
-            keys=keys,
-            in_features=in_features,
-            out_features=out_features,
-            components=components,
-            out_invariant_means=out_invariant_means,
-            hidden_layer_widths=hidden_layer_widths,
-            activation_fn=activation_fn,
-        )
-        self.model_type = model_type
-        self.keys = keys
-        self.in_features = in_features
-        self.out_features = out_features
-        self.components = components
-        self.out_invariant_means = out_invariant_means
+        # Set the torch settings
+        self._torch_settings = torch_settings
+        if self._torch_settings.get("dtype"):
+            torch.set_default_dtype(self._torch_settings.get("dtype"))
 
-        # Assign attributes specific to nonlinear model
-        in_invariant_features = None
-        if model_type == "nonlinear":
-            # Build a list of the input features of the invariant (l=0) block
-            # corresponding to each block model
-            in_invariant_features = [
-                in_features[keys.position([0, key["species_center"]])] for key in keys
+        # Set the base attributes
+        self._set_model_type(model_type)
+        self._set_metadata(input, output)
+        self._set_biases(bias_invariants)
+
+        # Set attributes specific to a nonlinear model
+        if self._model_type == "nonlinear":
+            self._set_hidden_layer_widths(hidden_layer_widths)
+            self._activation_fn = activation_fn
+
+        # If the output data is standardized, store the invariant means to allow
+        # re-addition upon model evaluation.
+        if out_invariant_means is not None:
+            self._set_out_invariant_means(out_invariant_means)
+            self._outputs_standardized = True
+        else:
+            self._outputs_standardized = False
+
+        # Build the models
+        self._set_models()
+
+    @property
+    def model_type(self) -> str:
+        return self._model_type
+
+    def _set_model_type(self, model_type: str) -> None:
+        """
+        Sets the "_model_type" attr to either "linear" or "nonlinear"
+        """
+        assert model_type in VALID_MODEL_TYPES
+        self._model_type = model_type
+
+    @property
+    def in_metadata(self) -> TensorMap:
+        return self._in_metadata
+
+    @property
+    def out_metadata(self) -> TensorMap:
+        return self._out_metadata
+
+    def _set_metadata(self, input: TensorMap, output: TensorMap) -> None:
+        """
+        Sets the attributes "_in_metadata" and "_out_metadata" as minimal
+        TensorMaps storign the relevant metadata data of input and output.
+        These are only defined for the intersection between the input and output
+        keys.
+        """
+        keys = input.keys.intersection(output.keys)
+        in_blocks, out_blocks = [], []
+        for key in keys:
+            assert equistore.equal_metadata_block(
+                input[key], output[key], check=["components"]
+            )
+            in_block = TensorBlock(
+                values=torch.zeros(
+                    (
+                        1,
+                        *[len(c) for c in input[key].components],
+                        len(input[key].properties),
+                    ),
+                    dtype=self._torch_settings.get("dtype"),
+                    device=self._torch_settings.get("device"),
+                    requires_grad=False,
+                ),
+                samples=Labels.single(),
+                components=input[key].components,
+                properties=input[key].properties,
+            )
+            out_block = TensorBlock(
+                values=torch.zeros(
+                    (
+                        1,
+                        *[len(c) for c in output[key].components],
+                        len(output[key].properties),
+                    ),
+                    dtype=self._torch_settings.get("dtype"),
+                    device=self._torch_settings.get("device"),
+                    requires_grad=False,
+                ),
+                samples=Labels.single(),
+                components=output[key].components,
+                properties=output[key].properties,
+            )
+            in_blocks.append(in_block)
+            out_blocks.append(out_block)
+        self._in_metadata = TensorMap(keys, in_blocks)
+        self._out_metadata = TensorMap(keys, out_blocks)
+
+    @property
+    def biases(self) -> torch.tensor:
+        return self._biases
+
+    def _set_biases(self, bias_invariants: bool) -> None:
+        """
+        Sets the "_biases" attribute of the model to True for invariant blocks if
+        `bias_invariants` is true and false otherwise, and false for all
+        covariant (l > 0) blocks.
+
+        This is returned as a list, where each element corresponds to the key
+        index stored in self._in_metadata.keys
+        """
+        if bias_invariants:
+            biases = [
+                key["spherical_harmonics_l"] == 0 for key in self._in_metadata.keys
             ]
-
-            # Build a list of the hidden layer widths corresponding to each
-            # block model. If passed as a list of list then use as is, otherwise
-            # if a single list then use these layer widths for all block models.
-            if isinstance(hidden_layer_widths, Sequence) and isinstance(
-                hidden_layer_widths[0], int
-            ):
-                hidden_layer_widths = [hidden_layer_widths for k in keys]
-            assert isinstance(hidden_layer_widths, Sequence) and isinstance(
-                hidden_layer_widths[0], Sequence
-            )
-
-            self.in_invariant_features = in_invariant_features
-            self.hidden_layer_widths = hidden_layer_widths
-            self.activation_fn = activation_fn
-
-        # Initialize list of block models
-        self.models = RhoModel.initialize_models(
-            model_type=model_type,
-            keys=keys,
-            in_features=in_features,
-            out_features=out_features,
-            components=components,
-            out_invariant_means=out_invariant_means,
-            in_invariant_features=in_invariant_features,
-            hidden_layer_widths=hidden_layer_widths,
-            activation_fn=activation_fn,
-        )
-
-    @staticmethod
-    def _check_init_args(
-        model_type: str,
-        keys: Labels,
-        in_features: Sequence[Labels],
-        out_features: Sequence[Labels],
-        components: Sequence[Sequence[Labels]],
-        out_invariant_means: Optional[TensorMap] = None,
-        hidden_layer_widths: Optional[
-            Union[Sequence[Sequence[int]], Sequence[int]]
-        ] = None,
-        activation_fn: Optional[str] = None,
-    ):
-        """
-        Checks the args passed to __init__.
-        """
-        # Check the length of keys labels
-        if not (len(keys) == len(in_features) == len(out_features)):
-            raise ValueError(
-                "``keys``, ``in_features``, and ``out_features`` must have same length"
-            )
-
-        # Check in_features and out_features are list of Labels
-        if not isinstance(in_features, Sequence):
-            if not np.all([isinstance(f, Labels) for f in in_features]):
-                raise TypeError("``in_features`` must be a Sequence[Labels]")
-        if not isinstance(out_features, Sequence):
-            if not np.all([isinstance(f, Labels) for f in out_features]):
-                raise TypeError("``out_features`` must be a Sequence[Labels]")
-        if not isinstance(components, Sequence):
-            raise TypeError("``components`` must be a Sequence[Sequence[Labels]]")
-        if not np.all([isinstance(c, Sequence) for c in components]):
-            raise TypeError("``components`` must be a Sequence[Sequence[Labels]]")
-        if out_invariant_means is not None:
-            if not isinstance(out_invariant_means, TensorMap):
-                raise TypeError("``out_invariant_means`` must be a TensorMap")
-            for key in out_invariant_means.keys:
-                if key not in keys:
-                    raise ValueError(
-                        "`out_invariant_means`` must only contain blocks present in ``keys``"
-                    )
-                if key["spherical_harmonics_l"] != 0:
-                    raise ValueError(
-                        "``out_invariant_means`` must only contain invariant features"
-                    )
-
-        # Check model type
-        if model_type not in VALID_MODEL_TYPES:
-            raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
-        if model_type == "nonlinear":
-            # Check hidden_layer_widths if using nonlinear model
-            if hidden_layer_widths is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the number"
-                    + " ``hidden_layer_widths`` of features in the final hidden"
-                    + " layer of the NN applied to the invariant blocks, for each block"
-                    + " indexed by block key"
-                    "if using a nonlinear model, you must specify the widths"
-                    + " ``hidden_layer_widths`` of each hidden layer in the neural network"
-                )
-            if not isinstance(hidden_layer_widths, Sequence):
-                raise TypeError(
-                    "``hidden_layer_widths`` must be passed as Sequence[Sequence[int]] or Sequence[int]), "
-                    f"got {type(hidden_layer_widths)}"
-                )
-            for i in hidden_layer_widths:
-                if isinstance(i, Sequence):
-                    assert np.all([isinstance(j, int) for j in i])
-                else:
-                    assert isinstance(i, int)
-
-            # Check activation_fn if using nonlinear model
-            if not isinstance(activation_fn, str):
-                raise TypeError("``activation_fn`` must be passed as a str")
-            if activation_fn not in VALID_ACTIVATION_FNS:
-                raise ValueError(
-                    f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}"
-                )
-
-    @staticmethod
-    def initialize_models(
-        model_type: str,
-        keys: Labels,
-        in_features: Sequence[Labels],
-        out_features: Sequence[Labels],
-        components: Sequence[Sequence[Labels]],
-        out_invariant_means: Optional[TensorMap] = None,
-        in_invariant_features: Optional[Sequence[Labels]] = None,
-        hidden_layer_widths: Optional[Sequence[Sequence[int]]] = None,
-        activation_fn: Optional[str] = None,
-    ) -> list:
-        """
-        Builds a list of torch models for each block in the input/output
-        TensorMaps, using a linear or nonlinear model depending on the passed
-        ``model_type``. For the invariant (lambda=0) blocks, a learnable bias is
-        used in the models, but for covariant blocks no bias is applied.
-        """
-        block_models = []
-        for key_i, key in enumerate(keys):
-            # Get the means used to standardize the invariants, if applicable
-            inv_means_block = None
-            if out_invariant_means is not None:
-                if key in out_invariant_means.keys:
-                    inv_means_block = out_invariant_means[key]
-
-            # Use a learnable bias, only for invariant blocks
-            bias = True if key["spherical_harmonics_l"] == 0 else False
-
-            # Define the block model
-            if model_type == "linear":
-                block_model = RhoModelBlock(
-                    key=key,
-                    model_type=model_type,
-                    in_features=in_features[key_i],
-                    out_features=out_features[key_i],
-                    components=components[key_i],
-                    out_invariant_means=inv_means_block,
-                    bias=bias,
-                )
-            else:  # nonlinear
-                assert model_type == "nonlinear"
-                block_model = RhoModelBlock(
-                    key=key,
-                    model_type=model_type,
-                    in_features=in_features[key_i],
-                    out_features=out_features[key_i],
-                    components=components[key_i],
-                    out_invariant_means=inv_means_block,
-                    bias=bias,
-                    in_invariant_features=in_invariant_features[key_i],
-                    hidden_layer_widths=hidden_layer_widths[key_i],
-                    activation_fn=activation_fn,
-                )
-            block_models.append(block_model)
-
-        return torch.nn.ModuleList(block_models)
-
-    def forward(
-        self,
-        input: TensorMap,
-        check_args: bool = True,
-        add_back_inv_means: bool = False,
-    ) -> TensorMap:
-        """
-        Makes a prediction on the ``input`` TensorMap.
-
-        If the base model type is "linear", a simple linear regression of
-        ``input`` is performed.
-
-        If the model type is "nonlinear", the invariant blocks of the ``input``
-        TensorMap are nonlinearly transformed and used as multipliers for
-        linearly transformed equivariant blocks, which are then regressed in a
-        final linear output layer.
-
-        The ``check_args`` flag can be used to disable the input checking, which
-        could be useful for perfomance.
-
-        If `add_back_inv_means` is true, the output invariant means used to
-        initialize the model are added back on to the invariant blocks of the
-        prediction. This may be used for validation inference.
-        """
-
-        # Define the keys to predict on as the intersection of the input keys
-        # and those used to initialize the model
-        intersect_keys = input.keys.intersection(self.keys)
-
-        # Perform input checks
-        if check_args:
-            # Check input TensorMap
-            if not isinstance(input, TensorMap):
-                raise TypeError("``input`` must be an equistore TensorMap")
-            if len(intersect_keys) == 0:
-                raise ValueError(
-                    "None of the keys in `input` passed to `forward()` are common "
-                    "to the keys used to initialize the model."
-                )
-            for key in intersect_keys:
-                if input[key].components != self.components[self.keys.position(key)]:
-                    raise ValueError(
-                        "the components of the ``input`` TensorMap given to forward()"
-                        " must match the components of the corresponding block used to"
-                        f" initialize the RhoModel object. For block {key}, model components"
-                        f" {self.components[self.keys.position(key)]}; input components"
-                        f" {input[key].components}"
-                    )
-                if input[key].properties != self.in_features[self.keys.position(key)]:
-                    raise ValueError(
-                        "the feature labels of the ``input`` TensorMap given to forward()"
-                        " must match the feature labels of the corresponding block used to"
-                        f" initialize the RhoModel object. For block {key}, model feature"
-                        f" labels: {self.in_features[self.keys.position(key)]}; input "
-                        f"feature labels: {input[key].properties}"
-                    )
-        # Linear base model
-        if self.model_type == "linear":
-            output = TensorMap(
-                keys=intersect_keys,
-                blocks=[
-                    self.models[self.keys.position(key)](
-                        input[key], add_back_inv_means=add_back_inv_means
-                    )
-                    for key in intersect_keys
-                ],
-            )
-        # Nonlinear base model
-        elif self.model_type == "nonlinear":
-            # Store the invariant (\lambda = 0) blocks in a dict, indexed by
-            # the unique chemical species present in the ``input`` TensorMap
-            in_invariants = {
-                specie: input.block(spherical_harmonics_l=0, species_center=specie)
-                for specie in np.unique(input.keys["species_center"])
-            }
-
-            # Return prediction TensorMap using only the keys in the input
-            output = TensorMap(
-                keys=intersect_keys,
-                blocks=[
-                    self.models[self.keys.position(key)](
-                        input[key],
-                        in_invariant=in_invariants[key["species_center"]],
-                        check_args=check_args,
-                        add_back_inv_means=add_back_inv_means,
-                    )
-                    for key in intersect_keys
-                ],
-            )
         else:
-            raise ValueError(
-                "only 'linear' and 'nonlinear' base model types implemented for RhoModel"
-            )
-        return output
+            biases = [False for key in self._in_metadata.keys]
+        self._biases = biases
 
-    def parameters(self):
-        """
-        Generator for the parameters of each model.
-        """
-        for model in self.models:
-            yield from model.parameters()
+    @property
+    def hidden_layer_widths(self) -> Sequence:
+        return self._hidden_layer_widths
 
-
-# ===== EquiLocalModel for making predictions on the TensorBlock level
-
-
-class RhoModelBlock(torch.nn.Module):
-    """
-    A local model used to make predictions at the TensorBlock level. This is
-    initialized with input and output feature Labels objects, and returns a
-    prediction TensorBlock from its ``forward`` method.
-    """
-
-    # Initialize model
-    def __init__(
-        self,
-        key: LabelsEntry,
-        model_type: str,
-        in_features: Labels,
-        out_features: Labels,
-        components: Sequence[Labels],
-        out_invariant_means: Optional[TensorBlock] = None,
-        bias: Optional[bool] = None,
-        in_invariant_features: Optional[Labels] = None,
-        hidden_layer_widths: Optional[Sequence[int]] = None,
-        activation_fn: Optional[str] = None,
-        dtype: torch.dtype = torch.float64,
+    def _set_hidden_layer_widths(
+        self, hidden_layer_widths: Union[Sequence[Sequence[int]], Sequence[int]]
     ):
-        super(RhoModelBlock, self).__init__()
-        RhoModelBlock._check_init_args(
-            key=key,
-            model_type=model_type,
-            in_features=in_features,
-            out_features=out_features,
-            components=components,
-            out_invariant_means=out_invariant_means,
-            bias=bias,
-            in_invariant_features=in_invariant_features,
-            hidden_layer_widths=hidden_layer_widths,
-            activation_fn=activation_fn,
+        """
+        Sets the hidden layer widths for each block, stored in the
+        "_hidden_layer_widths" attribute.
+        """
+        # If passed as a single list, set this as the list for every block
+        if isinstance(hidden_layer_widths, Sequence) and isinstance(
+            hidden_layer_widths[0], int
+        ):
+            hidden_layer_widths = [
+                hidden_layer_widths for key in self._in_metadata.keys
+            ]
+        # Check it is now a list of list of int
+        assert isinstance(hidden_layer_widths, Sequence) and isinstance(
+            hidden_layer_widths[0], Sequence
         )
-        # Set torch default dtype
-        torch.set_default_dtype(dtype)
+        self._hidden_layer_widths = hidden_layer_widths
 
-        # Assign attributes common to all models
-        self.key = key
-        self.model_type = model_type
-        self.in_features = in_features
-        self.out_features = out_features
-        self.components = components
-        if out_invariant_means is None:
-            self.out_invariant_means = None
-        else:
-            self.out_invariant_means = out_invariant_means.values
-        self.bias = bias
+    @property
+    def activation_fn(self) -> str:
+        return self._activation_fn
 
-        # Assign attributes specific to nonlinear model
-        if model_type == "nonlinear":
-            self.in_invariant_features = in_invariant_features
-            self.hidden_layer_widths = hidden_layer_widths
-            self.activation_fn = activation_fn
+    @property
+    def models(self) -> torch.nn.ModuleList:
+        """
+        Returns all the block models
+        """
+        return self._models
 
-        # Initialize block model
-        self.model = RhoModelBlock.initialize_model(
-            model_type=model_type,
-            in_features=in_features,
-            out_features=out_features,
-            components=components,
-            bias=bias,
-            in_invariant_features=in_invariant_features,
-            hidden_layer_widths=hidden_layer_widths,
-            activation_fn=activation_fn,
+    def _set_models(self) -> None:
+        """
+        Builds a model for each block and stores them as a torch ModuleList in
+        the "_models" attribute.
+        """
+        tmp_models = []
+        for key_i, key in enumerate(self._in_metadata.keys):
+            if self._model_type == "linear":
+                block_model = _LinearModel(
+                    in_features=len(self._in_metadata[key].properties),
+                    out_features=len(self._out_metadata[key].properties),
+                    bias=self._biases[key_i],
+                )
+
+            else:
+                assert self._model_type == "nonlinear"
+                in_invariant_block = self._in_metadata.block(
+                    spherical_harmonics_l=0, species_center=key["species_center"]
+                )
+                block_model = _NonLinearModel(
+                    in_features=len(self._in_metadata[key].properties),
+                    out_features=len(self._out_metadata[key].properties),
+                    bias=self._biases[key_i],
+                    in_invariant_features=len(in_invariant_block.properties),
+                    hidden_layer_widths=self._hidden_layer_widths[key_i],
+                    activation_fn=self._activation_fn,
+                )
+            tmp_models.append(block_model)
+        self._models = torch.nn.ModuleList(tmp_models)
+
+    @property
+    def out_invariant_means(self) -> TensorMap:
+        return self._out_invariant_means
+
+    def _set_out_invariant_means(self, out_invariant_means: TensorMap) -> None:
+        """
+        Sets the output invariant means TensorMap, and stores it in the
+        "_out_invariant_means" attribute.
+        """
+
+        self._out_invariant_means = equistore.to(
+            out_invariant_means,
+            "torch",
+            dtype=self._torch_settings.get("dtype"),
+            device=self._torch_settings.get("device"),
+            requires_grad=False,
         )
 
-    @staticmethod
-    def _check_init_args(
-        key: LabelsEntry,
-        model_type: str,
-        in_features: Labels,
-        out_features: Labels,
-        components: Sequence[Labels],
-        out_invariant_means: Optional[TensorBlock] = None,
-        bias: Optional[bool] = None,
-        in_invariant_features: Optional[Labels] = None,
-        hidden_layer_widths: Optional[Sequence[int]] = None,
-        activation_fn: Optional[str] = None,
-    ):
-        # Check types
-        if not isinstance(key, LabelsEntry):
-            raise TypeError(
-                "``key`` must be passed as an equistore.core.labels.LabelsEntry"
-            )
-        if not isinstance(in_features, Labels):
-            raise TypeError(
-                "``in_features`` must be passed as an equistore Labels object"
-            )
-        if not isinstance(out_features, Labels):
-            raise TypeError(
-                "``out_features`` must be passed as an equistore Labels object"
-            )
-        if not isinstance(components, Sequence):
-            raise TypeError("``components`` must be passed as a Sequence[Labels]")
-        if out_invariant_means is not None:
-            if not isinstance(out_invariant_means, TensorBlock):
-                raise TypeError(
-                    "``out_invariant_means`` must be passed as an equistore TensorBlock"
-                )
-                if out_invariant_means.properties != out_features:
-                    raise ValueError(
-                        "``out_invariant_means`` must have the same properties as"
-                        + " ``out_features``"
-                    )
-                if out_invariant_means.values.shape != (1, 1, len(out_features)):
-                    raise ValueError(
-                        "``out_invariant_means`` must have shape (1, 1, `len(out_features))`"
-                    )
-
-        if not isinstance(bias, bool):
-            raise TypeError("``bias`` must be passed as a bool")
-        if not isinstance(model_type, str):
-            raise TypeError("``model_type`` must be passed as a str")
-        # Check model type
-        if model_type not in VALID_MODEL_TYPES:
-            raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
-
-        # Check nonlinear model-specific args
-        if model_type == "nonlinear":
-            # Check in_invariant_features
-            if in_invariant_features is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the number"
-                    + " ``in_invariant_features`` of features that the invariant block"
-                    + " will contain"
-                )
-            if not isinstance(in_invariant_features, Labels):
-                raise TypeError(
-                    "``in_invariant_features`` must be passed as an"
-                    " equistore Labels object"
-                )
-            # Check hidden_layer_widths
-            if hidden_layer_widths is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the widths"
-                    + " ``hidden_layer_widths`` of each hidden layer in the neural network"
-                )
-            if not isinstance(hidden_layer_widths, Sequence):
-                raise TypeError(
-                    "``hidden_layer_widths`` must be passed as Sequence[int]"
-                )
-            assert np.all([isinstance(width, int) for width in hidden_layer_widths])
-            # Check activation_fn
-            if not isinstance(activation_fn, str):
-                raise TypeError("``activation_fn`` must be passed as a str")
-            if activation_fn not in VALID_ACTIVATION_FNS:
-                raise ValueError(
-                    f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}"
-                )
-
-    @staticmethod
-    def initialize_model(
-        model_type: str,
-        in_features: Labels,
-        out_features: Labels,
-        components: Sequence[Labels],
-        bias: Optional[bool] = None,
-        in_invariant_features: Optional[Labels] = None,
-        hidden_layer_widths: Optional[Sequence[int]] = None,
-        activation_fn: Optional[str] = None,
-    ) -> torch.nn.Module:
+    def forward(self, input: TensorMap, check_args: bool = True) -> TensorMap:
         """
-        Builds and returns a torch model according to the specified model type
+        Makes a prediction on an `input` TensorMap.
+
+        If the model is trained on standardized outputs, i.e. where the mean
+        baseline has been subtracted, this is automatically added back in.
         """
-        # Linear base model
-        if model_type == "linear":
-            model = LinearModel(
-                in_features=len(in_features),
-                out_features=len(out_features),
-                bias=bias,
+        # Predict on the keys of the *input* TensorMap
+        keys = input.keys
+        key_mask = torch.tensor(
+            [key in self._in_metadata.keys for key in keys], dtype=torch.bool
+        )
+        if not torch.all(key_mask):
+            offending_keys = [key for key in keys if key not in self._in_metadata.keys]
+            warnings.warn(
+                f"one or more of input blocks at keys {offending_keys} is not part of the keys of the model. "
+                "The returned prediction will not contain this block."
             )
-        # Nonlinear base model
-        else:  # nonlinear
-            assert model_type == "nonlinear"
-            model = NonLinearModel(
-                in_features=len(in_features),
-                out_features=len(out_features),
-                bias=bias,
-                in_invariant_features=len(in_invariant_features),
-                hidden_layer_widths=hidden_layer_widths,
-                activation_fn=activation_fn,
-            )
-
-        return model
-
-    def forward(
-        self,
-        input: TensorBlock,
-        in_invariant: Optional[TensorBlock] = None,
-        check_args: bool = True,
-        add_back_inv_means: Optional[bool] = False,
-    ):
-        """
-        Makes a prediction on the ``input`` TensorBlock, returning a prediction
-        TensorBlock.
-
-        If ``model_type`` is ``linear``, then ``in_invariant`` is ignored. If
-        ``model_type`` is ``nonlinear``, then ``in_invariant`` must be passed as a
-        TensorBlock containing the input invariant features to use as a nonlinear
-        multiplier for the equivariant `input` block.
-
-        The ``check_args`` flag can be used to disable the input checking, which
-        could be useful for perfomance reasons.
-        """
-        if check_args:
-            if not isinstance(input, TensorBlock):
-                raise TypeError("``input`` must be an equistore TensorBlock")
-
-            if input.properties != self.in_features:
-                raise ValueError(
-                    "the feature labels of the ``input`` TensorBlock given to forward()"
-                    " must match the feature labels used to initialize the"
-                    " RhoModelBlock object. Model feature labels:"
-                    f"{self.in_features}, input feature labels: {input.properties}"
-                )
-            if input.components != self.components:
-                raise ValueError(
-                    "the component labels of the ``input`` TensorBlock given to forward()"
-                    " must match the component labels used to initialize the"
-                    " RhoModelBlock object. Model component labels:"
-                    f"{self.components}, input component labels: {input.components}"
-                )
-
-        if self.model_type == "linear":
-            output = self.model(input.values, check_args)
-        else:  # nonlinear
-            assert self.model_type == "nonlinear"
+        keys = Labels(names=keys.names, values=keys.values[key_mask])
+        pred_blocks = []
+        for key in keys:
             if check_args:
-                # Check samples exactly equivalent
-                if input.samples != in_invariant.samples:
-                    raise ValueError(
-                        "``input`` and ``in_invariant`` TensorBlocks must have the"
-                        + " the same samples Labels, in the same order."
-                    )
-                # Check input in_invariant features match that of the model
-                if in_invariant.properties != self.in_invariant_features:
-                    raise ValueError(
-                        "the feature labels of the ``in_invariant`` TensorBlock given to forward()"
-                        " must match the in_invariant features used to initialize the"
-                        " RhoModelBlock object. Model in_invariant_features:"
-                        f" {self.in_invariant_features}, in_invariant feature labels:"
-                        f" {in_invariant.properties}"
-                    )
-            output = self.model(
-                input=input.values,
-                in_invariant=in_invariant.values,
-                check_args=check_args,
-            )
-
-        # Add back the invariant means, if this is an invariant block and if
-        # applicable
-        if add_back_inv_means and self.key["spherical_harmonics_l"] == 0:
-            if self.out_invariant_means is None:
-                raise ValueError(
-                    "``add_back_inv_means`` can only be used if the invariant means"
-                    f" are stored. This block has key {key} has none stored"
+                assert key in self._in_metadata.keys
+                assert equistore.equal_metadata_block(
+                    input[key],
+                    self._in_metadata[key],
+                    check=["components", "properties"],
                 )
-            # Create block that agrees with the shape of the output block by
-            # duplicating the invariant means along the sample (0th) axis
-            inv_mean_block = torch.vstack(
-                [self.out_invariant_means for _ in range(len(self.out_features))]
-            )
-            # Add the means
-            output += inv_mean_block
+            # Get the model
+            block_model = self._models[self._in_metadata.keys.position(key)]
 
-        return TensorBlock(
-            samples=input.samples,
-            components=input.components,
-            properties=self.out_features,
-            values=output,
-        )
+            # Make a prediction
+            if self._model_type == "linear":
+                pred_values = block_model(input[key].values, check_args=check_args)
+            else:
+                assert self._model_type == "nonlinear"
+                in_invariant = input.block(
+                    spherical_harmonics_l=0, species_center=key["species_center"]
+                )
+                if check_args:
+                    assert equistore.equal_metadata_block(
+                        in_invariant,
+                        self._in_metadata.block(
+                            spherical_harmonics_l=0,
+                            species_center=key["species_center"],
+                        ),
+                        check=["components", "properties"],
+                    )
+                pred_values = block_model(
+                    input[key].values,
+                    in_invariant=in_invariant.values,
+                    check_args=check_args,
+                )
+
+            # Add back in the invariant means
+            if self._outputs_standardized and key["spherical_harmonics_l"] == 0:
+                inv_means = self._out_invariant_means.block(
+                    spherical_harmonics_l=0, species_center=key["species_center"]
+                )
+                inv_means_vals = torch.vstack(
+                    [inv_means.values for _ in range(pred_values.shape[0])]
+                )
+                pred_values += inv_means_vals
+
+            # Wrap prediction in a TensorBlock and store
+            pred_blocks.append(
+                TensorBlock(
+                    values=pred_values,
+                    samples=input[key].samples,
+                    components=self._out_metadata[key].components,
+                    properties=self._out_metadata[key].properties,
+                )
+            )
+
+        return TensorMap(keys, pred_blocks)
 
     def parameters(self):
         """
-        Generator for the parameters of the model
+        Generator for the parameters of each block model.
         """
-        return self.model.parameters()
+        for m in self._models:
+            yield from m.parameters()
 
 
-# === Torch models that makes predictions on torch Tensors
-
-
-class LinearModel(torch.nn.Module):
+class _LinearModel(torch.nn.Module):
     """
     A linear model, initialized with a number of in and out features (i.e. the
     properties dimension of an equistore TensorBlock), as well as a bool that
@@ -625,27 +356,19 @@ class LinearModel(torch.nn.Module):
 
     # Initialize model
     def __init__(self, in_features: int, out_features: int, bias: bool):
-        super(LinearModel, self).__init__()
-        LinearModel._check_init_args(in_features, out_features, bias)
+        super(_LinearModel, self).__init__()
         self.linear = torch.nn.Linear(
             in_features=in_features,
             out_features=out_features,
             bias=bias,
         )
 
-    @staticmethod
-    def _check_init_args(in_features: int, out_features: int, bias: bool):
-        if not isinstance(in_features, int):
-            raise TypeError("``in_features`` must be passed as an int")
-        if not isinstance(out_features, int):
-            raise TypeError("``out_features`` must be passed as an int")
-        if not isinstance(bias, bool):
-            raise TypeError("``bias`` must be passed as an bool")
-
     def forward(self, input: torch.Tensor, check_args: bool = True):
         """
         Makes a forward prediction on the ``input`` tensor using linear
         regression.
+
+        If `add_back_inv_means` is true, adds back in the invariant means.
         """
         if check_args:
             if not isinstance(input, torch.Tensor):
@@ -653,7 +376,7 @@ class LinearModel(torch.nn.Module):
         return self.linear(input)
 
 
-class NonLinearModel(torch.nn.Module):
+class _NonLinearModel(torch.nn.Module):
     """
     A nonlinear torch model. The forward() method takes as input an equivariant
     (i.e. invariant or covariant) torch tensor and an invariant torch tensor.
@@ -691,17 +414,9 @@ class NonLinearModel(torch.nn.Module):
         bias: bool,
         in_invariant_features: int,
         hidden_layer_widths: Sequence[int],
-        activation_fn: str,
+        activation_fn: torch.nn.Module,
     ):
-        super(NonLinearModel, self).__init__()
-        NonLinearModel._check_init_args(
-            in_features,
-            out_features,
-            bias,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
-        )
+        super(_NonLinearModel, self).__init__()
 
         # Define the input layer used on the input equivariant tensor. A
         # learnable bias should only be used if the equivariant passed is
@@ -721,25 +436,16 @@ class NonLinearModel(torch.nn.Module):
             torch.nn.Linear(
                 in_features=in_invariant_features,
                 out_features=hidden_layer_widths[0],
-                bias=True,
+                bias=bias,
             )
         ]
         for layer_i in range(0, len(hidden_layer_widths) - 1):
-            if activation_fn == "Tanh":
-                layers.append(torch.nn.Tanh())
-            elif activation_fn == "GELU":
-                layers.append(torch.nn.GELU())
-            elif activation_fn == "SiLU":
-                layers.append(torch.nn.SiLU())
-            else:
-                raise ValueError(
-                    f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}"
-                )
+            layers.append(activation_fn)
             layers.append(
                 torch.nn.Linear(
                     in_features=hidden_layer_widths[layer_i],
                     out_features=hidden_layer_widths[layer_i + 1],
-                    bias=True,
+                    bias=bias,
                 )
             )
         self.invariant_nn = torch.nn.Sequential(*layers)
@@ -753,51 +459,26 @@ class NonLinearModel(torch.nn.Module):
             bias=bias,
         )
 
-    @staticmethod
-    def _check_init_args(
-        in_features: int,
-        out_features: int,
-        bias: bool,
-        in_invariant_features: int,
-        hidden_layer_widths: Sequence[int],
-        activation_fn: str,
-    ):
-        if not isinstance(in_features, int):
-            raise TypeError("``in_features`` must be passed as an int")
-        if not isinstance(out_features, int):
-            raise TypeError("``out_features`` must be passed as an int")
-        if not isinstance(bias, bool):
-            raise TypeError("``bias`` must be passed as a bool")
-        if not isinstance(in_invariant_features, int):
-            raise TypeError("``in_invariant_features`` must be passed as an int")
-        if not isinstance(hidden_layer_widths, list):
-            raise TypeError("``hidden_layer_widths`` must be passed as a list of int")
-        for width in hidden_layer_widths:
-            if not isinstance(width, int):
-                raise TypeError(
-                    "``hidden_layer_widths`` must be passed as a list of int"
-                )
-        if not isinstance(activation_fn, str):
-            raise TypeError("``activation_fn`` must be passed as a str")
-        if activation_fn not in VALID_ACTIVATION_FNS:
-            raise ValueError(f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}")
-
     def forward(
-        self, input: torch.Tensor, in_invariant: torch.Tensor, check_args: bool = True
+        self,
+        input: torch.Tensor,
+        in_invariant: torch.Tensor,
+        check_args: bool = True,
     ) -> torch.Tensor:
         """
         Makes a forward prediction on the ``input`` tensor that corresponds to
-        an equivariant feature. Requires specification of an input invariant feature
-        tensor that is passed through a NN and used as a nonlinear multiplier to
-        the ``input`` tensor, whilst preserving its equivariant behaviour.
+        an equivariant feature. Requires specification of an input invariant
+        feature tensor that is passed through a NN and used as a nonlinear
+        multiplier to the ``input`` tensor, whilst preserving its equivariant
+        behaviour.
 
-        The ``input`` and ``in_invariant`` tensors are torch tensors corresponding
-        to i.e. the values of equistore TensorBlocks. As such, they must be 3D
-        tensors, where the first dimension is the samples, the last the
-        properties/features, and the 1st (middle) the components. The components
-        dimension of the in_invariant block must necessarily be of size 1, though
-        that of the equivariant ``input`` can be >= 1, equal to (2 \lambda + 1),
-        where \lambda is the spherical harmonic order.
+        The ``input`` and ``in_invariant`` tensors are torch tensors
+        corresponding to i.e. the values of equistore TensorBlocks. As such,
+        they must be 3D tensors, where the first dimension is the samples, the
+        last the properties/features, and the 1st (middle) the components. The
+        components dimension of the in_invariant block must necessarily be of
+        size 1, though that of the equivariant ``input`` can be >= 1, equal to
+        (2 \lambda + 1), where \lambda is the spherical harmonic order.
 
         The ``check_args`` flag can be used to disable the input checking, which
         could be useful for perfomance reasons.
@@ -843,5 +524,4 @@ class NonLinearModel(torch.nn.Module):
         # dimensions
         nonlinear_input = torch.mul(linear_input, nonlinear_multiplier)
 
-        # Finally pass through the output layer and return
         return self.output_layer(nonlinear_input)
