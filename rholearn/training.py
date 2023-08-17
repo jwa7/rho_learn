@@ -11,6 +11,27 @@ from equistore import TensorMap, TensorBlock, Labels
 from rholearn import loss, models
 
 
+def load_rho_model(path) -> torch.nn.Module:
+    """
+    Loads a saved model and ensures all TensorMaps are converted to a torch
+    backend.
+    """
+    model = torch.load(path)
+    # Convert each attribute to torch
+    if model._outputs_standardized:
+        attrs = ["_in_metadata", "_out_metadata", "_out_invariant_means"]
+    else:
+        attrs = ["_in_metadata", "_out_metadata"]
+    for attr in attrs:
+        setattr(
+            model,
+            attr,
+            equistore.to(getattr(model, attr), "torch", **model._torch_settings),
+        )
+
+    return model
+
+
 def init_training_objects(
     ml_settings: dict,
     input: TensorMap,
@@ -93,6 +114,7 @@ def load_from_checkpoint(
     input: TensorMap,
     output: TensorMap,
     train_mode: bool = True,
+    out_invariant_means: Optional[TensorMap] = None,
 ):
     """
     Initializes training objects then loads the state dict from a checkpoint
@@ -108,7 +130,9 @@ def load_from_checkpoint(
         rho_loss_fn,
         coeff_loss_fn,
         scheduler,
-    ) = init_training_objects(ml_settings, input, output)
+    ) = init_training_objects(
+        ml_settings, input, output, out_invariant_means=out_invariant_means
+    )
 
     # Now load the checkpoint
     checkpoint = torch.load(path)

@@ -1,7 +1,5 @@
 """
 Module containing the RhoModel class that makes predictions on TensorMaps.
-
-Also contains the function `load_rho_model` to load a saved RhoModel from file.
 """
 import os
 from typing import Union, Optional, Sequence, Tuple
@@ -15,30 +13,6 @@ from equistore import Labels, TensorBlock, TensorMap
 
 
 VALID_MODEL_TYPES = ["linear", "nonlinear"]
-
-
-# ===== Loading a model from file
-
-
-def load_rho_model(path) -> torch.nn.Module:
-    """
-    Loads a saved model and ensures all TensorMaps are converted to a torch
-    backend.
-    """
-    model = torch.load(path)
-    # Convert each attribute to torch
-    if model._outputs_standardized:
-        attrs = ["_in_metadata", "_out_metadata", "_out_invariant_means"]
-    else:
-        attrs = ["_in_metadata", "_out_metadata"]
-    for attr in attrs:
-        setattr(
-            model,
-            attr,
-            equistore.to(getattr(model, attr), "torch", **model._torch_settings),
-        )
-
-    return model
 
 
 # ===== RhoModel class for making predictions on TensorMaps
