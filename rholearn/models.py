@@ -20,9 +20,13 @@ VALID_MODEL_TYPES = ["linear", "nonlinear"]
 
 class RhoModel(torch.nn.Module):
     """
-    A single global model that wraps multiple individual models for each block
-    of the input TensorMaps. Returns a prediction TensorMap from its ``forward``
-    method.
+    A model that makes equivariant predictions on the TensorMap level.
+
+    If `out_train_inv_means` is passed as a TensorMap corresponding to the
+    invariant means of the output training data, these will be added back to the
+    appropriate block in the forward method. As such, the parameters of the
+    individual block models will be predicting the baselined coefficients, but
+    optimized on the total (unbaselined) coefficients.
     """
 
     # Initialize model
@@ -36,7 +40,7 @@ class RhoModel(torch.nn.Module):
             Union[Sequence[Sequence[int]], Sequence[int]]
         ] = None,
         activation_fn: Optional[torch.nn.Module] = None,
-        out_invariant_means: Optional[TensorMap] = None,
+        out_train_inv_means: Optional[TensorMap] = None,
         **torch_settings,
     ):
         super(RhoModel, self).__init__()
@@ -55,13 +59,10 @@ class RhoModel(torch.nn.Module):
             self._set_hidden_layer_widths(hidden_layer_widths)
             self._activation_fn = activation_fn
 
-        # If the output data is standardized, store the invariant means to allow
-        # re-addition upon model evaluation.
-        if out_invariant_means is not None:
-            self._set_out_invariant_means(out_invariant_means)
-            self._outputs_standardized = True
-        else:
-            self._outputs_standardized = False
+        # Passing `out_train_inv_means` as a TensorMap will add the training
+        # invariant means to the relevant block predictions in the `forward`
+        # method. 
+        self._set_out_invariant_means(out_train_inv_means)
 
         # Build the models
         self._set_models()
@@ -220,17 +221,16 @@ class RhoModel(torch.nn.Module):
         self._models = torch.nn.ModuleList(tmp_models)
 
     @property
-    def out_invariant_means(self) -> TensorMap:
-        return self._out_invariant_means
+    def out_train_inv_means(self) -> TensorMap:
+        return self._out_train_inv_means
 
-    def _set_out_invariant_means(self, out_invariant_means: TensorMap) -> None:
+    def _set_out_train_inv_means(self, out_train_inv_means: TensorMap) -> None:
         """
         Sets the output invariant means TensorMap, and stores it in the
-        "_out_invariant_means" attribute.
+        "out_train_inv_means" attribute.
         """
-
-        self._out_invariant_means = equistore.to(
-            out_invariant_means,
+        self._out_train_inv_means = equistore.to(
+            out_train_inv_means,
             "torch",
             dtype=self._torch_settings.get("dtype"),
             device=self._torch_settings.get("device"),
@@ -252,8 +252,9 @@ class RhoModel(torch.nn.Module):
         if not torch.all(key_mask):
             offending_keys = [key for key in keys if key not in self._in_metadata.keys]
             warnings.warn(
-                f"one or more of input blocks at keys {offending_keys} is not part of the keys of the model. "
-                "The returned prediction will not contain this block."
+                f"one or more of input blocks at keys {offending_keys} is not "
+                " part of the keys of the model. The returned prediction will "
+                "not contain this block."
             )
         keys = Labels(names=keys.names, values=keys.values[key_mask])
         pred_blocks = []
@@ -291,9 +292,9 @@ class RhoModel(torch.nn.Module):
                     check_args=check_args,
                 )
 
-            # Add back in the invariant means
-            if self._outputs_standardized and key["spherical_harmonics_l"] == 0:
-                inv_means = self._out_invariant_means.block(
+            # Add back in the invariant means of the training data to invariant blocks
+            if self._out_train_inv_means is not None and key["spherical_harmonics_l"] == 0:
+                inv_means = self._out_train_inv_means.block(
                     spherical_harmonics_l=0, species_center=key["species_center"]
                 )
                 inv_means_vals = torch.vstack(

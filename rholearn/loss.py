@@ -150,8 +150,6 @@ class RhoLoss(torch.nn.Module):
                 spherical_harmonics_l=l2,
                 species_center=a2,
             )
-
-            # Method 2
             block_loss = 0
             for A in structure_idxs:
                 # Slice the block values to the current structure
