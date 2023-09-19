@@ -6,9 +6,12 @@ from typing import Optional
 import numpy as np
 import torch
 
+import equistore
 from equistore import TensorMap, TensorBlock, Labels
 
 from rholearn import loss, models
+
+TO_TORCH_ATTRS = ["_in_metadata", "_out_metadata", "_out_train_inv_means"]
 
 
 def load_rho_model(path) -> torch.nn.Module:
@@ -18,26 +21,26 @@ def load_rho_model(path) -> torch.nn.Module:
     """
     model = torch.load(path)
     # Convert each attribute to torch
-    if model._outputs_standardized:
-        attrs = ["_in_metadata", "_out_metadata", "_out_invariant_means"]
+    if model._out_train_inv_means is None:
+        attrs = TO_TORCH_ATTRS[:2]
     else:
-        attrs = ["_in_metadata", "_out_metadata"]
+        attrs = TO_TORCH_ATTRS
     for attr in attrs:
         setattr(
             model,
             attr,
-            equistore.to(getattr(model, attr), "torch", **model._torch_settings),
+            equistore.to(
+                getattr(model, attr),
+                "torch",
+                dtype=model._torch_settings["dtype"],
+                device=model._torch_settings["device"],
+            ),
         )
 
     return model
 
 
-def save_checkpoint(
-    path: str,
-    model: torch.nn.Module,
-    optimizer: torch.optim.Module,
-    scheduler: Optional[torch.optim.Module] = None,
-):
+def save_checkpoint(path: str, model, optimizer, scheduler=None):
     """
     Saves a checkpoint at `path` for the model,
     optimizer, and scheduler if applicable.
@@ -58,18 +61,22 @@ def load_from_checkpoint(path: str) -> dict:
     chkpt = torch.load(path)
     model = chkpt["model"]
     # Convert each attribute to torch
-    if model._outputs_standardized:
-        attrs = ["_in_metadata", "_out_metadata", "_out_invariant_means"]
+    if model._out_train_inv_means is None:
+        attrs = TO_TORCH_ATTRS[:2]
     else:
-        attrs = ["_in_metadata", "_out_metadata"]
+        attrs = TO_TORCH_ATTRS
     for attr in attrs:
         setattr(
             model,
             attr,
-            equistore.to(getattr(model, attr), "torch", **model._torch_settings),
+            equistore.to(
+                getattr(model, attr), 
+                "torch", 
+                dtype=model._torch_settings["dtype"],
+                device=model._torch_settings["device"],
+            )
         )
     model.train()
     chkpt["model"] = model
 
     return chkpt
-    

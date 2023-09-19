@@ -27,6 +27,9 @@ class RhoModel(torch.nn.Module):
     appropriate block in the forward method. As such, the parameters of the
     individual block models will be predicting the baselined coefficients, but
     optimized on the total (unbaselined) coefficients.
+
+    Assumes that, if passed, `out_train_inv_means` is a torch-based TensorMap
+    with the same dtype and device as the model, and with `requires_grad=False`.
     """
 
     # Initialize model
@@ -62,7 +65,7 @@ class RhoModel(torch.nn.Module):
         # Passing `out_train_inv_means` as a TensorMap will add the training
         # invariant means to the relevant block predictions in the `forward`
         # method. 
-        self._set_out_invariant_means(out_train_inv_means)
+        self._set_out_train_inv_means(out_train_inv_means)
 
         # Build the models
         self._set_models()
@@ -108,7 +111,6 @@ class RhoModel(torch.nn.Module):
                     ),
                     dtype=self._torch_settings.get("dtype"),
                     device=self._torch_settings.get("device"),
-                    requires_grad=False,
                 ),
                 samples=Labels.single(),
                 components=input[key].components,
@@ -123,7 +125,6 @@ class RhoModel(torch.nn.Module):
                     ),
                     dtype=self._torch_settings.get("dtype"),
                     device=self._torch_settings.get("device"),
-                    requires_grad=False,
                 ),
                 samples=Labels.single(),
                 components=output[key].components,
@@ -229,13 +230,16 @@ class RhoModel(torch.nn.Module):
         Sets the output invariant means TensorMap, and stores it in the
         "out_train_inv_means" attribute.
         """
-        self._out_train_inv_means = equistore.to(
-            out_train_inv_means,
-            "torch",
-            dtype=self._torch_settings.get("dtype"),
-            device=self._torch_settings.get("device"),
-            requires_grad=False,
-        )
+        if out_train_inv_means is None:
+            self._out_train_inv_means = None
+        else:
+            self._out_train_inv_means = equistore.to(
+                out_train_inv_means,
+                "torch",
+                dtype=self._torch_settings.get("dtype"),
+                device=self._torch_settings.get("device"),
+                requires_grad=False,
+            )
 
     def forward(self, input: TensorMap, check_args: bool = True) -> TensorMap:
         """

@@ -268,7 +268,11 @@ class RhoData(torch.utils.data.Dataset):
         # Calc and store invariant means
         out_train_inv_means = get_invariant_means(out_train)
         out_train_inv_means = equistore.to(
-            out_train_inv_means, "torch", **self._torch_kwargs
+            out_train_inv_means, 
+            "torch", 
+            dtype=self._torch_kwargs["dtype"], 
+            device=self._torch_kwargs["device"], 
+            requires_grad=False,
         )
         self._out_train_inv_means = out_train_inv_means
 
