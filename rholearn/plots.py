@@ -8,8 +8,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import mpltex
 
-import equistore
-from equistore import TensorMap
+import metatensor
+from metatensor import TensorMap
 
 from rholearn import error
 
@@ -112,7 +112,7 @@ def parity_plot(
     ``color_by`` decides what to colour the data by.
     """
     # Check that the metadata is equivalent between the 2 TensorMaps
-    equistore.equal_metadata(target, predicted)
+    metatensor.equal_metadata(target, predicted)
     # Build the parity plot
     fig, ax = plt.subplots()
     linestyles = mpltex.linestyle_generator(
@@ -172,7 +172,7 @@ def plot_coeff_hist(
         tensors = [tensors]
     if len(tensors) > 1:
         for tensor in tensors[1:]:
-            if not equistore.equal_metadata(tensors[0], tensor):
+            if not metatensor.equal_metadata(tensors[0], tensor):
                 raise ValueError(
                     "metadata of all tensors must be equal to plot them together"
                 )

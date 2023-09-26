@@ -30,7 +30,7 @@ To load and make predictions with the models:
 ```py
 import os
 import torch
-import equistore
+import metatensor
 from rholearn import io, utils
 
 RHOLEARN_PATH = "/path/to/rho_learn/"
@@ -53,7 +53,7 @@ with torch.no_grad():
     out_pred = model(input)
 
 # Un-standardize the invariants
-inv_means = equistore.load(
+inv_means = metatensor.load(
     os.path.join(
         RHOLEARN_PATH, 
         "docs/example/water/runs/pretrained_models/", 

@@ -2,8 +2,8 @@
 Module containing dummy TensorMaps with the naming convention used in rho_learn.
 """
 import numpy as np
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 
 COEFF_VECTOR = TensorMap(

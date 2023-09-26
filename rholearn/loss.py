@@ -3,8 +3,8 @@ from typing import List, Union, Sequence
 import numpy as np
 import torch
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import utils
 
@@ -35,7 +35,7 @@ class RhoLoss(torch.nn.Module):
     If evaluating the loss for multiple structures, the total loss is given by
     the sum of individual losses for each structure.
 
-    This class assumes that the passed overlap-type matrices are of equistore
+    This class assumes that the passed overlap-type matrices are of metatensor
     TensorMap format and have the following data structure:
 
         - key names: ('spherical_harmonics_l1', 'spherical_harmonics_l2',
@@ -87,14 +87,14 @@ class RhoLoss(torch.nn.Module):
         Checks metadata of arguments to forward are valid.
         """
         # Check metadata of input and target
-        if not equistore.equal_metadata(input, target):
+        if not metatensor.equal_metadata(input, target):
             raise ValueError(
                 "`input` and `target` TensorMaps must have equal metadata."
             )
 
         # Check metadata of overlap. Sample names may have the "tensor" index
         # present as a by-product of using the join function. This can be
-        # removed once the join function is updated in equistore (TODO).
+        # removed once the join function is updated in metatensor (TODO).
         if overlap.sample_names != ["structure", "center_1", "center_2"]:
             raise ValueError(
                 "each `overlap` TensorMap must have sample names ('structure', "
@@ -132,10 +132,10 @@ class RhoLoss(torch.nn.Module):
 
         # Get the struture indices present if not passed
         if structure_idxs is None:
-            structure_idxs = equistore.unique_metadata(input, "samples", "structure")
+            structure_idxs = metatensor.unique_metadata(input, "samples", "structure")
 
         # Calculate the delta coefficient tensor
-        delta_coeffs = equistore.subtract(input, target)
+        delta_coeffs = metatensor.subtract(input, target)
 
         # Calculate the loss for each overlap matrix block in turn
         total_loss = 0
@@ -207,7 +207,7 @@ class CoeffLoss(torch.nn.Module):
         """
         Checks input and target types and asserts they have equal metadata
         """
-        if not equistore.equal_metadata(input, target):
+        if not metatensor.equal_metadata(input, target):
             raise ValueError(
                 "``input`` and ``target`` must have equal metadata in the same order."
             )
@@ -236,9 +236,9 @@ class CoeffLoss(torch.nn.Module):
         """
         # Collate TensorMaps if passed as a list or tuple
         if isinstance(input, Sequence):
-            input = equistore.join(input, "samples")
+            input = metatensor.join(input, "samples")
         if isinstance(target, Sequence):
-            target = equistore.join(target, "samples")
+            target = metatensor.join(target, "samples")
 
         # Input checks
         if check_args:

@@ -1,6 +1,6 @@
 """
 Module for converting coefficient (or projection) vectors and overlap matrices
-between numpy ndarrays and equistore TensorMap formats.
+between numpy ndarrays and metatensor TensorMap formats.
 """
 import itertools
 from typing import Optional
@@ -8,8 +8,8 @@ from typing import Optional
 import ase
 import numpy as np
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import utils
 from rhoparse import convention
@@ -46,7 +46,7 @@ def get_flat_index(
     AIMS may follow different conventions. ``rholearn`` provides parsing
     functions to standardize these outputs to the convention described above.
     Once standardized, the functions in this module can be used to convert to
-    equistore format.
+    metatensor format.
 
     :param lmax : dict containing the maximum spherical harmonics (l) value for
         each atom type.
@@ -105,7 +105,7 @@ def get_flat_index(
     return atom_offset + l_offset + n_offset + m_offset
 
 
-# ===== convert numpy to equistore format =====
+# ===== convert numpy to metatensor format =====
 
 
 def coeff_vector_ndarray_to_tensormap(
@@ -118,7 +118,7 @@ def coeff_vector_ndarray_to_tensormap(
 ) -> TensorMap:
     """
     Convert a vector of basis function coefficients (or projections) to
-    equistore TensorMap format.
+    metatensor TensorMap format.
 
     :param frame: ase.Atoms object containing the atomic structure for which the
         coefficients (or projections) were calculated.
@@ -277,7 +277,7 @@ def overlap_matrix_ndarray_to_tensormap(
     tests: int = 0,
 ) -> TensorMap:
     """
-    Converts a 2D numpy array corresponding to the overlap matrix into equistore
+    Converts a 2D numpy array corresponding to the overlap matrix into metatensor
     TensorMap format.
 
     :param frame: the ASE Atoms object corresponding to the structure for which
@@ -550,7 +550,7 @@ def overlap_is_symmetric(tensor: TensorMap) -> bool:
     Returns true if the overlap matrices stored in TensorMap form are symmetric,
     false otherwise.
 
-    This class assumes that the overlap-type matrices are stored in equistore
+    This class assumes that the overlap-type matrices are stored in metatensor
     TensorMap format and has the data structure as given in the example
     TensorMap found in `rhoparse.convention.OVERLAP_MATRIX`.
 
@@ -681,7 +681,7 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     l1, a2, a1) has been dropped.
 
     :param tensor: the input TensorMap corresponding to the overlap-type matrix
-        in equistore format. Must have keys with names
+        in metatensor format. Must have keys with names
         ("spherical_harmonics_l1", "spherical_harmonics_l2", "species_center_1",
         "species_center_2",)
 
@@ -706,7 +706,7 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
             keys_to_drop_filter.append(True)
 
     # Drop these blocks
-    new_tensor = equistore.drop_blocks(
+    new_tensor = metatensor.drop_blocks(
         tensor,
         keys=Labels(names=keys.names, values=keys.values[keys_to_drop_filter]),
     )
@@ -719,7 +719,7 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     return new_tensor
 
 
-# ===== convert equistore to numpy format =====
+# ===== convert metatensor to numpy format =====
 
 
 def coeff_vector_tensormap_to_ndarray(
@@ -730,7 +730,7 @@ def coeff_vector_tensormap_to_ndarray(
     tests: Optional[int] = 0,
 ) -> np.ndarray:
     """
-    Convert a equistore TensorMap of basis function coefficients (or
+    Convert a metatensor TensorMap of basis function coefficients (or
     projections) to numpy ndarray format.
 
     :param frame: ase.Atoms object containing the atomic structure for which the
@@ -753,7 +753,7 @@ def coeff_vector_tensormap_to_ndarray(
     # is included
     if tensor.sample_names == convention.COEFF_VECTOR.sample_names:
         structure_idx_present = True
-        structure_idxs = equistore.unique_metadata(tensor, "samples", "structure")
+        structure_idxs = metatensor.unique_metadata(tensor, "samples", "structure")
         assert len(structure_idxs) == 1
         structure_idx = structure_idxs[0]
     elif tensor.sample_names == convention.COEFF_VECTOR.sample_names[1:]:

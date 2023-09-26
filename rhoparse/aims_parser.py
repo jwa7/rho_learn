@@ -14,8 +14,8 @@ import ase
 import ase.io
 import numpy as np
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import io
 

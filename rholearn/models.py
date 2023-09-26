@@ -8,8 +8,8 @@ import warnings
 import numpy as np
 import torch
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 
 VALID_MODEL_TYPES = ["linear", "nonlinear"]
@@ -99,7 +99,7 @@ class RhoModel(torch.nn.Module):
         keys = input.keys.intersection(output.keys)
         in_blocks, out_blocks = [], []
         for key in keys:
-            assert equistore.equal_metadata_block(
+            assert metatensor.equal_metadata_block(
                 input[key], output[key], check=["components"]
             )
             in_block = TensorBlock(
@@ -233,7 +233,7 @@ class RhoModel(torch.nn.Module):
         if out_train_inv_means is None:
             self._out_train_inv_means = None
         else:
-            self._out_train_inv_means = equistore.to(
+            self._out_train_inv_means = metatensor.to(
                 out_train_inv_means,
                 "torch",
                 dtype=self._torch_settings.get("dtype"),
@@ -265,7 +265,7 @@ class RhoModel(torch.nn.Module):
         for key in keys:
             if check_args:
                 assert key in self._in_metadata.keys
-                assert equistore.equal_metadata_block(
+                assert metatensor.equal_metadata_block(
                     input[key],
                     self._in_metadata[key],
                     check=["components", "properties"],
@@ -282,7 +282,7 @@ class RhoModel(torch.nn.Module):
                     spherical_harmonics_l=0, species_center=key["species_center"]
                 )
                 if check_args:
-                    assert equistore.equal_metadata_block(
+                    assert metatensor.equal_metadata_block(
                         in_invariant,
                         self._in_metadata.block(
                             spherical_harmonics_l=0,
@@ -329,7 +329,7 @@ class RhoModel(torch.nn.Module):
 class _LinearModel(torch.nn.Module):
     """
     A linear model, initialized with a number of in and out features (i.e. the
-    properties dimension of an equistore TensorBlock), as well as a bool that
+    properties dimension of an metatensor TensorBlock), as well as a bool that
     controls whether or not to use a learnable bias.
     """
 
@@ -452,7 +452,7 @@ class _NonLinearModel(torch.nn.Module):
         behaviour.
 
         The ``input`` and ``in_invariant`` tensors are torch tensors
-        corresponding to i.e. the values of equistore TensorBlocks. As such,
+        corresponding to i.e. the values of metatensor TensorBlocks. As such,
         they must be 3D tensors, where the first dimension is the samples, the
         last the properties/features, and the 1st (middle) the components. The
         components dimension of the in_invariant block must necessarily be of

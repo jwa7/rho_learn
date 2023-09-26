@@ -9,8 +9,8 @@ import numpy as np
 import torch
 from torch.utils.data.sampler import SubsetRandomSampler
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import loss
 
@@ -26,7 +26,7 @@ class RhoData(torch.utils.data.Dataset):
     (though they could be the same directory), there must be subdirectories
     named according to the indices in `idxs`. The descriptors, coefficients, and
     overlap matrices (if applicable) must be stored under the respective
-    filenames passed in `filenames`, in equistore TensorMap (.npz) format.
+    filenames passed in `filenames`, in metatensor TensorMap (.npz) format.
 
     `calc_out_train_inv_means` passed as True will calculate the mean baseline
     of the invariant blocks of the output training data.
@@ -190,27 +190,27 @@ class RhoData(torch.utils.data.Dataset):
         a tuple. Returns the idx, and input and output TensorMaps, as well as
         the overlap TensorMap if applicable.
         """
-        input = equistore.core.io.load_custom_array(
+        input = metatensor.core.io.load_custom_array(
             self.in_paths[idx],
-            create_array=equistore.core.io.create_torch_array,
+            create_array=metatensor.core.io.create_torch_array,
         )
-        output = equistore.core.io.load_custom_array(
+        output = metatensor.core.io.load_custom_array(
             self.out_paths[idx],
-            create_array=equistore.core.io.create_torch_array,
+            create_array=metatensor.core.io.create_torch_array,
         )
-        input = equistore.to(input, "torch", **self._torch_kwargs)
-        output = equistore.to(output, "torch", **self._torch_kwargs)
+        input = metatensor.to(input, "torch", **self._torch_kwargs)
+        output = metatensor.to(output, "torch", **self._torch_kwargs)
 
         # Return input/output pair if no overlap matrix required
         if self._overlap_dir is None:
             return idx, input, output
 
         # Return overlap matrix if applicable
-        overlap = equistore.core.io.load_custom_array(
+        overlap = metatensor.core.io.load_custom_array(
             self.overlap_paths[idx],
-            create_array=equistore.core.io.create_torch_array,
+            create_array=metatensor.core.io.create_torch_array,
         )
-        overlap = equistore.to(overlap, "torch", **self._torch_kwargs)
+        overlap = metatensor.to(overlap, "torch", **self._torch_kwargs)
         return idx, input, output, overlap
 
     def __len__(self) -> int:
@@ -258,16 +258,16 @@ class RhoData(torch.utils.data.Dataset):
         """
         # Retrieve the output training data and join
         out_train_list = [self[idx][2] for idx in self._train_idxs]
-        out_train = equistore.join(
+        out_train = metatensor.join(
             out_train_list,
             axis="samples",
             remove_tensor_name=True,
         )
-        out_train = equistore.to(out_train, "numpy")
+        out_train = metatensor.to(out_train, "numpy")
 
         # Calc and store invariant means
         out_train_inv_means = get_invariant_means(out_train)
-        out_train_inv_means = equistore.to(
+        out_train_inv_means = metatensor.to(
             out_train_inv_means, 
             "torch", 
             dtype=self._torch_kwargs["dtype"], 
@@ -322,7 +322,7 @@ class RhoData(torch.utils.data.Dataset):
 
             # Build a dummy TensorMap of zeros - this will be used for input
             # into the RhoLoss loss function as the 'target'
-            out_zeros = equistore.zeros_like(out_train)
+            out_zeros = metatensor.zeros_like(out_train)
 
             # Accumulate the 'loss' on the training ouput relative to the
             # spherical baseline
@@ -408,15 +408,15 @@ class RhoLoader:
         if self._get_overlaps:
             return (
                 batch[0],
-                equistore.join(batch[1], axis="samples", remove_tensor_name=True),
-                equistore.join(batch[2], axis="samples", remove_tensor_name=True),
-                equistore.join(batch[3], axis="samples", remove_tensor_name=True),
+                metatensor.join(batch[1], axis="samples", remove_tensor_name=True),
+                metatensor.join(batch[2], axis="samples", remove_tensor_name=True),
+                metatensor.join(batch[3], axis="samples", remove_tensor_name=True),
             )
         # Otherwise, just return the idxs and the input/output pair
         return (
             batch[0],
-            equistore.join(batch[1], axis="samples", remove_tensor_name=True),
-            equistore.join(batch[2], axis="samples", remove_tensor_name=True),
+            metatensor.join(batch[1], axis="samples", remove_tensor_name=True),
+            metatensor.join(batch[2], axis="samples", remove_tensor_name=True),
         )
 
     def __iter__(self):
@@ -585,7 +585,7 @@ def get_log_subset_sizes(
 def get_invariant_means(tensor: TensorMap) -> TensorMap:
     """
     Calculates the mean of the invariant (l=0) blocks on the input `tensor`
-    using the `equistore.mean_over_samples` function. Returns the result in a
+    using the `metatensor.mean_over_samples` function. Returns the result in a
     new TensorMap, whose number of blocks is equal to the number of invariant
     blocks in `tensor`.
 
@@ -598,10 +598,10 @@ def get_invariant_means(tensor: TensorMap) -> TensorMap:
     )
 
     # Drop these blocks
-    inv_tensor = equistore.drop_blocks(tensor, keys=keys_to_drop)
+    inv_tensor = metatensor.drop_blocks(tensor, keys=keys_to_drop)
 
     # Find the mean over sample for the invariant blocks
-    return equistore.mean_over_samples(inv_tensor, sample_names=inv_tensor.sample_names)
+    return metatensor.mean_over_samples(inv_tensor, sample_names=inv_tensor.sample_names)
 
 
 def standardize_invariants(
@@ -677,7 +677,7 @@ def standardize_invariants(
 #                     invariant_means=self._out_train_inv_means,
 #                     reverse=False,
 #                 )
-#                 equistore.save(
+#                 metatensor.save(
 #                     os.path.join(
 #                         self._output_dir, f"{idx}/{self._filenames[1]}_std.npz"
 #                     )
