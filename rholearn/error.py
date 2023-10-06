@@ -5,8 +5,8 @@ from typing import Optional
 import numpy as np
 import torch
 
-import equistore
-from equistore import TensorMap
+import metatensor
+from metatensor import TensorMap
 
 from rholearn import utils
 
@@ -20,11 +20,11 @@ def absolute_error(input: TensorMap, target: TensorMap) -> float:
     absolute error.
     """
     # Check metadata equivalence
-    if not equistore.equal_metadata(input, target):
+    if not metatensor.equal_metadata(input, target):
         raise ValueError("Input and target TensorMaps must have equal metadata")
 
     # Calculate the residuals and find the absolute values of them
-    abs_diff = equistore.abs(equistore.subtract(input, target))
+    abs_diff = metatensor.abs(metatensor.subtract(input, target))
 
     # Sum the abs residuals
     abs_error = 0.0
@@ -76,7 +76,7 @@ def relative_errors_a_b(
         calculation.
     """
     # Check that the metadata is the same
-    assert equistore.equal_metadata(a, b)
+    assert metatensor.equal_metadata(a, b)
 
     # Initialize the results dict
     results = {

@@ -6,8 +6,8 @@ from typing import List, Union, Optional
 import numpy as np
 import torch
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 
 # ===== mathematical functions

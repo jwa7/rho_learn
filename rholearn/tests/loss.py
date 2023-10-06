@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-import equistore
+import metatensor
 
 from rholearn import io, loss
 from rhoparse import convert
@@ -36,7 +36,7 @@ def test_densityloss_identity_overlap():
     calc = io.unpickle_dict("data/calc_info.pickle")
 
     # Convert c to TensorMap
-    c_tm = equistore.to(
+    c_tm = metatensor.to(
         convert.coeff_vector_ndarray_to_tensormap(
             frame, c, calc["lmax"], calc["nmax"], structure_idx=0
         ),
@@ -47,7 +47,7 @@ def test_densityloss_identity_overlap():
     )
 
     # Create a dummy coefficient prediction
-    c_tm_pred = equistore.random_uniform_like(c_tm)
+    c_tm_pred = metatensor.random_uniform_like(c_tm)
 
     # Convert s to TensorMap and sparsify
     s_tm = convert.overlap_matrix_ndarray_to_tensormap(
@@ -57,7 +57,7 @@ def test_densityloss_identity_overlap():
     s_tm = convert.overlap_drop_redundant_off_diagonal_blocks(s_tm)
 
     # Transform overlap ready for DensityLoss
-    s_tm = equistore.to(
+    s_tm = metatensor.to(
         s_tm, backend="torch", dtype=torch.float64, device="cpu", requires_grad=True
     )
     s_tm = loss.transform_overlap_for_densityloss(s_tm)

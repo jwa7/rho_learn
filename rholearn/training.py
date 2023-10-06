@@ -6,8 +6,8 @@ from typing import Optional
 import numpy as np
 import torch
 
-import equistore
-from equistore import TensorMap, TensorBlock, Labels
+import metatensor
+from metatensor import TensorMap, TensorBlock, Labels
 
 from rholearn import loss, models
 
@@ -29,7 +29,7 @@ def load_rho_model(path) -> torch.nn.Module:
         setattr(
             model,
             attr,
-            equistore.to(
+            metatensor.to(
                 getattr(model, attr),
                 "torch",
                 dtype=model._torch_settings["dtype"],
@@ -69,7 +69,7 @@ def load_from_checkpoint(path: str) -> dict:
         setattr(
             model,
             attr,
-            equistore.to(
+            metatensor.to(
                 getattr(model, attr), 
                 "torch", 
                 dtype=model._torch_settings["dtype"],

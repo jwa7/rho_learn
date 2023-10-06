@@ -19,14 +19,14 @@ workflow are performed with a number of open source packages from the software
 stacks of labs COSMO and LCMD at EPFL. The main ones are outlined below.
 
 
-**``Q-Stack``**: [lcmd-epfl/Q-stack](https://github.com/lcmd-epfl/Q-stack)
+<!-- **``Q-Stack``**: [lcmd-epfl/Q-stack](https://github.com/lcmd-epfl/Q-stack)
 
 A software stack dedicated to pre- and post-processing tasks for quantum machine
-learning. In **rholearn**, its **equistore**-interfacing module ``equio`` is
+learning. In **rholearn**, its **metatensor**-interfacing module ``equio`` is
 used to pre-process electron density coefficients generated from quantum
 chemical calculations into TensorMap format, ready for input into a
-**equistore**/**torch**-based ML model. Its ``fields`` module is also used to
-post-process electron densities into a format suitable for visualization.
+**metatensor**/**torch**-based ML model. Its ``fields`` module is also used to
+post-process electron densities into a format suitable for visualization. -->
 
 
 **``rascaline``**: [Luthaf/rascaline](https://github.com/Luthaf/rascaline)
@@ -37,7 +37,7 @@ density descriptor of the molecules in the training data, which is then used to
 generate an equivariant $\lambda$-SOAP representation.
 
 
-**``equistore``**: [lab-cosmo/equistore](https://github.com/lab-cosmo/equistore)
+**``metatensor``**: [lab-cosmo/metatensor](https://github.com/lab-cosmo/metatensor)
 
 This is a storage format for atomistic machine learning, allowing an efficient
 way to track data and associated metadata for a wide range of atomistic systems
@@ -48,11 +48,9 @@ overlap matrices.
 
 **``equisolve``**: [lab-cosmo/equisolve](https://github.com/lab-cosmo/equisolve)
 
-Concerned with higher-level functions and classes built on top of **equistore**,
+Concerned with higher-level functions and classes built on top of **metatensor**,
 this package is used to prepare data and build models for machine learning.
-However, it is still in a very early alpha development stage. In **rholearn**,
-it is used to split TensorMap objects storing structural representations and
-electron densities into train, test, and validation data.
+It can be used for sample and feature selection prior to model training.
 
 
 **``chemiscope``**: [lab-cosmo/chemiscope](https://github.com/lab-cosmo/chemiscope)
@@ -95,7 +93,7 @@ is not seen, the command ``bash`` might have to be run to activate ``conda``.
 
 **``rustc``**
 
-Is used to compile code in ``rascaline`` and ``equistore``. To install
+Is used to compile code in ``rascaline`` and ``metatensor``. To install
 ``rustc``, run the following command, taken from the ['Install
 Rust'](https://www.rust-lang.org/tools/install) webpage:
 
@@ -126,10 +124,12 @@ Then, some atomistic ML packages from the lab COSMO and LCMD software stacks can
 be installed in the ``rho`` environment. Ensure you install these **in the order
 shown below** (this is very important) and with the exact commands, as some
 development branches are required for this setup.
+  
+  2. **metatensor**: ``pip install git+https://github.com/lab-cosmo/metatensor@a816c6e2cff723d869afa90ee8064fff54c2a531``
+  
+  2. **rascaline**: ``pip install git+https://github.com/luthaf/rascaline.git@clebsch_gordan``
 
-  2. **rascaline**: ``pip install git+https://github.com/m-stack-org/rascaline.git@rholearn``
-
-  3. **equisolve**: ``pip install git+https://github.com/m-stack-org/equisolve.git@rholearn``
+  <!-- 3. **equisolve**: ``pip install git+https://github.com/m-stack-org/equisolve.git@rholearn`` -->
 
   4. **qstack**: ``pip install git+https://github.com/jwa7/Q-stack.git``
 
@@ -149,39 +149,21 @@ Then, working within the ``rho`` environment, **``rholearn``** and other modules
 can then be imported in a Python script as follows:
 
 ```py
-from rholearn.features import lambda_soap_vector
-from rholearn.loss import MSELoss, CoulombLoss
-from rholearn.models import EquiModelGlobal
-from rholearn.training import train
+import rascaline
+from rascaline.utils import clebsch_gordan
 
-import equistore
-from equistore import Labels, TensorMap
-from equisolve.utils import split_data
+import metatensor
+from metatensor import Labels, TensorMap
+
+from rholearn.loss import RhoLoss
+from rholearn.models import RhoModel
+from rhoparse import aims_parser
 ```
 
-## Updates and Troubleshooting
-
-If you ever need to update ``rholearn``, or any of the other packages for that
-matter, make sure you uninstall before ``git pull``-ing and reinstalling:
-
-```
-pip uninstall rholearn
-cd rho_learn
-git pull
-pip install .
-```
-
-If you ever receive the equistore error ``ValueError: Trying to set the
-EQUISTORE library path twice error`` it is probably due to a clash between
-rascaline and equistore. This will soon be fixed in equistore, but unitl then
-make sure that any rascaline modules are loaded before equistore ones. The main
-rholearn module you need to be careful of in this regard is ``features.py``. If,
-for example, you are importing from this module in a notebook, i.e. ``from
-rholearn.features import lambda_soap_vector``, make sure you place this import
-at the very top of the notebook. This is because ``features.py`` imports both
-rascaline and equistore (in that order), but thus needs to be placed first.
 
 # Examples
+
+An end-to-end workflow, including training and prediction, is provided in XXX
 
 The functionality of this package is demonstrated in the example notebooks in
 the ``rho_learn/docs/example/azoswitch`` directory. This section will briefly the
@@ -190,19 +172,19 @@ various parts of the workflow.
 ## Water
 
 A demonstrative notebook is provided, implementing the key parts of the
-model-training workflow. This begins with the generation of a $\lambda£-SOAP
+model-training workflow. This begins with the generation of a $\lambda-SOAP
 structural representation for a 1000-water monomer database. The relationship to
 the electron density is then learned using a linear model, optimizing weights
 based on gradient descent of an $L^2$ loss function. The aim of this notebook is
 to be a concise introduction to the key components of torch-based learning of
 the electron density.
 
-The open-source packge ["Symmetry-Adapted Learning of Three-dimensional
+<!-- The open-source packge ["Symmetry-Adapted Learning of Three-dimensional
 Electron Densities" (SALTED)](https://github.com/andreagrisafi/SALTED) is the
 source for this dataset and was used to generate reference electron densities,
-with outputs converted to `equistore` format.
+with outputs converted to `metatensor` format. -->
 
-## Azoswitch
+<!-- ## Azoswitch
 
 Also included in the examples are a set of more pedagogical notebooks on a more
 complicated dataset. In order to be lightweight enough to run on a laptop, and
@@ -232,7 +214,7 @@ The third and final notebook
 [3_analysis.ipynb](https://github.com/jwa7/rho_learn/blob/main/docs/example/azoswitch/3_analysis.ipynb)
 outlines plotting figures analysing model training, as well as making a
 prediction on a validation structure, visualizing this prediction and the
-associated error.
+associated error. -->
 
 # References
 

@@ -9,8 +9,8 @@ import numpy as np
 import pyscf
 import torch
 
-import equistore
-from equistore import TensorMap
+import metatensor
+from metatensor import TensorMap
 
 import qstack
 from qstack import equio
@@ -62,10 +62,10 @@ def predict_density_from_xyz(
     )
 
     # Drop blocks from input that aren't present in the model
-    input = equistore.drop_blocks(input, keys=np.setdiff1d(input.keys, model.keys))
+    input = metatensor.drop_blocks(input, keys=np.setdiff1d(input.keys, model.keys))
 
     # Convert the input TensorMap to torch
-    input = equistore.to(
+    input = metatensor.to(
         input,
         backend="torch",
         requires_grad=False,
@@ -111,9 +111,9 @@ def predict_density_from_mol(
     # Add back the feature means to the invariant (l=0) blocks if the model was trained
     # against electron densities with standardized invariants
     if inv_means_path is not None:
-        inv_means = equistore.load(inv_means_path)
+        inv_means = metatensor.load(inv_means_path)
         out_pred = features.standardize_invariants(
-            tensor=equistore.to(out_pred, backend="numpy"),
+            tensor=metatensor.to(out_pred, backend="numpy"),
             invariant_means=inv_means,
             reverse=True,
         )

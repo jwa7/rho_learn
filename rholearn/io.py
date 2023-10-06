@@ -5,8 +5,8 @@ from typing import List
 import numpy as np
 import torch
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import utils
 
@@ -62,13 +62,13 @@ def load_tensormap_to_torch(
     path: str, requires_grad: bool, dtype: torch.dtype, device: torch.device
 ):
     """
-    Loads a TensorMap using equistore.load, then converts its block values to
+    Loads a TensorMap using metatensor.load, then converts its block values to
     torch tensors with the specified grad, dtype, and device options.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"file at path {path} does not exist")
-    return equistore.to(
-        equistore.load(path),
+    return metatensor.to(
+        metatensor.load(path),
         backend="torch",
         requires_grad=requires_grad,
         dtype=dtype,
@@ -133,7 +133,7 @@ def load_torch_object(
     For the appropriate dict attributes of the torch object, the keys are
     modified upon loading to change them from tuple types to np.void type. This
     allows them to be accessed in the usual way blocks of a TensorMap are
-    accessed, i.e. using individual entries in an equistore Labels object.
+    accessed, i.e. using individual entries in an metatensor Labels object.
     """
     # Load the torch object from file
     torch_obj = torch.load(path, map_location=device.type)
