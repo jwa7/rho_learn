@@ -92,7 +92,7 @@ class RhoModel(torch.nn.Module):
     def _set_metadata(self, input: TensorMap, output: TensorMap) -> None:
         """
         Sets the attributes "_in_metadata" and "_out_metadata" as minimal
-        TensorMaps storign the relevant metadata data of input and output.
+        TensorMaps storing the relevant metadata data of input and output.
         These are only defined for the intersection between the input and output
         keys.
         """
