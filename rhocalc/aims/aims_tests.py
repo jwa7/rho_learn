@@ -8,7 +8,7 @@ import ase.io
 import numpy as np
 from rhocalc.aims import aims_calc
 
-ALLCLOSE_TOLS = {"rtol": 1e-5, "atol": 1e-15}
+TOLERANCE = {"rtol": 1e-5, "atol": 1e-10}
 
 aims_path = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"
 aims_kwargs = {
@@ -47,7 +47,7 @@ aims_kwargs = {
 sbatch_kwargs = {
     "job-name": "checks_scf",
     "nodes": 1,
-    "time": "00:30:00",
+    "time": "01:00:00",
     "mem-per-cpu": 2000,
 }
 
@@ -249,7 +249,119 @@ def run_ri(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict, use_restart: boo
 
     return
 
-def test_total_densities_integrate_to_n_electrons(calcs):
+# ==========================================
+# =========== Helper functions =============
+# ==========================================
+
+def _get_formal_number_of_electrons(geometry_file: str, charge: float = 0.0) -> float:
+    """
+    Gets the formal number of electrons by reading the geometry.in file into an
+    ASE Atoms object, summing nuclear charges, and subtracting the charge.
+    """
+    return ase.io.read(geometry_file).get_atomic_numbers().sum() - charge
+
+def _get_occ_number_of_electrons(ks_info: np.ndarray) -> float:
+    """
+    Calculates the number of electrons by summing the KS-orbital occupations
+    weighted by their k-weights, as found in "ks_orbital_info.out".
+    """
+    k_weights, occs = ks_info[:, 4], ks_info[:, 5]
+    return np.sum(k_weights * occs)
+
+def _get_integrated_number_of_electrons(density: np.ndarray, grid: np.ndarray) -> float:
+    """
+    Integrates the total electron density field over real space using the grid
+    point integration weights to obtain the number of electrons.
+    """
+    if not np.all(density[:, :3] == grid[:, :3]):
+        raise ValueError(
+            "grid points not equivalent between scalar field and integration weights"
+        )
+    return np.dot(density[:, 3], grid[:, 3])
+
+def _get_percent_mae_between_fields(input: np.ndarray, target: np.ndarray, grid: np.ndarray) -> float:
+    """
+    Calculates the absolute error between the target and input scalar fields,
+    integrates this over all space, then divides by the target field integrated
+    over all space (i.e. the number of electrons). Multiplies by 100 and returns
+    this as a % MAE.
+    """
+    if not np.all(input[:, :3] == grid[:, :3]):
+        raise ValueError(
+            "grid points not equivalent between input scalar field and integration weights"
+        )
+    if not np.all(target[:, :3] == grid[:, :3]):
+        raise ValueError(
+            "grid points not equivalent between target scalar field and integration weights"
+        )
+    return 100 * np.dot(np.abs(input[:, 3] - target[:, 3]), grid[:, 3]) / np.dot(target[:, 3], grid[:, 3])
+
+def _sum_kso_fields(
+    output_dir: str, kso_file_prefix: str, kso_info: np.ndarray, grid: np.ndarray
+) -> np.ndarray:
+    """
+    Using the occupations and k-weights in `ks_info_file`, performs a weighted
+    sum of the KS-orbital probability densities found in `output_dir`, with the
+    given file prefix, i.e. "rho_ref" or "rho_ri".
+    """
+    # Perform weighted sum over KSOs
+    weighted_ksos = []
+    for row in kso_info:
+        kso_i, state_i, spin_i, kpt_i, k_weight, occ, eig, kso_weight = row
+        if kso_weight < 1e-15:
+            continue
+        kso_i = int(kso_i)
+        suffix = f"_{kso_i:04d}"
+        kso = np.loadtxt(os.path.join(output_dir, f"{kso_file_prefix}{suffix}.out"))
+        assert np.all(kso[:, :3] == grid[:, :3])
+        weighted_ksos.append(kso_weight * kso[:, 3])
+
+    return np.concatenate([grid[:, :3], np.sum(weighted_ksos, axis=0).reshape(-1, 1)], axis=1)
+
+# ======================================== 
+# ========= Test functions ===============
+# ========================================
+
+
+def run_tests(calcs: dict):
+    """
+    Runs a series of tests on AIMS outputs fpr each of the calculations in
+    `calcs`. Each test returns the quantities that failed comparison tests. This
+    function returns a list of
+    """
+    failed = []
+
+    # Get integration to the formal number of electrons
+    failed.append(total_densities_integrate_to_n_electrons(calcs))
+
+    # # np.allclose of weighted sum of KSO coeff matrices vs density matrix
+    # failed.append(coeff_matrices_sum_to_density_matrix(calcs))
+
+    # MAE of total density between a) that built from densmat and b) that imported from physics
+    failed.append(density_from_densmat_equals_density_from_physics(calcs))
+
+    # # MAE of total density built from RI coefficients vs that built from NAO densmat
+    # failed.append(density_from_ri_equals_density_from_densmat(calcs))
+
+    # # MAE of total density between a) built from sum of KSOs and b) built from densmat
+    # failed.append(ksos_from_coeffmats_sum_to_density_from_densmat(calcs))
+
+    # # MAE of total density between a) built from sum of KSOs and b) imported from physics
+    # failed.append(ksos_from_coeffmats_sum_to_density_from_physics(calcs))
+
+    # # MAE of total density between a) built from sum of KSOs and b) built from densmat
+    # failed.append(ksos_from_ri_sum_to_density_from_densmat(calcs))
+
+    # # MAE of total density between a) built from sum of KSOs and b) imported from physics
+    # failed.append(ksos_from_ri_sum_to_density_from_physics(calcs))
+
+    # # np.allclose of RI coeffs: a) weighted sum of KSOs vs total density from densmat
+    # failed.append(ri_coeffs_for_ksos_sum_to_total_density_from_densmat(calcs))
+
+    return failed
+
+
+def total_densities_integrate_to_n_electrons(calcs):
     """
     First finds the formal number of electrons in the system as the sum of
     atomic numbers of the nuclei. Calculates the number of electrons from the
@@ -258,103 +370,54 @@ def test_total_densities_integrate_to_n_electrons(calcs):
     present in the densities imported from physics.f90 and that constructed from
     the density matrix. Checks that all of these are equal.
     """
-
-    print(f"Test function: {inspect.stack()[0][3]}")
-
+    print(f"Test: {inspect.stack()[0][3]}")
+    print(f"        N_e: [formal, from ks_orbital_info, from physics, from densmat, from RI]")
     # Iterate over calculations
     all_passed = True
     failed_calcs = {}
     for calc_i, calc in calcs.items():
+        # Load files
         ri_dir = f"{calc_i}/ri/"
-
-        # Get the formal number of electrons - assumes charge neutral
-        N_formal = ase.io.read(os.path.join(ri_dir, "geometry.in")).get_atomic_numbers().sum()
-
-        # Get the number of electrons as printed in ks_orbital_info.out
         ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
-        k_weights = ks_info[:, 4]
-        occs = k_weights * ks_info[:, 5]
-        N_info = np.sum(occs)
-
-        # Load the densities
         rho_from_physics = np.loadtxt(os.path.join(ri_dir, f"rho_physics.out"))
         rho_from_densmat = np.loadtxt(os.path.join(ri_dir, f"rho_ref.out"))
+        rho_from_ri = np.loadtxt(os.path.join(ri_dir, f"rho_ri.out"))
         grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
-        assert np.all(rho_from_physics[:, :3] == grid[:, :3])
-        assert np.all(rho_from_densmat[:, :3] == grid[:, :3])
 
-        N_from_physics = np.dot(rho_from_physics[:, 3], grid[:, 3])
-        N_from_densmat = np.dot(rho_from_densmat[:, 3], grid[:, 3])
+        # Calc number of electrons
+        N_formal = _get_formal_number_of_electrons(os.path.join(ri_dir, "geometry.in"), charge=0)
+        N_info = _get_occ_number_of_electrons(ks_info)
+        N_from_physics = _get_integrated_number_of_electrons(rho_from_physics, grid)
+        N_from_densmat = _get_integrated_number_of_electrons(rho_from_densmat, grid)
+        N_from_RI = _get_integrated_number_of_electrons(rho_from_ri, grid)
 
         # Check for equivalence
-        if np.all(
+        N_list = [N_formal, N_info, N_from_physics, N_from_densmat, N_from_RI]
+        decimals = 10
+        if np.all(  # relax slightly the tolerance on num electrons by multiplying by 10
             [
-                np.isclose(n, N_formal, **ALLCLOSE_TOLS) for n in [N_info, N_from_densmat, N_from_physics]
+                np.abs(N - N_formal) / N_formal < TOLERANCE["rtol"] * 10 for N in N_list
             ]
         ):
-            print(f"    PASS - Calc {calc_i} - {calc['name']}")
+            print(f"    PASS - Calc {calc_i} - {calc['name']}.")
+            print(f"        N_e: {[np.round(N, decimals) for N in N_list]}")
         else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}, {(N_formal, N_info, N_from_physics, N_from_densmat)}")
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}.")
+            print(f"        N_e: {[np.round(N, decimals) for N in N_list]}")
             all_passed = False
-            failed_calcs[calc_i] = (N_formal, N_info, N_from_physics, N_from_densmat)
-
-    print("\n")
-    return failed_calcs
-
-def test_built_total_density_equals_physics_total_density(calcs: dict):
-    """
-    Tests that the coefficient matrices for each KSO, wieghted by their
-    electronic occupation, sum to the density matrix constructed in AIMS by the
-    same procedure. 
-    """
-    print(f"Test function: {inspect.stack()[0][3]}")
-
-    # Iterate over calculations
-    all_passed = True
-    failed_calcs = {}
-    for calc_i, calc in calcs.items():
-        ri_dir = f"{calc_i}/ri/"
-
-        # Load the density matrix constructed in AIMS
-        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, f"rho_ref.out"))
-        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
-        assert np.allclose(rho_from_densmat[:, :3], grid[:, :3], **ALLCLOSE_TOLS)
-        rho_from_densmat = rho_from_densmat[:, 3]
-
-        # Load the density matrix imported from physics.f90
-        rho_physics = np.loadtxt(os.path.join(ri_dir, f"rho_physics.out"))
-        assert np.allclose(rho_physics[:, :3], grid[:, :3], **ALLCLOSE_TOLS)
-        rho_physics = rho_physics[:, 3]
-
-        mae = 100 * np.dot(np.abs(rho_from_densmat - rho_physics), grid[:, 3]) / np.dot(rho_physics, grid[:, 3])
-
-        # Check for equivalence
-        # if np.allclose(rho_physics, rho_from_densmat, **ALLCLOSE_TOLS):
-        #     print(f"    PASS - Calc {calc_i} - {calc['name']}, MAE: {mae} %")
-        # else:
-        #     print(f"    FAIL - Calc {calc_i} - {calc['name']}, MAE: {mae} %")
-        #     all_passed = False
-        #     failed_calcs[calc_i] = (rho_physics, rho_from_densmat)
-        if mae < 1e-2:
-            print(f"    PASS - Calc {calc_i} - {calc['name']}, MAE: {mae} %")
-        else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}, MAE: {mae} %")
-            all_passed = False
-            failed_calcs[calc_i] = (rho_physics, rho_from_densmat)
+            failed_calcs[calc_i] = N_list
 
     print("\n")
     return failed_calcs
 
 
-# ===== Test sum of SCF quantities =====
-def test_coeff_matrices_sum_to_density_matrix_scf(calcs: dict):
+def coeff_matrices_sum_to_density_matrix(calcs: dict):
     """
     Tests that the coefficient matrices for each KSO, wieghted by their
     electronic occupation, sum to the density matrix constructed in AIMS by the
     same procedure. 
     """
-    print(f"Test function: {inspect.stack()[0][3]}")
-
+    print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
     all_passed = True
     failed_calcs = {}
@@ -363,9 +426,9 @@ def test_coeff_matrices_sum_to_density_matrix_scf(calcs: dict):
         ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
 
         # Load the density matrix constructed in AIMS
-        densmat_built_in_aims = np.loadtxt(os.path.join(ri_dir, "nao_coeff_matrix.out"))
-        dim = int(np.sqrt(densmat_built_in_aims.shape[0]))
-        densmat_built_in_aims = densmat_built_in_aims.reshape((dim, dim))
+        densmat = np.loadtxt(os.path.join(ri_dir, "nao_coeff_matrix.out"))
+        dim = int(np.sqrt(densmat.shape[0]))
+        densmat = densmat.reshape((dim, dim))
 
         # Perform weighted sum over coeff matrices
         densmat_from_coeffmats = []
@@ -383,118 +446,230 @@ def test_coeff_matrices_sum_to_density_matrix_scf(calcs: dict):
         densmat_from_coeffmats = np.sum(densmat_from_coeffmats, axis=0)
         assert densmat_from_coeffmats.shape == (dim, dim)
 
-        # Check for equivalence with the density matrix
-        if np.allclose(densmat_from_coeffmats, densmat_built_in_aims, **ALLCLOSE_TOLS):
-            print(f"    PASS - Calc {calc_i} - {calc['name']}")
+        # Check pass/fail
+        mae = np.abs(densmat_from_coeffmats - densmat).mean()
+        if np.allclose(mae, 0, **TOLERANCE):
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae}")
         else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}")
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae}")
             all_passed = False
-            failed_calcs[calc_i] = (densmat_from_coeffmats, densmat_built_in_aims)
+            failed_calcs[calc_i] = (densmat_from_coeffmats, densmat)
     print("\n")
     return failed_calcs
     
-def test_ksos_sum_to_total_density_from_densmat_scf(calcs: dict):
+
+def density_from_densmat_equals_density_from_physics(calcs: dict):
     """
     Tests that the coefficient matrices for each KSO, wieghted by their
     electronic occupation, sum to the density matrix constructed in AIMS by the
     same procedure. 
     """
-    print(f"Test function: {inspect.stack()[0][3]}")
-
+    print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
     all_passed = True
     failed_calcs = {}
     for calc_i, calc in calcs.items():
-        ri_dir = f"{calc_i}/ri/"
-        ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
 
-        # Load the density matrix constructed in AIMS
+        # Load files
+        ri_dir = f"{calc_i}/ri/"
+        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, f"rho_ref.out"))
+        rho_from_physics = np.loadtxt(os.path.join(ri_dir, f"rho_physics.out"))
+        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
+        
+        # Check pass/fail
+        mae = _get_percent_mae_between_fields(input=rho_from_densmat, target=rho_from_physics, grid=grid)
+        if mae < TOLERANCE["rtol"] * 100:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+            all_passed = False
+            failed_calcs[calc_i] = (rho_from_physics, rho_from_densmat)
+    print("\n")
+    return failed_calcs
+
+
+def density_from_ri_equals_density_from_densmat(calcs: dict):
+    """
+    Tests that the coefficient matrices for each KSO, wieghted by their
+    electronic occupation, sum to the density matrix constructed in AIMS by the
+    same procedure. 
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+
+        # Load files
+        ri_dir = f"{calc_i}/ri/"
+        rho_from_ri = np.loadtxt(os.path.join(ri_dir, f"rho_ri.out"))
+        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, f"rho_ref.out"))
+        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
+        
+        # Check pass/fail
+        mae = _get_percent_mae_between_fields(input=rho_from_ri, target=rho_from_densmat, grid=grid)
+        if mae < TOLERANCE["rtol"] * 100:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+            all_passed = False
+            failed_calcs[calc_i] = (rho_from_ri, rho_from_densmat)
+    print("\n")
+    return failed_calcs
+
+
+def ksos_from_coeffmats_sum_to_density_from_densmat(calcs: dict):
+    """
+    Tests that the real-space KS-orbitals formed from NAO coefficient matrices
+    sum to the total density built from the NAO density matrix by a similar
+    procedure in AIMS.
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+        # Load files
+        ri_dir = f"{calc_i}/ri/"
+        kso_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
         rho_from_densmat = np.loadtxt(os.path.join(ri_dir, "rho_ref.out"))
-        grid_points = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))[:, :3]
-        assert np.all(rho_from_densmat[:, :3] == grid_points)
-        rho_from_densmat = rho_from_densmat[:, 3]
+        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
 
-        # Perform weighted sum over coeff matrices
-        rho_from_ksos = []
-        for row in ks_info:
-            kso_i, state_i, spin_i, kpt_i, k_weight, occ, eig, kso_weight = row
-            if kso_weight < 1e-15:
-                continue
-            kso_i = int(kso_i)
-            suffix = f"_{kso_i:04d}"
-            kso = np.loadtxt(os.path.join(ri_dir, f"kso_ref{suffix}.out"))
-            assert np.all(kso[:, :3] == grid_points)
-            rho_from_ksos.append(kso_weight * kso[:, 3])
-
-        rho_from_ksos = np.sum(rho_from_ksos, axis=0)
+        # Build the density from a sum of KSOs
+        rho_from_ksos = _sum_kso_fields(
+            output_dir=ri_dir, 
+            kso_file_prefix="rho_ref", 
+            kso_info=kso_info,
+            grid=grid,
+        )
 
         # Check for equivalence with the density matrix
-        if np.allclose(rho_from_ksos, rho_from_densmat, **ALLCLOSE_TOLS):
-            print(f"    PASS - Calc {calc_i} - {calc['name']}")
+        mae = _get_percent_mae_between_fields(input=rho_from_ksos, target=rho_from_densmat, grid=grid)
+        if mae < TOLERANCE["rtol"] * 100:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
         else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}")
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
             all_passed = False
             failed_calcs[calc_i] = (rho_from_ksos, rho_from_densmat)
     print("\n")
     return failed_calcs
 
-def test_ksos_sum_to_total_density_from_physics_scf(calcs: dict):
-    """
-    Tests that the coefficient matrices for each KSO, wieghted by their
-    electronic occupation, sum to the density matrix constructed in AIMS by the
-    same procedure. 
-    """
-    print(f"Test function: {inspect.stack()[0][3]}")
 
+def ksos_from_coeffmats_sum_to_density_from_physics(calcs: dict):
+    """
+    Tests that the real-space KS-orbitals formed from NAO coefficient matrices
+    sum to the total density imported from physics.f90 in AIMS.
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
     all_passed = True
     failed_calcs = {}
     for calc_i, calc in calcs.items():
+        # Load files
         ri_dir = f"{calc_i}/ri/"
-        ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
+        kso_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
+        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, "rho_physics.out"))
+        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
 
-        # Load the density matrix constructed in AIMS
-        rho_from_physics = np.loadtxt(os.path.join(ri_dir, "rho_physics.out"))
-        grid_points = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))[:, :3]
-        assert np.all(rho_from_physics[:, :3] == grid_points)
-        rho_from_physics = rho_from_physics[:, 3]
-
-        # Perform weighted sum over coeff matrices
-        rho_from_ksos = []
-        for row in ks_info:
-            kso_i, state_i, spin_i, kpt_i, k_weight, occ, eig, kso_weight = row
-            if kso_weight < 1e-15:
-                continue
-            kso_i = int(kso_i)
-            suffix = f"_{kso_i:04d}"
-            kso = np.loadtxt(os.path.join(ri_dir, f"kso_ref{suffix}.out"))
-            assert np.all(kso[:, :3] == grid_points)
-            rho_from_ksos.append(kso_weight * kso[:, 3])
-
-        rho_from_ksos = np.sum(rho_from_ksos, axis=0)
+        # Build the density from a sum of KSOs
+        rho_from_ksos = _sum_kso_fields(
+            output_dir=ri_dir, 
+            kso_file_prefix="rho_ref",
+            kso_info=kso_info,
+            grid=grid,
+        )
 
         # Check for equivalence with the density matrix
-        if np.allclose(rho_from_ksos, rho_from_physics, **ALLCLOSE_TOLS):
-            print(f"    PASS - Calc {calc_i} - {calc['name']}")
+        mae = _get_percent_mae_between_fields(input=rho_from_ksos, target=rho_from_densmat, grid=grid)
+        if mae < TOLERANCE["rtol"] * 100:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
         else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}")
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
             all_passed = False
-            failed_calcs[calc_i] = (rho_from_ksos, rho_from_physics)
+            failed_calcs[calc_i] = (rho_from_ksos, rho_from_densmat)
     print("\n")
     return failed_calcs
 
 
-
-# ===== Test sum of RI quantities =====
-
-def test_kso_ri_coeffs_sum_to_total_density_ri_coeffs(calcs: dict):
+def ksos_from_ri_sum_to_density_from_densmat(calcs: dict):
     """
-    Tests that the coefficient matrices for each KSO, wieghted by their
-    electronic occupation, sum to the density matrix constructed in AIMS by the
-    same procedure. 
+    Tests that the real-space KS-orbitals formed from RI coefficients sum to the
+    total density formed from the NAO density matrix.
     """
-    print(f"Test function: {inspect.stack()[0][3]}")
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+        # Load files
+        ri_dir = f"{calc_i}/ri/"
+        kso_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
+        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, "rho_ref.out"))
+        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
 
+        # Build the density from a sum of KSOs
+        rho_from_ksos = _sum_kso_fields(
+            output_dir=ri_dir, 
+            kso_file_prefix="rho_ri", 
+            kso_info=kso_info,
+            grid=grid,
+        )
+
+        # Check for equivalence with the density matrix
+        mae = _get_percent_mae_between_fields(input=rho_from_ksos, target=rho_from_densmat, grid=grid)
+        if mae < TOLERANCE["rtol"] * 100:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+            all_passed = False
+            failed_calcs[calc_i] = (rho_from_ksos, rho_from_densmat)
+    print("\n")
+    return failed_calcs
+
+
+def ksos_from_ri_sum_to_density_from_physics(calcs: dict):
+    """
+    Tests that the real-space KS-orbitals formed from RI coefficients sum to the
+    total density imported from physics.f90 in AIMS.
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+        # Load files
+        ri_dir = f"{calc_i}/ri/"
+        kso_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
+        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, "rho_physics.out"))
+        grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
+
+        # Build the density from a sum of KSOs
+        rho_from_ksos = _sum_kso_fields(
+            output_dir=ri_dir, 
+            kso_file_prefix="rho_ri",
+            kso_info=kso_info,
+            grid=grid,
+        )
+
+        # Check for equivalence with the density matrix
+        mae = _get_percent_mae_between_fields(input=rho_from_ksos, target=rho_from_densmat, grid=grid)
+        if mae < TOLERANCE["rtol"] * 100:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+            all_passed = False
+            failed_calcs[calc_i] = (rho_from_ksos, rho_from_densmat)
+    print("\n")
+    return failed_calcs
+
+
+def ri_coeffs_for_ksos_sum_to_total_density_from_densmat(calcs: dict):
+    """
+    Tests that the weighted sum of RI coefficients for each KS-orbital is
+    equivaltent to the RI coefficients for the total density built from the
+    NAO density matrix.
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
     all_passed = True
     failed_calcs = {}
@@ -503,73 +678,29 @@ def test_kso_ri_coeffs_sum_to_total_density_ri_coeffs(calcs: dict):
         ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
 
         # Load the density matrix constructed in AIMS
-        rho_ri_coeffs = np.loadtxt(os.path.join(ri_dir, "ri_coeffs.out"))
+        ri_coeffs = np.loadtxt(os.path.join(ri_dir, "ri_coeffs.out"))
 
         # Perform weighted sum over coeff matrices
-        rho_from_ksos = []
+        ri_coeffs_from_ksos = []
         for row in ks_info:
             kso_i, state_i, spin_i, kpt_i, k_weight, occ, eig, kso_weight = row
             if kso_weight < 1e-15:
                 continue
             kso_i = int(kso_i)
             suffix = f"_{kso_i:04d}"
-            kso_ri_coeffs = np.loadtxt(os.path.join(ri_dir, f"ri_coeffs{suffix}.out"))
+            ri_coeffs_kso = np.loadtxt(os.path.join(ri_dir, f"ri_coeffs{suffix}.out"))
             assert k_weight * occ == kso_weight
-            rho_from_ksos.append(kso_weight * kso_ri_coeffs)
+            ri_coeffs_from_ksos.append(kso_weight * ri_coeffs_kso)
 
-        rho_from_ksos = np.sum(rho_from_ksos, axis=0)
+        ri_coeffs_from_ksos = np.sum(ri_coeffs_from_ksos, axis=0)
 
-        # Check for equivalence with the density matrix
-        if np.allclose(rho_from_ksos, rho_ri_coeffs, **ALLCLOSE_TOLS):
-            print(f"    PASS - Calc {calc_i} - {calc['name']}")
+        # Check pass/fail
+        mae = np.abs(ri_coeffs_from_ksos - ri_coeffs).mean()
+        if np.allclose(mae, 0, **TOLERANCE):
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae}")
         else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}")
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae}")
             all_passed = False
-            failed_calcs[calc_i] = (rho_from_ksos, rho_ri_coeffs)
-    print("\n")
-    return failed_calcs
-
-def test_ksos_sum_to_total_density_from_densmat_ri(calcs: dict):
-    """
-    Tests that the coefficient matrices for each KSO, wieghted by their
-    electronic occupation, sum to the density matrix constructed in AIMS by the
-    same procedure. 
-    """
-    print(f"Test function: {inspect.stack()[0][3]}")
-
-    # Iterate over calculations
-    all_passed = True
-    failed_calcs = {}
-    for calc_i, calc in calcs.items():
-        ri_dir = f"{calc_i}/ri/"
-        ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
-
-        # Load the density matrix constructed in AIMS
-        rho_from_densmat = np.loadtxt(os.path.join(ri_dir, "rho_ri.out"))
-        grid_points = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))[:, :3]
-        assert np.all(rho_from_densmat[:, :3] == grid_points)
-        rho_from_densmat = rho_from_densmat[:, 3]
-
-        # Perform weighted sum over coeff matrices
-        rho_from_ksos = []
-        for row in ks_info:
-            kso_i, state_i, spin_i, kpt_i, k_weight, occ, eig, kso_weight = row
-            if kso_weight < 1e-15:
-                continue
-            kso_i = int(kso_i)
-            suffix = f"_{kso_i:04d}"
-            kso = np.loadtxt(os.path.join(ri_dir, f"kso_ri{suffix}.out"))
-            assert np.all(kso[:, :3] == grid_points)
-            rho_from_ksos.append(kso_weight * kso[:, 3])
-
-        rho_from_ksos = np.sum(rho_from_ksos, axis=0)
-
-        # Check for equivalence with the density matrix
-        if np.allclose(rho_from_ksos, rho_from_densmat, **ALLCLOSE_TOLS):
-            print(f"    PASS - Calc {calc_i} - {calc['name']}")
-        else:
-            print(f"    FAIL - Calc {calc_i} - {calc['name']}")
-            all_passed = False
-            failed_calcs[calc_i] = (rho_from_ksos, rho_from_densmat)
+            failed_calcs[calc_i] = (ri_coeffs_from_ksos, ri_coeffs)
     print("\n")
     return failed_calcs
