@@ -1,5 +1,5 @@
 """
-Module for creating a custom torch datasets specifically for density data.
+Module for creating metatensor/torch datasets and dataloaders.
 """
 import gc
 import os
@@ -190,13 +190,13 @@ class RhoData(torch.utils.data.Dataset):
         a tuple. Returns the idx, and input and output TensorMaps, as well as
         the overlap TensorMap if applicable.
         """
-        input = metatensor.core.io.load_custom_array(
+        input = metatensor.io.load_custom_array(
             self.in_paths[idx],
-            create_array=metatensor.core.io.create_torch_array,
+            create_array=metatensor.io.create_torch_array,
         )
-        output = metatensor.core.io.load_custom_array(
+        output = metatensor.io.load_custom_array(
             self.out_paths[idx],
-            create_array=metatensor.core.io.create_torch_array,
+            create_array=metatensor.io.create_torch_array,
         )
         input = metatensor.to(input, "torch", **self._torch_kwargs)
         output = metatensor.to(output, "torch", **self._torch_kwargs)
@@ -206,9 +206,9 @@ class RhoData(torch.utils.data.Dataset):
             return idx, input, output
 
         # Return overlap matrix if applicable
-        overlap = metatensor.core.io.load_custom_array(
+        overlap = metatensor.io.load_custom_array(
             self.overlap_paths[idx],
-            create_array=metatensor.core.io.create_torch_array,
+            create_array=metatensor.io.create_torch_array,
         )
         overlap = metatensor.to(overlap, "torch", **self._torch_kwargs)
         return idx, input, output, overlap
@@ -356,7 +356,7 @@ class RhoLoader:
 
         self.dataloader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=batch_size,
+            batch_size=self._batch_size,
             collate_fn=self.collate_rho_data_batch,
             sampler=SubsetRandomSampler(idxs),
             **kwargs,

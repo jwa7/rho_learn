@@ -9,15 +9,15 @@ import torch
 import metatensor
 
 from rholearn import io, loss
-from rhoparse import convert
+from rhocalc import convert
 
 
-def test_densityloss_identity_overlap():
+def test_l2loss_identity_overlap():
     """
     In the case where the overlap matrix is the identity matrix (i.e. orthogonal
     basis functions, no coupling between them), the loss evaluated by the
     DenstiyLoss class should be exactly equivalent to the squared error on the
-    coefficients evaluated by the CoeffLoss class.
+    coefficients evaluated by the L2Loss class.
 
     This function tests that this holds.
     """
@@ -25,20 +25,20 @@ def test_densityloss_identity_overlap():
     frame = ase.io.read("data/frame.xyz")
 
     # Load dummy coefficients vector and overlap matrix
-    c = np.load("data/coeff_vector.npy")
-    s = np.load("data/overlap_matrix.npy")
+    output = np.load("data/coeff_vector.npy")
+    ovlp = np.load("data/overlap_matrix.npy")
 
     # Create a new overlap matrix that is the identity matrix
-    s = np.eye(*s.shape)
+    ovlp = np.eye(*ovlp.shape)
 
     # Load dummy calculation info. The only important bits here are the basis
     # set info: lmax and nmax
     calc = io.unpickle_dict("data/calc_info.pickle")
 
-    # Convert c to TensorMap
-    c_tm = metatensor.to(
+    # Convert output to TensorMap
+    out_tm = metatensor.to(
         convert.coeff_vector_ndarray_to_tensormap(
-            frame, c, calc["lmax"], calc["nmax"], structure_idx=0
+            frame, output, calc["lmax"], calc["nmax"], structure_idx=0
         ),
         backend="torch",
         dtype=torch.float64,
@@ -47,22 +47,21 @@ def test_densityloss_identity_overlap():
     )
 
     # Create a dummy coefficient prediction
-    c_tm_pred = metatensor.random_uniform_like(c_tm)
+    out_tm_pred = metatensor.random_uniform_like(out_tm)
 
-    # Convert s to TensorMap and sparsify
-    s_tm = convert.overlap_matrix_ndarray_to_tensormap(
-        frame, s, calc["lmax"], calc["nmax"], structure_idx=0
+    # Convert ovlp to TensorMap and sparsify
+    ovlp_tm = convert.overlap_matrix_ndarray_to_tensormap(
+        frame, ovlp, calc["lmax"], calc["nmax"], structure_idx=0
     )
-    assert convert.overlap_is_symmetric(s_tm)
-    s_tm = convert.overlap_drop_redundant_off_diagonal_blocks(s_tm)
+    assert convert.overlap_is_symmetric(ovlp_tm)
+    ovlp_tm = convert.overlap_drop_redundant_off_diagonal_blocks(ovlp_tm)
 
-    # Transform overlap ready for DensityLoss
-    s_tm = metatensor.to(
-        s_tm, backend="torch", dtype=torch.float64, device="cpu", requires_grad=True
+    # Transform overlap ready for RhoLoss
+    ovlp_tm = metatensor.to(
+        ovlp_tm, backend="torch", dtype=torch.float64, device="cpu", requires_grad=True
     )
-    s_tm = loss.transform_overlap_for_densityloss(s_tm)
 
     # Check for equivalence
-    assert loss.CoeffLoss()(c_tm_pred, c_tm) == loss.DensityLoss()(
-        c_tm_pred, c_tm, s_tm
+    assert loss.L2Loss()(input=out_tm_pred, target=out_tm) == loss.L2Loss()(
+        input=out_tm_pred, target=out_tm, overlap=ovlp_tm
     )

@@ -2,14 +2,18 @@
 Module containing the RhoModel class that makes predictions on TensorMaps.
 """
 import os
+from functools import partial
 from typing import Union, Optional, Sequence, Tuple
 import warnings
 
+import ase
 import numpy as np
 import torch
 
 import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
+
+from rholearn import predictor
 
 
 VALID_MODEL_TYPES = ["linear", "nonlinear"]
@@ -44,6 +48,8 @@ class RhoModel(torch.nn.Module):
         ] = None,
         activation_fn: Optional[torch.nn.Module] = None,
         out_train_inv_means: Optional[TensorMap] = None,
+        descriptor_kwargs: Optional[dict] = None,
+        target_kwargs: Optional[dict] = None,
         **torch_settings,
     ):
         super(RhoModel, self).__init__()
@@ -64,8 +70,13 @@ class RhoModel(torch.nn.Module):
 
         # Passing `out_train_inv_means` as a TensorMap will add the training
         # invariant means to the relevant block predictions in the `forward`
-        # method. 
+        # method.
         self._set_out_train_inv_means(out_train_inv_means)
+
+        # Set the settings required to build a descriptor from ASE frames and
+        # transform the raw prediction of the model
+        self._set_descriptor_kwargs(descriptor_kwargs)
+        self._set_target_kwargs(target_kwargs)
 
         # Build the models
         self._set_models()
@@ -241,6 +252,43 @@ class RhoModel(torch.nn.Module):
                 requires_grad=False,
             )
 
+    @property
+    def descriptor_kwargs(self) -> dict:
+        return self._descriptor_kwargs
+
+    def _set_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`descriptor_builder`.
+        """
+        # Also required for descriptor generation are the global species.
+        descriptor_kwargs.update(
+            {
+                "global_species": np.sort(
+                    np.unique(self._in_metadata.keys.column("species_center"))
+                )
+            }
+        )
+        self._descriptor_kwargs = descriptor_kwargs
+
+    @property
+    def target_kwargs(self) -> dict:
+        return self._target_kwargs
+
+    def _set_target_kwargs(self, target_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        self._target_kwargs = target_kwargs
+
+    def parameters(self):
+        """
+        Generator for the parameters of each block model.
+        """
+        for m in self._models:
+            yield from m.parameters()
+
     def forward(self, input: TensorMap, check_args: bool = True) -> TensorMap:
         """
         Makes a prediction on an `input` TensorMap.
@@ -297,7 +345,10 @@ class RhoModel(torch.nn.Module):
                 )
 
             # Add back in the invariant means of the training data to invariant blocks
-            if self._out_train_inv_means is not None and key["spherical_harmonics_l"] == 0:
+            if (
+                self._out_train_inv_means is not None
+                and key["spherical_harmonics_l"] == 0
+            ):
                 inv_means = self._out_train_inv_means.block(
                     spherical_harmonics_l=0, species_center=key["species_center"]
                 )
@@ -318,12 +369,48 @@ class RhoModel(torch.nn.Module):
 
         return TensorMap(keys, pred_blocks)
 
-    def parameters(self):
+    def predict(
+        self,
+        input: Optional[TensorMap] = None,
+        frames: Optional[Sequence[ase.Atoms]] = None,
+    ) -> TensorMap:
         """
-        Generator for the parameters of each block model.
+        Performs inference with no gradient tracking to make a prediction on an
+        input TensorMap or list of ASE Atoms objects.
+
+        In the case of the former, the descriptor TensorMap is assumed to have
+        been generated with the same rascaline hypers as the data the model was
+        trained on. In the latter case, the store rascaline hypers are used to
+        generate a descriptor for which a prediction is made.
         """
-        for m in self._models:
-            yield from m.parameters()
+        # If ASE frames are passed, generate a descriptor
+        if input is None:
+            if frames is None:
+                raise ValueError("one of ``input`` or ``frames`` must be passed")
+            if self._descriptor_kwargs is None:
+                raise ValueError(
+                    "if making a prediction on ASE ``frames``,"
+                    " ``descriptor_kwargs`` must be passed so that a"
+                    " descriptor can be generated. Use the setter"
+                    " `_set_descriptor_kwargs` to set these and try again."
+                )
+
+            # Build the descriptor
+            input = predictor.descriptor_builder(
+                frames, torch_settings=self._torch_settings, **self._descriptor_kwargs
+            )
+
+        if not isinstance(input, TensorMap):
+            raise TypeError("``input`` must be a TensorMap")
+
+        # Make a prediction on the input TensorMap
+        with torch.no_grad():
+            output = self(input, check_args=True)
+
+        # Transform the prediction
+        output = predictor.target_builder(output, frames, **self._target_kwargs)
+
+        return output
 
 
 class _LinearModel(torch.nn.Module):

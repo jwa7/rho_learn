@@ -12,7 +12,7 @@ import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import utils
-from rhoparse import convention
+from rhocalc import convention
 
 
 def get_flat_index(
@@ -842,6 +842,7 @@ def overlap_matrix_tensormap_to_ndarray(
     tests: int = 0,
 ) -> TensorMap:
     """ """
+    raise NotImplementedError
 
 
 # ===== Functions to test conversions etc. =====
