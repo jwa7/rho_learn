@@ -9,8 +9,6 @@ setup(
             "rhocalc.*",
             "rholearn", 
             "rholearn.*",
-            "rhopredict",
-            "rhopredict.*"
             ]
         ),
 )

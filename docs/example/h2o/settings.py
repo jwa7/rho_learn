@@ -3,21 +3,22 @@ import numpy as np
 import torch
 
 # Define the rascaline hypers for generating lambda-SOAP features
-lsoap_settings = {
-    "rascal_hypers": {
-        "cutoff": 4.0,  # Angstrom
-        "max_radial": 10,  # Exclusive
+rascal_hypers = {
+    "sphex": {
+        "cutoff": 3.0,  # Angstrom
+        "max_radial": 6,  # Exclusive
         "max_angular": 5,  # Inclusive
         "atomic_gaussian_width": 0.3,
         "radial_basis": {"Gto": {}},
         "cutoff_function": {"ShiftedCosine": {"width": 0.5}},
         "center_atom_weight": 1.0,
     },
-    "lambdas": [0, 1, 2, 3, 4, 5],
-    "sigmas": [+1],
-    "lambda_cut": None,
+    "cg": {
+        "angular_cutoff": None,
+        "angular_selection": [0, 1, 2, 3, 4, 5],
+        "parity_selection": [+1],
+    },
 }
-
 
 # Define PyTorch settings
 torch_settings = {
