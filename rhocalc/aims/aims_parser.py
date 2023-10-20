@@ -6,81 +6,23 @@ matrices.
 Note that these parsers have been written to work with the AIMS version 221103
 and may not necessarily be compatible with older or newer versions.
 """
-import itertools
 import os
-from typing import Sequence, Tuple, Optional
+from typing import Sequence, Tuple, Optional, Union
 
 import ase
 import ase.io
 import numpy as np
 
-import equistore
-from equistore import Labels, TensorBlock, TensorMap
+from metatensor import Labels, TensorBlock, TensorMap
 
 from rholearn import io
 
-
-# ===== AIMS input file generation =====
-
-
-def generate_input_geometry_files(
-    frames: Sequence[ase.Atoms],
-    save_dir: str,
-    structure_idxs: Optional[Sequence[int]] = None,
-):
-    """
-    Takes a list of ASE Atoms objects (i.e. ``frames``) for a set of structures
-    and generates input geometry files in the AIMS format.
-
-    For a set of N structures in ``frames``, N new directories in the parent
-    directory ``save_dir`` are created, with relative paths
-    f"{save_dir}/{A}/geometry.in", where A is a numeric structure index running
-    from 0 -> (N - 1) (inclusive), and corresponding to the order of structures
-    in ``frames``.
-
-    :param frames: a :py:class:`list` of :py:class:`ase.Atoms` objects
-        corresponding to the structures in the dataset to generate AIMS input
-        files for.
-    :param save_dir: a `str` of the absolute path to the directory where the
-        AIMS input geometry files should be saved.
-    :param structure_idxs: an optional :py:class:`list` of :py:class:`int` of
-        the indices of the structures in ``frames`` to generate AIMS input files
-        for. If ``None``, then "geometry.in" files are saved in directories
-        indexed by 0, 1, ..., N-1, where N is the number of structures in
-        ``frames``. If not ``None``, then the explicit indices passed in
-        `structure_idxs` are used to index the directories, mapping one-to-one
-        to the structures in ``frames``.
-    """
-    # Create the save directory if it doesn't already exist
-    if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
-
-    # Define the structure indices used to name the sub-directories
-    if structure_idxs is None:
-        structure_idxs = range(len(frames))  # 0, 1, ..., N-1
-    else:
-        if len(frames) != len(structure_idxs):
-            raise ValueError(
-                f"The number of structures in `frames` ({len(frames)}) must match "
-                f"the number of indices in `structure_idxs` ({len(structure_idxs)})"
-            )
-
-    for A, frame in zip(structure_idxs, frames):  # Iterate over structures
-        # Create a directory named simply by the structure index
-        structure_dir = os.path.join(save_dir, f"{A}")
-        if not os.path.exists(structure_dir):
-            os.mkdir(structure_dir)
-
-        # Write the AIMS input file. By using the ".in" suffix/extension in the
-        # filename, ASE will automatically produce an input file that follows
-        # AIMS formatting.
-        ase.io.write(os.path.join(structure_dir, "geometry.in"), frame)
 
 
 # ===== AIMS output file parsing =====
 
 
-def extract_calculation_info(aims_output_dir: str) -> dict:
+def parse_aims_out(aims_output_dir: str) -> dict:
     """
     Extracts relevant information from the main AIMS output file "aims.out",
     stored in the directory at absolute path ``aims_output_dir``.
@@ -527,6 +469,97 @@ def process_aux_basis_func_data(
 
     return coeffs, projs, ovlp
 
+def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
+    """
+    Parses the AIMS output file "ks_orbital_inof.out" produced by setting the
+    keyword `ri_fit_write_orbital_info` to True in the AIMS control.in file.
+
+    The number of rows of this file is equal to the number of KS-orbitals, i.e.
+    the product of the number of KS states, spin states, and k-points.
+
+    Each column corresponds to, respectively: KS-orbital index, KS state index,
+    spin state, k-point index, k-point weight, occupation, and energy
+    eigenvalue.
+
+    If `as_array` is True, the data is returned as a structured numpy array.
+    Otherwise, it is returned as a dict.
+    """
+    file = np.loadtxt(ks_orb_info)
+    if as_array:
+        info = np.array(
+            [tuple(row)for row in file], 
+            dtype=[
+                ("kso_i", int), 
+                ("state_i", int), 
+                ("spin_i", int), 
+                ("kpt_i", int), 
+                ("k_weight", float),
+                ("occ", float),
+                ("energy_eV", float),
+            ]
+        )
+
+    else:
+        info = {}
+        for row in file:
+            i_kso, i_state, i_spin, i_kpt, k_weight, occ, energy = row
+            info[i_kso] = {
+                "i_kso": i_kso,
+                "i_state": i_state,
+                "i_spin": i_spin,
+                "i_kpt": i_kpt,
+                "k_weight": k_weight,
+                "occ": occ,
+                "energy": energy,
+            }
+    return info
+
+
+def find_homo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
+    """
+    Returns the KSO indices that correspond to the HOMO states. These are all
+    the orbitals that have the same KS *state* index as the highest occupied KS
+    orbital.
+
+    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
+    4), the indices of all KS orbitals with KS state == 3 are returned.
+    """
+    if isinstance(ks_orbital_info, str):
+        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
+    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
+
+    # Find the HOMO orbital
+    homo_kso_idx = np.where(ks_orbital_info["occ"] > 0)[0][-1]
+    homo_state_idx = ks_orbital_info[homo_kso_idx]["state_i"]
+
+    # Find all states that correspond to the KS state
+    homo_kso_idxs = np.where(ks_orbital_info["state_i"] == homo_state_idx)[0]
+    
+    return [ks_orbital_info[i]["kso_i"] for i in homo_kso_idxs]
+
+
+def find_lumo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
+    """
+    Returns the KSO indices that correspond to the LUMO states. These are all
+    the orbitals that have the same KS *state* index as the lowest unoccupied KS
+    orbital.
+
+    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
+    4), the indices of all KS orbitals with KS state == 3 are returned.
+    """
+    if isinstance(ks_orbital_info, str):
+        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
+    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
+    
+    # Find the HOMO orbital
+    lumo_kso_idx = np.where(ks_orbital_info["occ"] == 0)[0][0]
+    lumo_state_idx = ks_orbital_info[lumo_kso_idx]["state_i"]
+
+    # Find all states that correspond to the KS state
+    lumo_kso_idxs = np.where(ks_orbital_info["state_i"] == lumo_state_idx)[0]
+    
+    return [ks_orbital_info[i]["kso_i"] for i in lumo_kso_idxs]
+
 
 def calc_density_fitting_error(
     aims_output_dir: str, ri_calc_idx: Optional[int] = None
@@ -608,40 +641,6 @@ def calc_density_fitting_error(
 
     # Calculate and return the relative error (normalized by the number of electrons)
     return np.dot(error, partition) / np.dot(rho_ref, partition)
-
-
-def get_ks_orbital_info(aims_output_dir: str) -> dict:
-    """
-    Parses the details of the MO states from the AIMS output file
-    `aims_output_dir`/"ks_orbital_info.out". Each row of this file corresponds
-    to, respectively, the numeric KS-orbital index (1, ..., num_states,
-    inclusive), the KS state index (1 .. num_ks_states, inc), the spin state
-    index (1 .. num_spin_states, inc), the k-point index (1 .. num_k_points,
-    inc), the k_point weight, the KS state occupation number, and the eigenvalue
-    in eV.
-
-    Assumes that the order of the eigenvalues follows the nested loop hierarchy;
-    loop over states, loop over spin states, loop over k-points.
-    """
-    # Load the eigenvalues
-    state_info = np.loadtxt(os.path.join(aims_output_dir, "ks_orbital_info.out"))
-
-    ks_orbital_dict = {}
-    for row in state_info:
-        # Unpack the row
-        ks_orb_idx, ks_state, spin_state, k_point, k_weight, occ, eigval = row[:7]
-
-        # Store the info
-        ks_orbital_dict[int(ks_orb_idx)] = {
-            "ks_state": int(ks_state),
-            "spin_state": int(spin_state),
-            "k_point": int(k_point),
-            "k_weight": k_weight,
-            "occ": occ, 
-            "eig_eV": eigval,
-        }
-
-    return ks_orbital_dict
 
 
 def df_error_by_ks_orb_prob_dens_sum(
@@ -801,7 +800,7 @@ def process_aims_ri_results(
         os.mkdir(processed_dir)
 
     # Parse calc info
-    calc = extract_calculation_info(aims_output_dir)
+    calc = parse_aims_out(aims_output_dir)
     # if not calc["scf"]["converged"]:
     #     io.pickle_dict(os.path.join(processed_dir, "calc.pickle"), calc)
     #     raise ValueError("SCF did not converge")
