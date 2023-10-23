@@ -7,16 +7,17 @@ Note that these parsers have been written to work with the AIMS version 221103
 and may not necessarily be compatible with older or newer versions.
 """
 import os
-from typing import Sequence, Tuple, Optional, Union
+from typing import Tuple, Optional, Union, List
 
 import ase
 import ase.io
 import numpy as np
 
+import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
 
+from rhocalc import convert
 from rholearn import io
-
 
 
 # ===== AIMS output file parsing =====
@@ -90,7 +91,7 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                     "net": int(split[6]),
                     "non-zero": int(lines[line_i + 1].split()[7]),  # on next line
                 }
-            
+
             # Number of spin states
             # Example:
             # "| Number of spin channels           :        1"
@@ -217,7 +218,10 @@ def parse_aims_out(aims_output_dir: str) -> dict:
             # Cutoff radius for evaluating overlap matrix
             # Example:
             # "ri_fit: Found cutoff radius for calculating ovlp matrix:   2.00000"
-            if split[:8] == "ri_fit: Found cutoff radius for calculating ovlp matrix:".split():
+            if (
+                split[:8]
+                == "ri_fit: Found cutoff radius for calculating ovlp matrix:".split()
+            ):
                 calc_info["ri_fit_cutoff_radius"] = float(split[8])
 
             # Extract ri_fit info
@@ -315,7 +319,7 @@ def extract_basis_set_info(frame: ase.Atoms, aims_output_dir: str) -> Tuple[dict
 def process_aux_basis_func_data(
     aims_output_dir: str,
     ri_calc_idx: Optional[int] = None,
-    process_what: Optional[Sequence[str]] = None,
+    process_what: Optional[List[str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Processes and returns the coefficients and projections vectors, and overlap
@@ -357,14 +361,14 @@ def process_aux_basis_func_data(
         - angular momentum component m value, running from -l to l (inc)
             for the given l value.
 
-    This function performs the following processing of the data. 
-    
+    This function performs the following processing of the data.
+
     First, the 1-indexing of the numeric indices in "product_basis_idxs.out"
-    (i.e. ABF, atom, and radial channel indices) is converted to 0-indexing. 
-    
+    (i.e. ABF, atom, and radial channel indices) is converted to 0-indexing.
+
     Second, the CS convention is applied to coefficients, projections, and
-    overlap matrix elements for the ABFs with m odd and > 0. 
-    
+    overlap matrix elements for the ABFs with m odd and > 0.
+
     Third, the order of the coefficients, projections, and overlap matrix
     elements are modified to match the numeric indices of the ABFs in
     "product_basis_idxs.out".
@@ -469,6 +473,7 @@ def process_aux_basis_func_data(
 
     return coeffs, projs, ovlp
 
+
 def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
     """
     Parses the AIMS output file "ks_orbital_inof.out" produced by setting the
@@ -484,25 +489,43 @@ def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
     If `as_array` is True, the data is returned as a structured numpy array.
     Otherwise, it is returned as a dict.
     """
+    # Load file
     file = np.loadtxt(ks_orb_info)
+    # Check number of columns
+    if len(file[0]) == 8:
+        with_weights = True
+    elif len(file[0]) == 7:
+        with_weights = False
+    else:
+        raise ValueError(
+            "expected 7 (without KSO weights) or 8 (with weights)"
+            f" columns. Got: {len(file[0])}"
+        )
     if as_array:
+        if with_weights:
+            w_col = [("kso_weight", float),]
+        else:
+            w_col = []
         info = np.array(
-            [tuple(row)for row in file], 
+            [tuple(row) for row in file],
             dtype=[
-                ("kso_i", int), 
-                ("state_i", int), 
-                ("spin_i", int), 
-                ("kpt_i", int), 
+                ("kso_i", int),
+                ("state_i", int),
+                ("spin_i", int),
+                ("kpt_i", int),
                 ("k_weight", float),
                 ("occ", float),
                 ("energy_eV", float),
-            ]
+            ] + w_col,
         )
 
     else:
         info = {}
         for row in file:
-            i_kso, i_state, i_spin, i_kpt, k_weight, occ, energy = row
+            if with_weights:
+                i_kso, i_state, i_spin, i_kpt, k_weight, occ, energy, weight = row
+            else:
+                i_kso, i_state, i_spin, i_kpt, k_weight, occ, energy = row
             info[i_kso] = {
                 "i_kso": i_kso,
                 "i_state": i_state,
@@ -512,6 +535,8 @@ def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
                 "occ": occ,
                 "energy": energy,
             }
+            if with_weights:
+                info[i_kso].update({"kso_weight": weight})
     return info
 
 
@@ -534,7 +559,7 @@ def find_homo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
 
     # Find all states that correspond to the KS state
     homo_kso_idxs = np.where(ks_orbital_info["state_i"] == homo_state_idx)[0]
-    
+
     return [ks_orbital_info[i]["kso_i"] for i in homo_kso_idxs]
 
 
@@ -550,219 +575,49 @@ def find_lumo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
     if isinstance(ks_orbital_info, str):
         ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
     ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
-    
+
     # Find the HOMO orbital
     lumo_kso_idx = np.where(ks_orbital_info["occ"] == 0)[0][0]
     lumo_state_idx = ks_orbital_info[lumo_kso_idx]["state_i"]
 
     # Find all states that correspond to the KS state
     lumo_kso_idxs = np.where(ks_orbital_info["state_i"] == lumo_state_idx)[0]
-    
+
     return [ks_orbital_info[i]["kso_i"] for i in lumo_kso_idxs]
 
 
-def calc_density_fitting_error(
-    aims_output_dir: str, ri_calc_idx: Optional[int] = None
+def get_percent_mae_between_fields(
+    input: np.ndarray, target: np.ndarray, grid: np.ndarray
 ) -> float:
     """
-    Calculates the error in the RI fitted electron density relative to the SCF
-    converged electron density. A returned value of 1 corresponds to an error of
-    100%.
-
-    The files required for this calculation, that must be present in
-    `aims_output_dir`, are as follows:
-
-        - rho_ref.out: SCF converged electron density on real-space grid
-        - rho_rebuilt.out: electron density rebuilt from RI coefficients, on
-          real-space grid.
-        - partition_tab.out: the tabulated partition function - i.e. integration
-          weights for the grid points on which the real-space fields are
-          evaluated.
-
-    Alternatively, the SCF converged density and rebuilt density may be saved
-    under filenames 'rho_ref_xxxx.out' and 'rho_rebuilt_xxxx.out'
-    respectively, corresponding to, for example, the mod squared 'densities' of
-    a single molecular orbital. In this case, the keyword argument `ri_calc_idx`
-    should be passed, specifying the integer 'xxxx' in the filenames.
-
-    :param aims_output_dir: str for the absolute path to the directory
-        containing the AIMS output files from the RI calculation on a single
-        structure using keyword "ri_full_output" set to true.
-    :param ri_calc_idx: optional ``int`` to indicate the index of the AIMS RI
-        calculation within a given AIMS output directory. This may track, for
-        instance, the index of the MO for which the RI calculation was
-        performed.
-
-    :return float: the error in the RI fitted density relative to the SCF
-        converged density.
+    Calculates the absolute error between the target and input scalar fields,
+    integrates this over all space, then divides by the target field integrated
+    over all space (i.e. the number of electrons). Multiplies by 100 and returns
+    this as a % MAE.
     """
-    # Check output directory exists
-    if not os.path.isdir(aims_output_dir):
-        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
-
-    # If a run index is passed (i.e. for different MOs), use this to suffix the
-    # coefficients and projections filenames. The overlap matrix only depends on
-    # the fixed basis set definition, so does not need to be suffixed.
-    ri_calc_suffix = "" if ri_calc_idx is None else f"_{int(ri_calc_idx):04d}"
-
-    # Check required files exist
-    req_files = [
-        f"rho_ref{ri_calc_suffix}.out",
-        f"rho_rebuilt{ri_calc_suffix}.out",
-        "partition_tab.out",
-    ]
-    for req_file in req_files:
-        if not os.path.exists(os.path.join(aims_output_dir, req_file)):
-            raise FileNotFoundError(
-                f"The file {req_file} does not exist in {aims_output_dir}."
-            )
-
-    # Load the real-space data. Each row corresponds to x, y, z coordinates
-    # followed by the value. The files loaded, respectively, are 1) SCF
-    # converged electron density, 2) RI fitted (rebuilt) electron density, 3)
-    # Tabulated partition function.
-    rho_ref, rho_ri, partition = [
-        np.loadtxt(os.path.join(aims_output_dir, req_file)) for req_file in req_files
-    ]
-
-    # Check the xyz coordinates on each row are exactly equivalent
-    assert np.all(rho_ref[:, :3] == rho_ri[:, :3]) and np.all(
-        rho_ref[:, :3] == partition[:, :3]
+    if not np.all(input[:, :3] == grid[:, :3]):
+        raise ValueError(
+            "grid points not equivalent between input scalar field and integration weights"
+        )
+    if not np.all(target[:, :3] == grid[:, :3]):
+        raise ValueError(
+            "grid points not equivalent between target scalar field and integration weights"
+        )
+    return (
+        100
+        * np.dot(np.abs(input[:, 3] - target[:, 3]), grid[:, 3])
+        / np.dot(target[:, 3], grid[:, 3])
     )
-
-    # Now just slice to keep only the final column of data from each file, as
-    # this is the only bit we're interested in
-    rho_ref = rho_ref[:, 3]
-    rho_ri = rho_ri[:, 3]
-    partition = partition[:, 3]
-
-    # Get the absolute residual error between the SCF and fitted densities
-    error = np.abs(rho_ri - rho_ref)
-
-    # Calculate and return the relative error (normalized by the number of electrons)
-    return np.dot(error, partition) / np.dot(rho_ref, partition)
-
-
-def df_error_by_ks_orb_prob_dens_sum(
-    aims_output_dir: str,
-    ks_orb_idxs: Sequence[int],
-    occs: Sequence[float],
-    ref_total_density: str,
-    ks_orb_prob_dens: str,
-    ks_orb_weights: Optional[Sequence[float]] = None,
-) -> float:
-    """
-    First constructs a total electron density from an occupation-weighted sum of
-    the real-space KS-orbital probability densities, and then calculates the
-    error in this density relative to a reference total electron density. A
-    returned value of 1 corresponds to an error of 100%.
-
-    Requires input of the KS-orbital indices (running from 1 to n_states
-    inclusive) in the `ks_orb_idxs` argument. Also requires input of the
-    occupation numbers of each orbital in the `occs` argument. The KS-orbitals
-    may be any set of orbitals that sum to the total density, for instance the
-    KS-orbitals decomposed (or not) by spin state and k-point.
-
-    The reference total electron density can be either the SCF converged total
-    density stored in the file "rho_ref.out", or the RI fitted total density in
-    file "rho_rebuilt.out". These options are controlled by setting
-    `ref_total_density` to "SCF" or "RI" respectively.
-
-    The molecular orbital probabilty densities used to construct the total
-    density can be either the SCF converged probability densities stored in
-    files "rho_ref_xxxx.out", or the RI fitted probability densities in files
-    "rho_rebuilt_xxxx.out". These options are also controlled by setting
-    `ks_orb_prob_dens` to "SCF" or "RI" respectively. "xxxx" points to a string
-    suffix corresponding to the each of the KS-orbital indices passed in
-    `ks_orb_idxs`.
-
-    Also required is that the file "partition_tab.out" is present in
-    `aims_output_dir`. This contains the integration weights for each grid point
-    in real space.
-
-    :param aims_output_dir: str for the absolute path to the directory
-        containing the AIMS output files.
-    :param ks_orb_idxs: list of ``int`` to indicate the KS-orbital indices for
-        which probability densities exist.
-    :param occs: list of ``float`` to indicate the occupation number of each
-        KS-orbital in `ks_orb_idxs`.
-    :param ref_total_density: ``str`` to indicate the reference total electron
-        density to which the error in the other density is calculated. Must be
-        either "SCF" or "RI".
-    :param ks_orb_prob_dens: ``str`` to indicate the type of KS-orbital
-        probability densities to use to construct the total density and compare
-        to the reference total density. Must be either "SCF" or "RI".
-    :param ks_orb_weights: optional ``list`` of ``float`` to indicate the
-        weighting for each KS-orbital. This is typically used to correct the
-        occupation number for different k-points.
-
-    :return float: the error in the RI fitted density relative to the SCF
-        converged density. A value of 1 corresponds to a 100% error.
-    """
-    # Check output directory exists
-    if not os.path.isdir(aims_output_dir):
-        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
-
-    for arg in [ref_total_density, ks_orb_prob_dens]:
-        if arg not in ["SCF", "RI"]:
-            raise ValueError(f"Invalid argument {arg} passed. Should be 'SCF' or 'RI'.")
-
-    if ks_orb_weights is None:
-        ks_orb_weights = [1.0] * len(ks_orb_idxs)
-
-    # Load the reference total density
-    if ref_total_density == "SCF":
-        rho_ref = np.loadtxt(os.path.join(aims_output_dir, "rho_ref.out"))
-    else:
-        assert ref_total_density == "RI"
-        rho_ref = np.loadtxt(os.path.join(aims_output_dir, "rho_rebuilt.out"))
-
-    # Load the integration weights
-    partition = np.loadtxt(os.path.join(aims_output_dir, "partition_tab.out"))
-    assert np.all(partition[:, :3] == rho_ref[:, :3])
-
-    # Loop over MO indices and load the KS-orbital probability densities
-    ks_orb_prob_dens_summed = []
-    for ks_orb_idx, occ, weight in zip(ks_orb_idxs, occs, ks_orb_weights):
-        if ks_orb_prob_dens == "SCF":
-            kso_a = np.loadtxt(
-                os.path.join(aims_output_dir, f"rho_ref_{int(ks_orb_idx):04d}.out")
-            )
-        else:
-            assert ks_orb_prob_dens == "RI"
-            kso_a = np.loadtxt(
-                os.path.join(
-                    aims_output_dir, f"rho_rebuilt_{int(ks_orb_idx):04d}.out"
-                )
-            )
-        # Check that the grid point coords are the same
-        assert np.all(kso_a[:, :3] == rho_ref[:, :3])
-
-        # Calculate and store the MO density (i.e. probability density *
-        # occupation)
-        ks_orb_prob_dens_summed.append(weight * occ * kso_a[:, 3])
-
-    # Sum the MO densities at each grid point
-    ks_orb_prob_dens_summed = np.sum(ks_orb_prob_dens_summed, axis=0)
-
-    # Now it's confirmed that the grid point coordinates are consistent, throw
-    # away the grid points for the ref total density and integration weights
-    rho_ref = rho_ref[:, 3]
-    partition = partition[:, 3]
-
-    # Get the absolute residual error between the ref and mo-built densities
-    error = np.abs(ks_orb_prob_dens_summed - rho_ref)
-
-    # Calculate and return the relative error (normalized by the number of electrons)
-    return np.dot(error, partition) / np.dot(rho_ref, partition)
 
 
 def process_aims_ri_results(
     frame: ase.Atoms,
     aims_output_dir: str,
     process_total_density: bool = True,
-    process_what: Sequence[str] = None,
-    ri_calc_idxs: Optional[Sequence[int]] = [],
+    process_what: List[str] = None,
+    ri_calc_idxs: Optional[List[int]] = [],
+    structure_idx: Optional[int] = None,
+    save_numpy: bool = False,
 ) -> None:
     """
     Calls a series of functions to process the results of an AIMS RI calculation
@@ -773,8 +628,8 @@ def process_aims_ri_results(
     dict is pickled to file "calc.pickle".
 
     Then, the RI basis set coefficients, projections, and overlap matrix are
-    processed and saved as numpy arrays "c.npy", "w.npy", and "s.npy"
-    respectively.
+    processed and saved as numpy arrays if `save_numpy` is true, under filenames
+    "ri_coeffs.npy", "ri_projs.npy", and "ri_ovlp.npy" respectively.
 
     If `ri_calc_idxs` is passed, indicating the indices of the RI calculation
     within the main AIMS calculation, (1-indexed) the processed coefficients and
@@ -785,38 +640,73 @@ def process_aims_ri_results(
     single basis set definition, such that the overlap matrix is fixed
     regardless of the number of RI fittings that have taken place.
 
+    If passed, `structure_idx` is used as metadata in the constructed TensorMap.
+
     :param frame: the ASE.atoms frame for which the AIMS RI calculation was
         performed.
     :param aims_output_dir: the path to the directory containing the AIMS output
         files.
-    :param ri_calc_idx: optional ``int`` to indicate the index of the AIMS RI
-        calculation within a given AIMS output directory. This may track, for
+    :param process_total_density: optional ``bool`` indicating whether the total
+        density should be processed. If True, files with no ri_file_suffix will
+        be processed.
+    :param process_what: optional list of strings indicating which data to
+        process, of "coeffs", "projs", and "ovlp". If None, all data is
+        processed.
+    :param ri_calc_idxs: optional list of int to indicate the index of the AIMS
+        RI calculation within a given AIMS output directory. This may track, for
         instance, the index of the MO for which the RI calculation was
-        performed.
+        performed. These calculations are assumed to be run on the same system
+        and with the same settings - i.e. for a fixed basis set definition and
+        overlap matrix.
+    :param structure_idx: optional ``int`` to indicate the index of the
+        structure in the dataset. This is used as metadata in the constructed
+        TensorMap.
+    :param save_numpy: optional ``bool`` indicating whether the processed data
+        should be saved as numpy arrays (the intermediate format) as well as
+        TensorMaps. If False, the data is saved only in TensorMap format.
     """
     # Create a directory for the processed data
     processed_dir = os.path.join(aims_output_dir, "processed")
     if not os.path.exists(processed_dir):
         os.mkdir(processed_dir)
 
-    # Parse calc info
-    calc = parse_aims_out(aims_output_dir)
-    # if not calc["scf"]["converged"]:
-    #     io.pickle_dict(os.path.join(processed_dir, "calc.pickle"), calc)
-    #     raise ValueError("SCF did not converge")
+    # Parse aims.out
+    aims_out = parse_aims_out(aims_output_dir)
 
     # Parse basis set info
     lmax, nmax = extract_basis_set_info(frame, aims_output_dir)
-    calc["lmax"] = lmax
-    calc["nmax"] = nmax
-    calc["df_error"] = {}
+
+    # Parse basis set idx ordering
+    idx_ordering = np.loadtxt(
+        os.path.join(aims_output_dir, "product_basis_idxs.out"), dtype=int
+    )
+    aims_out.update(
+        {
+            "basis_set": {
+                "def": {"lmax": lmax, "nmax": nmax},
+                "idxs": idx_ordering,
+            }
+        }
+    )
 
     # Parse KS orbital information
     if os.path.exists(os.path.join(aims_output_dir, "ks_orbital_info.out")):
-        calc["ks_orbitals"] = get_ks_orbital_info(aims_output_dir)
-        calc["num_ks_orbitals"] = len(calc["ks_orbitals"].keys())
-        assert calc["num_ks_orbitals"] == (
-            calc["num_ks_states"] * calc["num_spin_states"] * calc["num_k_points"]["actual"]
+        aims_out.update(
+            {
+                "ks_orbitals": get_ks_orbital_info(
+                    os.path.join(aims_output_dir, "ks_orbital_info.out"), as_array=True
+                )
+            }
+        )
+        aims_out.update({"num_ks_orbitals": aims_out["ks_orbitals"].shape[0]})
+        if aims_out.get("num_k_points") is not None:
+            n_kpts = aims_out["num_k_points"]["actual"]
+        else:
+            n_kpts = 1
+        assert aims_out["num_ks_orbitals"] == (
+            aims_out["num_ks_states"]
+            * aims_out["num_spin_states"]
+            * n_kpts
         )
 
     # Now perform processing that is dependent on the RI calculation index
@@ -834,15 +724,23 @@ def process_aims_ri_results(
     if process_what is None:
         process_what = ["coeffs", "projs", "ovlp"]
 
-    process_overlap_matrix = True
+    aims_out["df_error_percent"] = {}
+    grid = np.loadtxt(os.path.join(aims_output_dir, "partition_tab.out"))
     for iteration_i, ri_calc_idx in enumerate(ri_calc_idxs):
+        # If a run index is passed (i.e. for different KSOs), use this to suffix the
+        # coefficients and projections filenames. The overlap matrix only depends on
+        # the fixed basis set definition, so does not need to be suffixed.
+        ri_calc_suffix = "" if ri_calc_idx is None else f"_{int(ri_calc_idx):04d}"
 
-        # Calculate the density fitting error
-        calc["df_error"][
+        # Calculat edensity fitting error
+        aims_out["df_error_percent"][
             "total" if ri_calc_idx is None else ri_calc_idx
-        ] = calc_density_fitting_error(
-            aims_output_dir,
-            ri_calc_idx=ri_calc_idx,
+        ] = get_percent_mae_between_fields(
+            input=np.loadtxt(os.path.join(aims_output_dir, f"rho_ri{ri_calc_suffix}.out")),
+            target=np.loadtxt(
+                os.path.join(aims_output_dir, f"rho_ref{ri_calc_suffix}.out")
+            ),
+            grid=grid,
         )
 
         # Only process the overlap matrix once
@@ -856,22 +754,46 @@ def process_aims_ri_results(
             process_what=process_what,
         )
 
-        # If a run index is passed (i.e. for different MOs), use this to suffix the
-        # coefficients and projections filenames. The overlap matrix only depends on
-        # the fixed basis set definition, so does not need to be suffixed.
-        ri_calc_suffix = "" if ri_calc_idx is None else f"_{int(ri_calc_idx):04d}"
-
         # Save to file
         if "coeffs" in process_what:
-            np.save(os.path.join(processed_dir, f"ri_coeffs{ri_calc_suffix}.npy"), coeffs)
+            if save_numpy:
+                np.save(
+                    os.path.join(processed_dir, f"ri_coeffs{ri_calc_suffix}.npy"),
+                    coeffs,
+                )
+            # Convert to metatensor and save
+            coeffs = convert.coeff_vector_ndarray_to_tensormap(
+                frame, coeffs, lmax, nmax, structure_idx=structure_idx
+            )
+            metatensor.save(
+                os.path.join(processed_dir, f"ri_coeffs{ri_calc_suffix}.npz"), coeffs
+            )
         else:
             assert coeffs is None
         if "projs" in process_what:
-            np.save(os.path.join(processed_dir, f"ri_projs{ri_calc_suffix}.npy"), projs)
+            if save_numpy:
+                np.save(
+                    os.path.join(processed_dir, f"ri_projs{ri_calc_suffix}.npy"), projs
+                )
+            # Convert to metatensor and save
+            projs = convert.coeff_vector_ndarray_to_tensormap(
+                frame, projs, lmax, nmax, structure_idx=structure_idx
+            )
+            metatensor.save(
+                os.path.join(processed_dir, f"ri_projs{ri_calc_suffix}.npz"), projs
+            )
         else:
             assert projs is None
         if "ovlp" in process_what:
-            np.save(os.path.join(processed_dir, "ri_ovlp.npy"), ovlp)
+            if save_numpy:
+                np.save(os.path.join(processed_dir, "ri_ovlp.npy"), ovlp)
+            # Convert to metatensor, drop redundant blocks, and save
+            ovlp = convert.overlap_matrix_ndarray_to_tensormap(
+                frame, ovlp, lmax, nmax, structure_idx=structure_idx
+            )
+            ovlp = convert.overlap_drop_redundant_off_diagonal_blocks(ovlp)
+            metatensor.save(os.path.join(processed_dir, "ri_ovlp.npz"), ovlp)
+
         else:
             assert ovlp is None
 
@@ -879,7 +801,7 @@ def process_aims_ri_results(
         del coeffs, projs, ovlp
 
     # Pickle calc info
-    io.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), calc)
+    io.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), aims_out)
 
     return
 
@@ -888,56 +810,42 @@ def process_aims_ri_results(
 
 
 def coeff_vector_ndarray_to_aims_coeffs(
-    aims_output_dir: str, coeffs: np.ndarray, save_dir: Optional[str] = None
+    coeffs: np.ndarray, basis_set_idxs: np.ndarray, save_dir: Optional[str] = None
 ) -> np.ndarray:
     """
     Takes a vector of RI coefficients in the standard order convention and
     converts it to the AIMS format.
 
-    This involves reversing the order of the  coefficients contained in
+    This involves reversing the order of the basis functions contained in
     product_basis_idxs.out, and undoing the application of the Condon-Shortley
     convention. Essentially, this performs the reverse conversion of the
     :py:func:`process_aux_basis_func_data` function in this
     :py:mod:`aims_parser` module, but only applied to the coefficients vector.
 
-    This function requires that the file product_basis_idxs.out exists in the
-    directory `aims_output_dir`.
+    ``basis_set_idxs`` must be passed as a 2D numpy array containing the
+    information read directly from file "product_basis_idxs.out". Columns
+    correspond to, respectively: the auxiliary basis function index, atom index,
+    angular momentum l value, radial channel index, and the angular momentum
+    component m value.
 
-    If `save_dir` is not None, the converted coefficients are saved to this
+    If `save_dir` is passed, the converted coefficients are saved to this
     directory under the filename "ri_coeffs.in", in the AIMS output file format
     for this data type - i.e. one value per line. The coefficients saved under
     this filename allow the RI fitting procedure to be restarted from them using
     the AIMS keyword "ri_fit_rebuild_from_coeffs".
 
-    :param aims_output_dir: str, absolute path to the directory containing the
-        AIMS calculation output files.
     :param coeffs: np.ndarray, vector of RI coefficients in the standard order
         convention.
+    :param basis_set_idxs: a 2D numpy array containing the basis set indices are
+        their ordering, as read driectly from the file "product_basis_idxs.out"
+        file output by AIMS using the "ri_fit_*" keywords.
     :param save_dir: optional str, the absolute path to the directory to save
         the coefficients to. If specified, they are saved as one coefficient per
         line under the filename "ri_coeffs.in".
 
     :return np.ndarray: vector of RI coefficients in the AIMS format.
     """
-    # Check various directories and paths exist
-    if not os.path.isdir(aims_output_dir):
-        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
-    if not os.path.exists(os.path.join(aims_output_dir, "product_basis_idxs.out")):
-        raise FileNotFoundError(
-            f"The file product_basis_idxs.out does not exist in {aims_output_dir}."
-        )
-    if save_dir is not None:
-        if not os.path.exists(save_dir):
-            os.mkdir(save_dir)
-
-    # Load the auxiliary/product basis function (ABF) information. This is 2D
-    # array where columns correspond to, respectively, the auxiliary basis
-    # function index, atom index, angular momentum l value, radial channel
-    # index, and the angular momentum component m value.
-    abf_info = np.loadtxt(
-        os.path.join(aims_output_dir, "product_basis_idxs.out"),
-        dtype=int,
-    )
+    abf_info = basis_set_idxs.copy()
     abf_idxs = abf_info[:, 0]
     abf_idxs -= 1  # Convert to zero indexing
 
@@ -956,6 +864,8 @@ def coeff_vector_ndarray_to_aims_coeffs(
     # Save the coefficient to file "ri_restart_coeffs.out" if `save_dir`
     # specified.
     if save_dir is not None:
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
         np.savetxt(os.path.join(save_dir, "ri_coeffs.in"), aims_coeffs)
 
     return aims_coeffs

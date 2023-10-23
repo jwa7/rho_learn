@@ -1,6 +1,7 @@
 """
 Module for user-defined functions.
 """
+import os
 from typing import List
 
 import ase
@@ -10,6 +11,9 @@ import metatensor
 import rascaline
 from metatensor import Labels, TensorMap
 from rascaline.utils import clebsch_gordan
+
+from rhocalc import convert
+from rhocalc.aims import aims_calc, aims_parser
 
 
 def _template_descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
@@ -70,15 +74,63 @@ def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
     return lsoap
 
 
-def target_builder(target: TensorMap, **kwargs):
+def target_builder(
+    structure_idxs: List[int],
+    frames: List[ase.Atoms],
+    predictions: List[TensorMap],
+    **kwargs
+):
     """
     Takes the RI coefficients predicted by the model. Converts it from TensorMap
     to numpy format, reorders the array according to the AIMS convention, then
     rebuilds the scalar field by calling AIMS.
-
-    Calls AIMS to output the scalar field rebuilt from the RI coefficients, both
-    on the AIMS and CUBE grids. Also outputs the integration weights.
     """
-    
+    calcs = {
+        A: {"atoms": frame, "run_dir": kwargs["save_dir"](A)}
+        for A, frame in zip(structure_idxs, frames)
+    }
 
-    return target
+    # Convert to a list of numpy arrays
+    for A, frame, pred in zip(structure_idxs, frames, predictions):
+        pred_np = convert.coeff_vector_tensormap_to_ndarray(
+            frame=frame,
+            tensor=pred,
+            lmax=kwargs["basis_set"]["def"]["lmax"],
+            nmax=kwargs["basis_set"]["def"]["nmax"],
+        )
+        # Convert to AIMS ordering and save to "ri_coeffs.in"
+        pred_aims = aims_parser.coeff_vector_ndarray_to_aims_coeffs(
+            coeffs=pred_np,
+            basis_set_idxs=kwargs["basis_set"]["idxs"],
+            save_dir=kwargs["save_dir"](A),
+        )
+
+    # Run AIMS to build the target scalar field for each structure
+    aims_calc.run_aims_array(
+        calcs=calcs,
+        aims_path=kwargs["aims_path"],
+        aims_kwargs=kwargs["aims_kwargs"],
+        sbatch_kwargs=kwargs["sbatch_kwargs"],
+        run_dir=kwargs["save_dir"],
+    )
+    
+    # Wait until all AIMS calcs have finished, then read in and return the
+    # target scalar fields
+    all_finished = False
+    while not all_finished:
+        calcs_finished = []
+        for A in structure_idxs:
+            aims_out_path = os.path.join(kwargs["save_dir"](A), "aims.out")
+            if os.path.exists(aims_out_path):
+                with open(aims_out_path, "r") as f:
+                    # Basic check to see if AIMS calc has finished
+                    calcs_finished.append("Leaving FHI-aims." in f.read())
+            else:
+                calcs_finished.append(False)
+        all_finished = np.all(calcs_finished)
+
+    targets = []
+    for A in structure_idxs:
+        targets.append(np.loadtxt(os.path.join(kwargs["save_dir"](A), "rho_rebuilt.out")))
+
+    return targets

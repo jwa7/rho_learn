@@ -261,15 +261,35 @@ class RhoModel(torch.nn.Module):
         Sets the kwargs needed for calling the function
         :py:func:`descriptor_builder`.
         """
-        # Also required for descriptor generation are the global species.
-        descriptor_kwargs.update(
-            {
-                "global_species": np.sort(
-                    np.unique(self._in_metadata.keys.column("species_center"))
-                )
-            }
-        )
+        if descriptor_kwargs is not None:
+            # Also required for descriptor generation are the global species.
+            descriptor_kwargs.update(
+                {
+                    "global_species": np.sort(
+                        np.unique(self._in_metadata.keys.column("species_center"))
+                    )
+                }
+            )
         self._descriptor_kwargs = descriptor_kwargs
+
+    def set_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`descriptor_builder`.
+        """
+        self._set_descriptor_kwargs(descriptor_kwargs)
+
+    def update_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        if self._descriptor_kwargs is not None:
+            tmp_descriptor_kwargs = self._descriptor_kwargs.copy()
+            tmp_descriptor_kwargs.update(descriptor_kwargs)
+        else:
+            tmp_descriptor_kwargs = descriptor_kwargs
+        self._set_descriptor_kwargs(tmp_descriptor_kwargs)
 
     @property
     def target_kwargs(self) -> dict:
@@ -281,6 +301,25 @@ class RhoModel(torch.nn.Module):
         :py:func:`target_builder`.
         """
         self._target_kwargs = target_kwargs
+
+    def set_target_kwargs(self, target_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        self._set_target_kwargs(target_kwargs)
+
+    def update_target_kwargs(self, target_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        if self._target_kwargs is not None:
+            tmp_target_kwargs = self._target_kwargs.copy()
+            tmp_target_kwargs.update(target_kwargs)
+        else:
+            tmp_target_kwargs = target_kwargs
+        self._set_target_kwargs(tmp_target_kwargs)
 
     def parameters(self):
         """
@@ -371,8 +410,9 @@ class RhoModel(torch.nn.Module):
 
     def predict(
         self,
-        input: Optional[TensorMap] = None,
-        frames: Optional[Sequence[ase.Atoms]] = None,
+        frames: Sequence[ase.Atoms],
+        structure_idxs: Optional[Sequence[int]] = None,
+        descriptor: Optional[TensorMap] = None,
     ) -> TensorMap:
         """
         Performs inference with no gradient tracking to make a prediction on an
@@ -383,10 +423,9 @@ class RhoModel(torch.nn.Module):
         trained on. In the latter case, the store rascaline hypers are used to
         generate a descriptor for which a prediction is made.
         """
-        # If ASE frames are passed, generate a descriptor
-        if input is None:
-            if frames is None:
-                raise ValueError("one of ``input`` or ``frames`` must be passed")
+        # If the equivariant descriptor `input` is not specified, generate a
+        # descriptor from the ASE frames
+        if descriptor is None:
             if self._descriptor_kwargs is None:
                 raise ValueError(
                     "if making a prediction on ASE ``frames``,"
@@ -395,22 +434,84 @@ class RhoModel(torch.nn.Module):
                     " `_set_descriptor_kwargs` to set these and try again."
                 )
 
+            if structure_idxs is None:
+                structure_idxs = np.arange(len(frames))
+
             # Build the descriptor
-            input = predictor.descriptor_builder(
-                frames, torch_settings=self._torch_settings, **self._descriptor_kwargs
-            )
+            descriptors = []
+            for A, frame in zip(structure_idxs, frames):
+                descriptor = predictor.descriptor_builder(
+                    [frame],
+                    torch_settings=self._torch_settings,
+                    **self._descriptor_kwargs,
+                )
+                # Modify the structure index
+                descriptor = metatensor.remove_dimension(
+                    descriptor, axis="samples", name="structure"
+                )
+                descriptor = metatensor.insert_dimension(
+                    descriptor,
+                    axis="samples",
+                    name="structure",
+                    values=np.array([A]),
+                    index=0,
+                )
+                descriptors.append(descriptor)
 
-        if not isinstance(input, TensorMap):
-            raise TypeError("``input`` must be a TensorMap")
+        # Used the specified descriptor
+        else:
+            if not isinstance(descriptor, TensorMap):
+                raise TypeError("``descriptor`` must be a TensorMap")
 
-        # Make a prediction on the input TensorMap
+            # Get the unique structure indices present in the passed descriptor
+            uniq_structure_idxs = metatensor.unique_metadata(
+                descriptor, "samples", "structure"
+            ).values.reshape(-1)
+
+            # Check the structure indices
+            if structure_idxs is None:
+                structure_idxs = np.arange(len(frames))
+                if not np.all(np.sort(structure_idxs.reshape(-1)) == np.sort(uniq_structure_idxs)):
+                    raise ValueError(
+                        "``structure_idxs`` were not specified so inferred as"
+                        f" {structure_idxs}. These do not match those found in"
+                        f" ``descriptor`` ({uniq_structure_idxs})."
+                    )
+            else:
+                if not np.all(np.sort(structure_idxs) == np.sort(uniq_structure_idxs)):
+                    raise ValueError(
+                        f"structure indices found in ``descriptor`` ({uniq_structure_idxs})"
+                        f" do not match those passed in ``structure_idxs`` ({structure_idxs})."
+                    )
+
+            # Split the TensorMap by structure index
+            descriptors = []
+            for A in structure_idxs:
+                descriptors.append(
+                    metatensor.slice(
+                        descriptor,
+                        axis="samples",
+                        labels=Labels(
+                            names=["structure"], values=np.array([A]).reshape(-1, 1)
+                        ),
+                    )
+                )
+
+        # Make predictions with the model and tranform to give the final target
+        predictions = []
         with torch.no_grad():
-            output = self(input, check_args=True)
+            # Iterate over structures
+            for A, frame, descriptor in zip(structure_idxs, frames, descriptors):
+                # Make prediction with model
+                predictions.append(self(descriptor, check_args=True))
 
-        # Transform the prediction
-        output = predictor.target_builder(output, frames, **self._target_kwargs)
+            # Transform the prediction
+            if self._target_kwargs is not None:
+                targets = predictor.target_builder(
+                    structure_idxs, frames, predictions, **self._target_kwargs
+                )
 
-        return output
+        return predictions, targets
 
 
 class _LinearModel(torch.nn.Module):

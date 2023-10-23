@@ -3,7 +3,7 @@ Module for creating metatensor/torch datasets and dataloaders.
 """
 import gc
 import os
-from typing import Sequence, Optional, Tuple, Union, List
+from typing import Sequence, Optional, Tuple, Union, List, Callable
 
 import numpy as np
 import torch
@@ -17,16 +17,9 @@ from rholearn import loss
 
 class RhoData(torch.utils.data.Dataset):
     """
-    Custom torch Dataset class for loading input/descriptors (i.e. lambda-SOAP)
-    and output/features (i.e. electron density coefficients) data from disk. If
-    evaluating the loss of non-orthogonal basis functions using overlap-type
-    matrices, the directory containing these matrices must also be specified.
-
-    In each of the directories `input_dir`, `output_dir`, and `overlap_dir`
-    (though they could be the same directory), there must be subdirectories
-    named according to the indices in `idxs`. The descriptors, coefficients, and
-    overlap matrices (if applicable) must be stored under the respective
-    filenames passed in `filenames`, in metatensor TensorMap (.npz) format.
+    Custom torch Dataset class for loading input/descriptors and output/targets
+    data (in TensorMap format) from disk. Auxiliary/supporting data, for
+    instance those required for loss evaluation, can also be loaded.
 
     `calc_out_train_inv_means` passed as True will calculate the mean baseline
     of the invariant blocks of the output training data.
@@ -39,19 +32,15 @@ class RhoData(torch.utils.data.Dataset):
         dataset.
     :param train_idxs: Sequence[int], Sequence of indices corresponding to the
         training data.
-    :param input_dir: str, absolute path to directory containing
-        input/descriptor (i.e. lambda-SOAP) data. In this directory, descriptors
-        must be stored at relative path A/{filenames[0]}.npz, where A is the
-        structure index.
-    :param output_dir: str, absolute path to directory containing
-        output/features (i.e. electron density coefficients) data. In this
-        directory, coefficients must be stored at relative path
-        A/{filenames[1]}.npz, where A is the structure index.
-    :param overlap_dir: str, absolute path to directory containing overlap-type
-        matrices. Optional, only required if evaluating the loss of
-        non-orthogonal basis functions. In this directory, coefficients must be
-        stored at relative path A/{filenames[2]}.npz, where A is the structure
-        index.
+    :param in_path: Callable, a lambda function whose argument is an int
+        structure index and returned is a str of the absolute path to the
+        input/descriptor TensorMap for that structure.
+    :param out_path: Callable, a lambda function whose argument is an int
+        structure index and and returned is a str of the absolute path to the
+        output/target TensorMap for that structure.
+    :param aux_path: Callable, a lambda function whose argument is an int
+        structure index and returned is a str of the absolute path to the
+        auxiliary/supporting TensorMap for that structure.
     :param keep_in_mem: bool, whether to keep the data in memory. If true, all
         data is lazily loaded upon initialization and stored in a dict indexed
         by `idxs`. When __getitem__ is called, the dict is just accessed from
@@ -62,11 +51,6 @@ class RhoData(torch.utils.data.Dataset):
     :param calc_out_train_std_dev: bool indicating whether to calculate the
         standard deviation of the output training data. If true, the standard
         deviation is calculated and stored in the attribute `out_train_std_dev`.
-    :param filenames: Sequence[str], Sequence of strings indicating the filename
-        convention for the input/output/overlap TensorMaps respectively. By
-        default the filenames are set to ["x", "c", "s"], meaning for each
-        structure indexed by A, these files would live at relative paths
-        A/x.npz, A/c.npz, and A/s.npz, respectively.
     **torch_kwargs: dict of kwargs for loading TensorMaps to torch backend.
         `dtype`, `device`, and `requires_grad` are required.
     """
@@ -75,13 +59,12 @@ class RhoData(torch.utils.data.Dataset):
         self,
         all_idxs: Sequence[int],
         train_idxs: Sequence[int],
-        input_dir: str,
-        output_dir: str,
-        overlap_dir: Optional[str] = None,
+        in_path: Callable,
+        out_path: Callable,
+        aux_path: Optional[Callable] = None,
         keep_in_mem: bool = True,
         calc_out_train_inv_means: bool = True,
         calc_out_train_std_dev: bool = False,
-        filenames: Optional[Sequence[str]] = ["lsoap", "ri_coeffs", "ri_ovlp"],
         **torch_kwargs,
     ):
         super(RhoData, self).__init__()
@@ -90,46 +73,19 @@ class RhoData(torch.utils.data.Dataset):
         RhoData._check_input_args(
             all_idxs,
             train_idxs,
-            input_dir,
-            output_dir,
-            overlap_dir,
+            in_path,
+            out_path,
+            aux_path,
             calc_out_train_std_dev,
         )
 
         # Assign attributes
         self._all_idxs = all_idxs
         self._train_idxs = train_idxs
-        self._input_dir = input_dir
-        self._output_dir = output_dir
-        self._overlap_dir = overlap_dir
-        self._filenames = filenames
+        self._in_path = in_path
+        self._out_path = out_path
+        self._aux_path = aux_path
         self._torch_kwargs = torch_kwargs
-
-        # Set the data directories and check files exist
-        self.in_paths = {
-            idx: os.path.join(self._input_dir, f"{idx}/{filenames[0]}.npz")
-            for idx in self._all_idxs
-        }
-        for path in self.in_paths.values():
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"Descriptor coeffs at {path} does not exist.")
-        self.out_paths = {
-            idx: os.path.join(self._output_dir, f"{idx}/{filenames[1]}.npz")
-            for idx in self._all_idxs
-        }
-        for path in self.out_paths.values():
-            if not os.path.exists(path):
-                raise FileNotFoundError(
-                    f"Features / electron density coeffs at {path} does not exist."
-                )
-        if overlap_dir is not None:
-            self.overlap_paths = {
-                idx: os.path.join(self._overlap_dir, f"{idx}/{filenames[2]}.npz")
-                for idx in self._all_idxs
-            }
-            for path in self.overlap_paths.values():
-                if not os.path.exists(path):
-                    raise FileNotFoundError(f"Overlap matrix at {path} does not exist.")
 
         # Lazily load data upon initialization if requested
         if keep_in_mem:
@@ -154,9 +110,9 @@ class RhoData(torch.utils.data.Dataset):
     def _check_input_args(
         all_idxs: Sequence[int],
         train_idxs: Sequence[int],
-        input_dir: str,
-        output_dir: str,
-        overlap_dir: Optional[str],
+        in_path: Callable,
+        out_path: Callable,
+        aux_path: Callable,
         calc_out_train_std_dev: bool,
     ):
         """Checks args to the constructor."""
@@ -164,50 +120,51 @@ class RhoData(torch.utils.data.Dataset):
             raise ValueError(
                 "all the idxs passed in `train_idxs` must be in `all_idxs`"
             )
-        if not os.path.exists(input_dir):
-            raise NotADirectoryError(
-                f"Input/descriptor data directory {input_dir} does not exist."
-            )
-        if not os.path.exists(output_dir):
-            raise NotADirectoryError(
-                f"Input/descriptor data directory {output_dir} does not exist."
-            )
-        if overlap_dir is not None:
-            if not os.path.exists(overlap_dir):
-                raise NotADirectoryError(
-                    f"Input/descriptor data directory {overlap_dir} does not exist."
+        for idx in all_idxs:
+            if not os.path.exists(in_path(idx)):
+                raise FileNotFoundError(
+                    f"Input/descriptor TensorMap at {in_path(idx)} does not exist."
                 )
-        else:
-            if calc_out_train_std_dev:
-                raise ValueError(
-                    "cannot calculate standard deviation of density without"
-                    " specification of the `overlap_dir`"
+            if not os.path.exists(out_path(idx)):
+                raise FileNotFoundError(
+                    f"Output/target TensorMap at {out_path(idx)} does not exist."
                 )
+            if aux_path is not None:
+                if not os.path.exists(aux_path(idx)):
+                    raise FileNotFoundError(
+                        f"Auxiliary/supporting TensorMap at {aux_path(idx)} does not exist."
+                    )
+            else:
+                if calc_out_train_std_dev:
+                    raise ValueError(
+                        "cannot calculate standard deviation of density without"
+                        " specification of the `aux_path`"
+                    )
 
     def __loaditem__(self, idx: int) -> Tuple:
         """
         Loads a data item for the corresponding `idx` from disk and return it in
         a tuple. Returns the idx, and input and output TensorMaps, as well as
-        the overlap TensorMap if applicable.
+        the auxiliary TensorMap if applicable.
         """
         input = metatensor.io.load_custom_array(
-            self.in_paths[idx],
+            self._in_path(idx),
             create_array=metatensor.io.create_torch_array,
         )
         output = metatensor.io.load_custom_array(
-            self.out_paths[idx],
+            self._out_path(idx),
             create_array=metatensor.io.create_torch_array,
         )
         input = metatensor.to(input, "torch", **self._torch_kwargs)
         output = metatensor.to(output, "torch", **self._torch_kwargs)
 
         # Return input/output pair if no overlap matrix required
-        if self._overlap_dir is None:
+        if self._aux_path is None:
             return idx, input, output
 
         # Return overlap matrix if applicable
         overlap = metatensor.io.load_custom_array(
-            self.overlap_paths[idx],
+            self._aux_path(idx),
             create_array=metatensor.io.create_torch_array,
         )
         overlap = metatensor.to(overlap, "torch", **self._torch_kwargs)
@@ -347,12 +304,12 @@ class RhoLoader:
         dataset,
         idxs: np.ndarray,
         batch_size: Optional[int] = None,
-        get_overlaps: bool = False,
+        get_aux_data: bool = False,
         **kwargs,
     ):
         self._idxs = idxs
         self._batch_size = batch_size if batch_size is not None else len(idxs)
-        self._get_overlaps = get_overlaps
+        self._get_aux_data = get_aux_data
 
         self.dataloader = torch.utils.data.DataLoader(
             dataset,
@@ -374,10 +331,10 @@ class RhoLoader:
                 ...
             ]
 
-        or, if overlap matrices are included, of the form:
+        or, if auxiliary data are included, of the form:
 
             List[
-                # structure_idx, input, output, overlap
+                # structure_idx, input, output, auxiliary
                 List[int, TensorMap, TensorMap, TensorMap], # structure i
                 List[int, TensorMap, TensorMap, TensorMap], # structure j
                 ...
@@ -391,21 +348,21 @@ class RhoLoader:
                 TensorMap # joined output_i, output_j, ...
             ]
 
-        or, if overlap matrices are included:
+        or, if auxiliary data are included:
 
             List[
                 List[int, int, ...] # structure_idx_i, structure_idx_j, ...
                 TensorMap # joined input_i, input_j, ...
-                TensorMap # joined outputs
                 TensorMap # joined output_i, output_j, ...
+                TensorMap # joined aux_i, aux_j, ...
             ]
         """
         # Zip the batch such that data is grouped by the data they represent
         # rather than by idx
         batch = list(zip(*batch))
 
-        # Return the idxs, input, output, and overlaps
-        if self._get_overlaps:
+        # Return the idxs, input, output, and auxiliary data
+        if self._get_aux_data:
             return (
                 batch[0],
                 metatensor.join(batch[1], axis="samples", remove_tensor_name=True),
@@ -649,7 +606,7 @@ def standardize_invariants(
 
 #         If `self.keep_in_mem=False`, the standardized data is written to file
 #         alongside the unstandardized data. In this case, standardized outputs
-#         are stored in `self._output_dir` under filenames
+#         are stored in `self._out_path` under filenames
 #         "{filenames[1]}_std.npz".
 #         """
 #         # Standardize and overwrite the unstd data already in memory
@@ -679,7 +636,7 @@ def standardize_invariants(
 #                 )
 #                 metatensor.save(
 #                     os.path.join(
-#                         self._output_dir, f"{idx}/{self._filenames[1]}_std.npz"
+#                         self._out_path, f"{idx}/{self._filenames[1]}_std.npz"
 #                     )
 #                 )
 #                 del out_std

@@ -50,3 +50,199 @@ def generate_input_geometry_files(
         # filename, ASE will automatically produce an input file that follows
         # AIMS formatting.
         ase.io.write(os.path.join(structure_dir, "geometry.in"), frame)
+
+
+def df_error_by_ks_orb_prob_dens_sum(
+    aims_output_dir: str,
+    ks_orb_idxs: Sequence[int],
+    occs: Sequence[float],
+    ref_total_density: str,
+    ks_orb_prob_dens: str,
+    ks_orb_weights: Optional[Sequence[float]] = None,
+) -> float:
+    """
+    First constructs a total electron density from an occupation-weighted sum of
+    the real-space KS-orbital probability densities, and then calculates the
+    error in this density relative to a reference total electron density. A
+    returned value of 1 corresponds to an error of 100%.
+
+    Requires input of the KS-orbital indices (running from 1 to n_states
+    inclusive) in the `ks_orb_idxs` argument. Also requires input of the
+    occupation numbers of each orbital in the `occs` argument. The KS-orbitals
+    may be any set of orbitals that sum to the total density, for instance the
+    KS-orbitals decomposed (or not) by spin state and k-point.
+
+    The reference total electron density can be either the SCF converged total
+    density stored in the file "rho_ref.out", or the RI fitted total density in
+    file "rho_rebuilt.out". These options are controlled by setting
+    `ref_total_density` to "SCF" or "RI" respectively.
+
+    The molecular orbital probabilty densities used to construct the total
+    density can be either the SCF converged probability densities stored in
+    files "rho_ref_xxxx.out", or the RI fitted probability densities in files
+    "rho_rebuilt_xxxx.out". These options are also controlled by setting
+    `ks_orb_prob_dens` to "SCF" or "RI" respectively. "xxxx" points to a string
+    suffix corresponding to the each of the KS-orbital indices passed in
+    `ks_orb_idxs`.
+
+    Also required is that the file "partition_tab.out" is present in
+    `aims_output_dir`. This contains the integration weights for each grid point
+    in real space.
+
+    :param aims_output_dir: str for the absolute path to the directory
+        containing the AIMS output files.
+    :param ks_orb_idxs: list of ``int`` to indicate the KS-orbital indices for
+        which probability densities exist.
+    :param occs: list of ``float`` to indicate the occupation number of each
+        KS-orbital in `ks_orb_idxs`.
+    :param ref_total_density: ``str`` to indicate the reference total electron
+        density to which the error in the other density is calculated. Must be
+        either "SCF" or "RI".
+    :param ks_orb_prob_dens: ``str`` to indicate the type of KS-orbital
+        probability densities to use to construct the total density and compare
+        to the reference total density. Must be either "SCF" or "RI".
+    :param ks_orb_weights: optional ``list`` of ``float`` to indicate the
+        weighting for each KS-orbital. This is typically used to correct the
+        occupation number for different k-points.
+
+    :return float: the error in the RI fitted density relative to the SCF
+        converged density. A value of 1 corresponds to a 100% error.
+    """
+    # Check output directory exists
+    if not os.path.isdir(aims_output_dir):
+        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
+
+    for arg in [ref_total_density, ks_orb_prob_dens]:
+        if arg not in ["SCF", "RI"]:
+            raise ValueError(f"Invalid argument {arg} passed. Should be 'SCF' or 'RI'.")
+
+    if ks_orb_weights is None:
+        ks_orb_weights = [1.0] * len(ks_orb_idxs)
+
+    # Load the reference total density
+    if ref_total_density == "SCF":
+        rho_ref = np.loadtxt(os.path.join(aims_output_dir, "rho_ref.out"))
+    else:
+        assert ref_total_density == "RI"
+        rho_ref = np.loadtxt(os.path.join(aims_output_dir, "rho_rebuilt.out"))
+
+    # Load the integration weights
+    partition = np.loadtxt(os.path.join(aims_output_dir, "partition_tab.out"))
+    assert np.all(partition[:, :3] == rho_ref[:, :3])
+
+    # Loop over MO indices and load the KS-orbital probability densities
+    ks_orb_prob_dens_summed = []
+    for ks_orb_idx, occ, weight in zip(ks_orb_idxs, occs, ks_orb_weights):
+        if ks_orb_prob_dens == "SCF":
+            kso_a = np.loadtxt(
+                os.path.join(aims_output_dir, f"rho_ref_{int(ks_orb_idx):04d}.out")
+            )
+        else:
+            assert ks_orb_prob_dens == "RI"
+            kso_a = np.loadtxt(
+                os.path.join(
+                    aims_output_dir, f"rho_rebuilt_{int(ks_orb_idx):04d}.out"
+                )
+            )
+        # Check that the grid point coords are the same
+        assert np.all(kso_a[:, :3] == rho_ref[:, :3])
+
+        # Calculate and store the MO density (i.e. probability density *
+        # occupation)
+        ks_orb_prob_dens_summed.append(weight * occ * kso_a[:, 3])
+
+    # Sum the MO densities at each grid point
+    ks_orb_prob_dens_summed = np.sum(ks_orb_prob_dens_summed, axis=0)
+
+    # Now it's confirmed that the grid point coordinates are consistent, throw
+    # away the grid points for the ref total density and integration weights
+    rho_ref = rho_ref[:, 3]
+    partition = partition[:, 3]
+
+    # Get the absolute residual error between the ref and mo-built densities
+    error = np.abs(ks_orb_prob_dens_summed - rho_ref)
+
+    # Calculate and return the relative error (normalized by the number of electrons)
+    return np.dot(error, partition) / np.dot(rho_ref, partition)
+
+
+def calc_density_fitting_error(
+    aims_output_dir: str, ri_calc_idx: Optional[int] = None
+) -> float:
+    """
+    Calculates the error in the RI fitted electron density relative to the SCF
+    converged electron density. A returned value of 1 corresponds to an error of
+    100%.
+
+    The files required for this calculation, that must be present in
+    `aims_output_dir`, are as follows:
+
+        - rho_ref.out: SCF converged electron density on real-space grid
+        - rho_rebuilt.out: electron density rebuilt from RI coefficients, on
+          real-space grid.
+        - partition_tab.out: the tabulated partition function - i.e. integration
+          weights for the grid points on which the real-space fields are
+          evaluated.
+
+    Alternatively, the SCF converged density and rebuilt density may be saved
+    under filenames 'rho_ref_xxxx.out' and 'rho_rebuilt_xxxx.out'
+    respectively, corresponding to, for example, the mod squared 'densities' of
+    a single molecular orbital. In this case, the keyword argument `ri_calc_idx`
+    should be passed, specifying the integer 'xxxx' in the filenames.
+
+    :param aims_output_dir: str for the absolute path to the directory
+        containing the AIMS output files from the RI calculation on a single
+        structure using keyword "ri_full_output" set to true.
+    :param ri_calc_idx: optional ``int`` to indicate the index of the AIMS RI
+        calculation within a given AIMS output directory. This may track, for
+        instance, the index of the MO for which the RI calculation was
+        performed.
+
+    :return float: the error in the RI fitted density relative to the SCF
+        converged density.
+    """
+    # Check output directory exists
+    if not os.path.isdir(aims_output_dir):
+        raise NotADirectoryError(f"The directory {aims_output_dir} does not exist.")
+
+    # If a run index is passed (i.e. for different MOs), use this to suffix the
+    # coefficients and projections filenames. The overlap matrix only depends on
+    # the fixed basis set definition, so does not need to be suffixed.
+    ri_calc_suffix = "" if ri_calc_idx is None else f"_{int(ri_calc_idx):04d}"
+
+    # Check required files exist
+    req_files = [
+        f"rho_ref{ri_calc_suffix}.out",
+        f"rho_rebuilt{ri_calc_suffix}.out",
+        "partition_tab.out",
+    ]
+    for req_file in req_files:
+        if not os.path.exists(os.path.join(aims_output_dir, req_file)):
+            raise FileNotFoundError(
+                f"The file {req_file} does not exist in {aims_output_dir}."
+            )
+
+    # Load the real-space data. Each row corresponds to x, y, z coordinates
+    # followed by the value. The files loaded, respectively, are 1) SCF
+    # converged electron density, 2) RI fitted (rebuilt) electron density, 3)
+    # Tabulated partition function.
+    rho_ref, rho_ri, partition = [
+        np.loadtxt(os.path.join(aims_output_dir, req_file)) for req_file in req_files
+    ]
+
+    # Check the xyz coordinates on each row are exactly equivalent
+    assert np.all(rho_ref[:, :3] == rho_ri[:, :3]) and np.all(
+        rho_ref[:, :3] == partition[:, :3]
+    )
+
+    # Now just slice to keep only the final column of data from each file, as
+    # this is the only bit we're interested in
+    rho_ref = rho_ref[:, 3]
+    rho_ri = rho_ri[:, 3]
+    partition = partition[:, 3]
+
+    # Get the absolute residual error between the SCF and fitted densities
+    error = np.abs(rho_ri - rho_ref)
+
+    # Calculate and return the relative error (normalized by the number of electrons)
+    return np.dot(error, partition) / np.dot(rho_ref, partition)
