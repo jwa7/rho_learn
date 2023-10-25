@@ -3,7 +3,7 @@ Module containing the RhoModel class that makes predictions on TensorMaps.
 """
 import os
 from functools import partial
-from typing import Union, Optional, Sequence, Tuple
+from typing import Union, Optional, List, Tuple, Callable
 import warnings
 
 import ase
@@ -43,9 +43,7 @@ class RhoModel(torch.nn.Module):
         input: TensorMap,
         output: TensorMap,
         bias_invariants: bool,
-        hidden_layer_widths: Optional[
-            Union[Sequence[Sequence[int]], Sequence[int]]
-        ] = None,
+        hidden_layer_widths: Optional[Union[List[List[int]], List[int]]] = None,
         activation_fn: Optional[torch.nn.Module] = None,
         out_train_inv_means: Optional[TensorMap] = None,
         descriptor_kwargs: Optional[dict] = None,
@@ -66,7 +64,7 @@ class RhoModel(torch.nn.Module):
         # Set attributes specific to a nonlinear model
         if self._model_type == "nonlinear":
             self._set_hidden_layer_widths(hidden_layer_widths)
-            self._activation_fn = activation_fn
+            self._set_activation_fn(activation_fn)
 
         # Passing `out_train_inv_means` as a TensorMap will add the training
         # invariant means to the relevant block predictions in the `forward`
@@ -168,32 +166,46 @@ class RhoModel(torch.nn.Module):
         self._biases = biases
 
     @property
-    def hidden_layer_widths(self) -> Sequence:
+    def hidden_layer_widths(self) -> List:
         return self._hidden_layer_widths
 
     def _set_hidden_layer_widths(
-        self, hidden_layer_widths: Union[Sequence[Sequence[int]], Sequence[int]]
+        self, hidden_layer_widths: Union[List[List[int]], List[int]]
     ):
         """
         Sets the hidden layer widths for each block, stored in the
         "_hidden_layer_widths" attribute.
         """
+        if hidden_layer_widths is None:
+            raise ValueError(
+                "if ``model_type`` is nonlinear, ``hidden_layer_widths`` must be passed"
+            )
         # If passed as a single list, set this as the list for every block
-        if isinstance(hidden_layer_widths, Sequence) and isinstance(
+        if isinstance(hidden_layer_widths, List) and isinstance(
             hidden_layer_widths[0], int
         ):
             hidden_layer_widths = [
                 hidden_layer_widths for key in self._in_metadata.keys
             ]
         # Check it is now a list of list of int
-        assert isinstance(hidden_layer_widths, Sequence) and isinstance(
-            hidden_layer_widths[0], Sequence
+        assert isinstance(hidden_layer_widths, List) and isinstance(
+            hidden_layer_widths[0], List
         )
         self._hidden_layer_widths = hidden_layer_widths
 
     @property
     def activation_fn(self) -> str:
         return self._activation_fn
+
+    def _set_activation_fn(self, activation_fn):
+        """
+        Sets the activation function used in the nonlinear model.
+        """
+        if activation_fn is None:
+            raise ValueError(
+                "if ``model_type`` is nonlinear, ``activation_fn`` must be passed"
+            )
+        self._activation_fn = activation_fn
 
     @property
     def models(self) -> torch.nn.ModuleList:
@@ -357,6 +369,7 @@ class RhoModel(torch.nn.Module):
                     self._in_metadata[key],
                     check=["components", "properties"],
                 )
+
             # Get the model
             block_model = self._models[self._in_metadata.keys.position(key)]
 
@@ -388,6 +401,14 @@ class RhoModel(torch.nn.Module):
                 self._out_train_inv_means is not None
                 and key["spherical_harmonics_l"] == 0
             ):
+                if not isinstance(self._out_train_inv_means.block(0), torch.Tensor):
+                    self._out_train_inv_means = metatensor.to(
+                        self._out_train_inv_means,
+                        backend="torch",
+                        requires_grad=False,
+                        dtype=self._torch_settings["dtype"],
+                        device=self._torch_settings["device"],
+                    )
                 inv_means = self._out_train_inv_means.block(
                     spherical_harmonics_l=0, species_center=key["species_center"]
                 )
@@ -410,9 +431,11 @@ class RhoModel(torch.nn.Module):
 
     def predict(
         self,
-        frames: Sequence[ase.Atoms],
-        structure_idxs: Optional[Sequence[int]] = None,
+        structure_idxs: List[int],
+        frames: List[ase.Atoms],
         descriptor: Optional[TensorMap] = None,
+        build_target: bool = True,
+        save_dir: Optional[Callable] = None,
     ) -> TensorMap:
         """
         Performs inference with no gradient tracking to make a prediction on an
@@ -422,7 +445,32 @@ class RhoModel(torch.nn.Module):
         been generated with the same rascaline hypers as the data the model was
         trained on. In the latter case, the store rascaline hypers are used to
         generate a descriptor for which a prediction is made.
+
+        If `build_target` is false, a list of TensorMaps of predictions for each
+        structure in `frames` is returned. If true, a 2-element tuple containing
+        a list of prediction TensorMaps and a list of targets for each structure
+        in `frames` is returned.
+
+        :param build_target: bool. If true, uses the `predictor.target_builder`
+            function along with the `target_kwargs` attribute of the model to
+            transform the prediction TensorMap into the desired target. This
+            may, for instance, involve calling an external QChem code.
+        :param save_dir: callable that returns the directory to save each
+            prediction in, taking a single argument corresponding to the
+            structure index. Only required if `build_target` is true.
         """
+        # Check args
+        if build_target:
+            if self._target_kwargs is None:
+                raise ValueError(
+                    "if ``build_target`` is true, ``target_kwargs`` must be set"
+                    " for the model. Use the setter `set_target_kwargs` to do so."
+                )
+            if save_dir is None:
+                raise ValueError(
+                    "if ``build_target`` is true, ``save_dir`` must be specified"
+                )
+
         # If the equivariant descriptor `input` is not specified, generate a
         # descriptor from the ASE frames
         if descriptor is None:
@@ -434,84 +482,83 @@ class RhoModel(torch.nn.Module):
                     " `_set_descriptor_kwargs` to set these and try again."
                 )
 
-            if structure_idxs is None:
-                structure_idxs = np.arange(len(frames))
-
             # Build the descriptor
-            descriptors = []
-            for A, frame in zip(structure_idxs, frames):
-                descriptor = predictor.descriptor_builder(
-                    [frame],
-                    torch_settings=self._torch_settings,
-                    **self._descriptor_kwargs,
-                )
-                # Modify the structure index
-                descriptor = metatensor.remove_dimension(
-                    descriptor, axis="samples", name="structure"
-                )
-                descriptor = metatensor.insert_dimension(
-                    descriptor,
-                    axis="samples",
-                    name="structure",
-                    values=np.array([A]),
-                    index=0,
-                )
-                descriptors.append(descriptor)
+            descriptor = predictor.descriptor_builder(
+                frames,
+                torch_settings=self._torch_settings,
+                **self._descriptor_kwargs,
+            )
 
-        # Used the specified descriptor
+            # The structure indices in the descriptor TensorMap will be 0, 1,
+            # ..., N_frames by default, according to the order of the structures
+            # passed in frames. These will need to be reindexed to match those
+            # in `structure_idxs` later.
+            actual_structure_idxs = np.arange(len(frames))
+
+        # Check the specified descriptor
         else:
             if not isinstance(descriptor, TensorMap):
                 raise TypeError("``descriptor`` must be a TensorMap")
 
-            # Get the unique structure indices present in the passed descriptor
-            uniq_structure_idxs = metatensor.unique_metadata(
+            # Check the structure indices
+            tmp_stucture_idxs = metatensor.unique_metadata(
                 descriptor, "samples", "structure"
             ).values.reshape(-1)
 
-            # Check the structure indices
-            if structure_idxs is None:
-                structure_idxs = np.arange(len(frames))
-                if not np.all(np.sort(structure_idxs.reshape(-1)) == np.sort(uniq_structure_idxs)):
-                    raise ValueError(
-                        "``structure_idxs`` were not specified so inferred as"
-                        f" {structure_idxs}. These do not match those found in"
-                        f" ``descriptor`` ({uniq_structure_idxs})."
-                    )
-            else:
-                if not np.all(np.sort(structure_idxs) == np.sort(uniq_structure_idxs)):
-                    raise ValueError(
-                        f"structure indices found in ``descriptor`` ({uniq_structure_idxs})"
-                        f" do not match those passed in ``structure_idxs`` ({structure_idxs})."
-                    )
+            err_msg = (
+                f"structure indices found in ``descriptor`` ({tmp_stucture_idxs})"
+                f" do not match those passed in ``structure_idxs`` ({structure_idxs})."
+            )
+            if not np.all(np.sort(tmp_stucture_idxs) == np.sort(structure_idxs)):
+                raise ValueError(err_msg)
 
-            # Split the TensorMap by structure index
-            descriptors = []
-            for A in structure_idxs:
-                descriptors.append(
-                    metatensor.slice(
-                        descriptor,
-                        axis="samples",
-                        labels=Labels(
-                            names=["structure"], values=np.array([A]).reshape(-1, 1)
-                        ),
-                    )
-                )
+            # The actual structure indices present in the descriptor are the
+            # correct ones so will not need modification
+            actual_structure_idxs = structure_idxs
 
-        # Make predictions with the model and tranform to give the final target
-        predictions = []
+        # Make prediction with the model
         with torch.no_grad():
-            # Iterate over structures
-            for A, frame, descriptor in zip(structure_idxs, frames, descriptors):
-                # Make prediction with model
-                predictions.append(self(descriptor, check_args=True))
 
-            # Transform the prediction
-            if self._target_kwargs is not None:
-                targets = predictor.target_builder(
-                    structure_idxs, frames, predictions, **self._target_kwargs
+            prediction = self(descriptor, check_args=True)
+
+            # Split the prediction TensorMap by structure index
+            predictions = []
+            for A, actual_A in zip(structure_idxs, actual_structure_idxs):
+                # Split the TensorMap based on the actual structure index present
+                tmp_pred = metatensor.slice(
+                    prediction,
+                    axis="samples",
+                    labels=Labels(
+                        names=["structure"], 
+                        values=np.array([actual_A]).reshape(-1, 1)
+                    ),
                 )
+                if actual_A != A:  # reindex the structure
+                    tmp_pred = metatensor.remove_dimension(
+                        tmp_pred, axis="samples", name="structure"
+                    )
+                    tmp_pred = metatensor.insert_dimension(
+                        tmp_pred,
+                        axis="samples",
+                        name="structure",
+                        values=np.array([A]),
+                        index=0,
+                    )
+                predictions.append(tmp_pred)
 
-        return predictions, targets
+            if not build_target:  # just return the predicted TensorMap
+                return predictions
+
+            # Now build the target
+            targets = predictor.target_builder(
+                structure_idxs=structure_idxs,
+                frames=frames,
+                predictions=predictions,
+                save_dir=save_dir,
+                **self._target_kwargs,
+            )
+
+            return predictions, targets
 
 
 class _LinearModel(torch.nn.Module):
@@ -580,7 +627,7 @@ class _NonLinearModel(torch.nn.Module):
         out_features: int,
         bias: bool,
         in_invariant_features: int,
-        hidden_layer_widths: Sequence[int],
+        hidden_layer_widths: List[int],
         activation_fn: torch.nn.Module,
     ):
         super(_NonLinearModel, self).__init__()
