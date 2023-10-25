@@ -2,7 +2,7 @@
 Module for user-defined functions.
 """
 import os
-from typing import List
+from typing import List, Callable
 
 import ase
 import numpy as np
@@ -67,7 +67,7 @@ def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
     # Build lambda-SOAP vector
     lsoap = clebsch_gordan.lambda_soap_vector(nu_1_tensor, **cg_settings)
 
-    # Convert to torch backedn and return
+    # Convert to torch backend and return
     if torch_settings is not None:
         lsoap = metatensor.to(lsoap, "torch", **torch_settings)
 
@@ -78,6 +78,7 @@ def target_builder(
     structure_idxs: List[int],
     frames: List[ase.Atoms],
     predictions: List[TensorMap],
+    save_dir: Callable,
     **kwargs
 ):
     """
@@ -86,7 +87,7 @@ def target_builder(
     rebuilds the scalar field by calling AIMS.
     """
     calcs = {
-        A: {"atoms": frame, "run_dir": kwargs["save_dir"](A)}
+        A: {"atoms": frame, "run_dir": save_dir(A)}
         for A, frame in zip(structure_idxs, frames)
     }
 
@@ -102,7 +103,7 @@ def target_builder(
         pred_aims = aims_parser.coeff_vector_ndarray_to_aims_coeffs(
             coeffs=pred_np,
             basis_set_idxs=kwargs["basis_set"]["idxs"],
-            save_dir=kwargs["save_dir"](A),
+            save_dir=save_dir(A),
         )
 
     # Run AIMS to build the target scalar field for each structure
@@ -111,7 +112,7 @@ def target_builder(
         aims_path=kwargs["aims_path"],
         aims_kwargs=kwargs["aims_kwargs"],
         sbatch_kwargs=kwargs["sbatch_kwargs"],
-        run_dir=kwargs["save_dir"],
+        run_dir=save_dir,  # must be a callable
     )
     
     # Wait until all AIMS calcs have finished, then read in and return the
@@ -120,7 +121,7 @@ def target_builder(
     while not all_finished:
         calcs_finished = []
         for A in structure_idxs:
-            aims_out_path = os.path.join(kwargs["save_dir"](A), "aims.out")
+            aims_out_path = os.path.join(save_dir(A), "aims.out")
             if os.path.exists(aims_out_path):
                 with open(aims_out_path, "r") as f:
                     # Basic check to see if AIMS calc has finished
@@ -131,6 +132,6 @@ def target_builder(
 
     targets = []
     for A in structure_idxs:
-        targets.append(np.loadtxt(os.path.join(kwargs["save_dir"](A), "rho_rebuilt.out")))
+        targets.append(np.loadtxt(os.path.join(save_dir(A), "rho_rebuilt.out")))
 
     return targets
