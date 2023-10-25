@@ -781,3 +781,16 @@ def _sum_kso_fields(
         weighted_ksos.append(kso_weight * kso[:, 3])
 
     return np.concatenate([grid[:, :3], np.sum(weighted_ksos, axis=0).reshape(-1, 1)], axis=1)
+
+def _order_scalar_field(field):
+    """
+    Returns the scalar field ordered by norm of the position vector.
+    """
+    rows = []
+    for row in field:
+        rows.append(tuple(row) + tuple([np.linalg.norm(row[:3])]))
+    struct_arr = np.array(
+        rows,
+        dtype=[('x', 'float'), ('y', 'float'), ('z', 'float'), ('value', 'float'), ('length', 'float')]
+    )
+    return np.sort(struct_arr, order='length')

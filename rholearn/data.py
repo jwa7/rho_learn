@@ -3,7 +3,7 @@ Module for creating metatensor/torch datasets and dataloaders.
 """
 import gc
 import os
-from typing import Sequence, Optional, Tuple, Union, List, Callable
+from typing import List, Optional, Tuple, Union, List, Callable
 
 import numpy as np
 import torch
@@ -28,9 +28,9 @@ class RhoData(torch.utils.data.Dataset):
     deviation of the training data, i.e. the L2 loss of the output training
     *density* relative to the baseline training density.
 
-    :param idxs: Sequence[int], Sequence of indices that define the complete
+    :param idxs: List[int], List of indices that define the complete
         dataset.
-    :param train_idxs: Sequence[int], Sequence of indices corresponding to the
+    :param train_idxs: List[int], List of indices corresponding to the
         training data.
     :param in_path: Callable, a lambda function whose argument is an int
         structure index and returned is a str of the absolute path to the
@@ -57,8 +57,8 @@ class RhoData(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        all_idxs: Sequence[int],
-        train_idxs: Sequence[int],
+        idxs: List[int],
+        train_idxs: List[int],
         in_path: Callable,
         out_path: Callable,
         aux_path: Optional[Callable] = None,
@@ -71,7 +71,7 @@ class RhoData(torch.utils.data.Dataset):
 
         # Check input args
         RhoData._check_input_args(
-            all_idxs,
+            idxs,
             train_idxs,
             in_path,
             out_path,
@@ -80,7 +80,7 @@ class RhoData(torch.utils.data.Dataset):
         )
 
         # Assign attributes
-        self._all_idxs = all_idxs
+        self._all_idxs = idxs
         self._train_idxs = train_idxs
         self._in_path = in_path
         self._out_path = out_path
@@ -108,19 +108,17 @@ class RhoData(torch.utils.data.Dataset):
 
     @staticmethod
     def _check_input_args(
-        all_idxs: Sequence[int],
-        train_idxs: Sequence[int],
+        idxs: List[int],
+        train_idxs: List[int],
         in_path: Callable,
         out_path: Callable,
         aux_path: Callable,
         calc_out_train_std_dev: bool,
     ):
         """Checks args to the constructor."""
-        if not np.all([i in all_idxs for i in train_idxs]):
-            raise ValueError(
-                "all the idxs passed in `train_idxs` must be in `all_idxs`"
-            )
-        for idx in all_idxs:
+        if not np.all([i in idxs for i in train_idxs]):
+            raise ValueError("all the idxs passed in `train_idxs` must be in `idxs`")
+        for idx in idxs:
             if not os.path.exists(in_path(idx)):
                 raise FileNotFoundError(
                     f"Input/descriptor TensorMap at {in_path(idx)} does not exist."
@@ -188,7 +186,7 @@ class RhoData(torch.utils.data.Dataset):
 
     def _load_data(self) -> None:
         """
-        Lazily loads the data for all items corresponding to `all_idxs` upon class
+        Lazily loads the data for all items corresponding to `idxs` upon class
         initialization. Stores it in a dict indexed by these indices
 
         Each item correpsonds to a tuple of the idx, and TensorMaps for the
@@ -225,10 +223,10 @@ class RhoData(torch.utils.data.Dataset):
         # Calc and store invariant means
         out_train_inv_means = get_invariant_means(out_train)
         out_train_inv_means = metatensor.to(
-            out_train_inv_means, 
-            "torch", 
-            dtype=self._torch_kwargs["dtype"], 
-            device=self._torch_kwargs["device"], 
+            out_train_inv_means,
+            "torch",
+            dtype=self._torch_kwargs["dtype"],
+            device=self._torch_kwargs["device"],
             requires_grad=False,
         )
         self._out_train_inv_means = out_train_inv_means
@@ -260,11 +258,11 @@ class RhoData(torch.utils.data.Dataset):
         """
         Calculates the standard deviaton of the output training data.
 
-        See property `RhoLoss.out_train_std_dev` for the mathematical expression.
+        See property `RhoData.out_train_std_dev` for the mathematical expression.
         """
         # We can use the RhoLoss function to evaluate the error in the
         # output data relative to the mean baseline of the training data
-        loss_fn = loss.RhoLoss()
+        loss_fn = loss.L2Loss()
 
         # As this function is only ever called once for a given set of training
         # indices, iterate over each training structure in turn to reduce memory
@@ -311,13 +309,18 @@ class RhoLoader:
         self._batch_size = batch_size if batch_size is not None else len(idxs)
         self._get_aux_data = get_aux_data
 
-        self.dataloader = torch.utils.data.DataLoader(
+        self._dataloader = torch.utils.data.DataLoader(
             dataset,
             batch_size=self._batch_size,
             collate_fn=self.collate_rho_data_batch,
             sampler=SubsetRandomSampler(idxs),
             **kwargs,
         )
+        if get_aux_data:
+            if dataset._aux_path is None:
+                raise AttributeError(
+                    "`get_aux_data` set to true but dataset not initialized with `aux_path`"
+                )
 
     def collate_rho_data_batch(self, batch):
         """
@@ -369,30 +372,32 @@ class RhoLoader:
                 metatensor.join(batch[2], axis="samples", remove_tensor_name=True),
                 metatensor.join(batch[3], axis="samples", remove_tensor_name=True),
             )
-        # Otherwise, just return the idxs and the input/output pair
+        # Otherwise, just return the idxs and the input/output pair, with None
+        # in place of the auxiliary data
         return (
             batch[0],
             metatensor.join(batch[1], axis="samples", remove_tensor_name=True),
             metatensor.join(batch[2], axis="samples", remove_tensor_name=True),
+            None,
         )
 
     def __iter__(self):
         """Returns an iterable for the dataloader."""
-        return iter(self.dataloader)
+        return iter(self._dataloader)
 
 
 # ===== Fxns for creating groups of indices for train/test/validation splits
 
 
 def group_idxs(
-    all_idxs: Sequence[int],
+    idxs: List[int],
     n_groups: int,
-    group_sizes: Optional[Union[Sequence[float], Sequence[int]]] = None,
+    group_sizes: Optional[Union[List[float], List[int]]] = None,
     shuffle: bool = False,
     seed: Optional[int] = None,
-) -> Sequence[np.ndarray]:
+) -> List[np.ndarray]:
     """
-    Returns the indices in `all_idxs` in `n_groups` groups of indices, according
+    Returns the indices in `idxs` in `n_groups` groups of indices, according
     to the relative or absolute sizes in `group_sizes`.
 
     For instance, if `n_groups` is 2 (i.e. for a train/test split), 2 arrays are
@@ -401,13 +406,13 @@ def group_idxs(
 
     If `group_sizes` is None, the group sizes returned are (to the nearest
     integer) equally sized for each group. If `group_sizes` is specified as a
-    Sequence of floats (i.e. relative sizes, whose sum is <= 1), the group sizes
+    List of floats (i.e. relative sizes, whose sum is <= 1), the group sizes
     returned are converted to absolute sizes, i.e. multiplied by `n_indices`. If
-    `group_sizes` is specified as a Sequence of int, the group sizes returned
+    `group_sizes` is specified as a List of int, the group sizes returned
     are the absolute sizes specified.
 
-    If `shuffle` is False, no shuffling of `all_idxs` is performed. If true, and
-    `seed` is not None, `all_idxs` is shuffled using `seed` as the seed for the
+    If `shuffle` is False, no shuffling of `idxs` is performed. If true, and
+    `seed` is not None, `idxs` is shuffled using `seed` as the seed for the
     random number generator. If `seed` is None, the random number generator is
     not manually seeded.
     """
@@ -419,7 +424,7 @@ def group_idxs(
             )
 
     # Create a copy of the indices so that shuffling doesn't affect the original
-    idxs = np.array(all_idxs).copy()
+    idxs = np.array(idxs).copy()
 
     # Shuffle indices if seed is specified
     if shuffle:
@@ -447,7 +452,7 @@ def group_idxs(
 def get_group_sizes(
     n_groups: int,
     n_indices: int,
-    group_sizes: Optional[Union[Sequence[float], Sequence[int]]] = None,
+    group_sizes: Optional[Union[List[float], List[int]]] = None,
 ) -> np.ndarray:
     """
     Parses the `group_sizes` arg and returns an array of group sizes in absolute
@@ -456,11 +461,11 @@ def get_group_sizes(
     i.e. if there are 12 unique indices (`n_indices=10`), and `n_groups` is 3,
     the group sizes returned will be np.array([4, 4, 4]).
 
-    If `group_sizes` is specified as a Sequence of floats (i.e. relative sizes,
+    If `group_sizes` is specified as a List of floats (i.e. relative sizes,
     whose sum is <= 1), the group sizes returned are converted to absolute
     sizes, i.e. multiplied by `n_indices`. If `group_sizes` is specified as a
-    Sequence of int, no conversion is performed. A cascade round is used to make
-    sure that the group sizes are integers, with the sum of the Sequence
+    List of int, no conversion is performed. A cascade round is used to make
+    sure that the group sizes are integers, with the sum of the List
     preserved and the rounding error minimized.
 
     :param n_groups: an int, the number of groups to split the data into :param
@@ -478,7 +483,7 @@ def get_group_sizes(
         group_sizes = np.array([1 / n_groups] * n_groups) * n_indices
     elif np.all([isinstance(size, int) for size in group_sizes]):  # absolute
         group_sizes = np.array(group_sizes)
-    else:  # relative; Sequence of float
+    else:  # relative; List of float
         group_sizes = np.array(group_sizes) * n_indices
 
     # The group sizes may not be integers. Use cascade rounding to round them
@@ -558,7 +563,9 @@ def get_invariant_means(tensor: TensorMap) -> TensorMap:
     inv_tensor = metatensor.drop_blocks(tensor, keys=keys_to_drop)
 
     # Find the mean over sample for the invariant blocks
-    return metatensor.mean_over_samples(inv_tensor, sample_names=inv_tensor.sample_names)
+    return metatensor.mean_over_samples(
+        inv_tensor, sample_names=inv_tensor.sample_names
+    )
 
 
 def standardize_invariants(
