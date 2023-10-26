@@ -27,24 +27,31 @@ from settings import *
 # Basic set up
 # =================================================
 
+# Log the start of the training
+log_path = os.path.join(ml_settings["run_dir"], "training.log")
+io.log(log_path, "# Starting training")
+
+
 # Define a function that returns the data directory for a given structure based
 # on its structure index
 def struct_dir(A):
-    return os.path.join(data_dir, f"{A}/")
+    return os.path.join(data_dir, f"{A}", "0")
 
-log_path = "ml/training.log"
-io.log(log_path, "# Starting training")
+
+# Create a callable for directories to save predictions by structure index
+def pred_dir(A):
+    return os.path.join("/scratch/abbott/h2o_homo/ml/predictions", f"{A}")
+
 
 # Define callable for path to processed data (i.e. TensorMaps)
-processed_dir = lambda A: os.path.join(
-    struct_dir(A), "0/processed/"
-)  # includes restart index
+def processed_dir(A):
+    return os.path.join(struct_dir(A), "processed/")
+
 
 # Define dir for running ML calculations
 chkpt_dir = os.path.join(ml_settings["run_dir"], "checkpoints")
 if not os.path.exists(chkpt_dir):
     os.makedirs(chkpt_dir)
-
 
 
 # =================================================
@@ -60,63 +67,44 @@ train_idxs, test_idxs, val_idxs = data.group_idxs(
     seed=crossval_settings["seed"],
 )
 np.savez(
-    os.path.join(ml_settings["run_dir"], "idxs.npz"), 
-    idxs=idxs, 
-    train_idxs=train_idxs, 
-    test_idxs=test_idxs, 
-    val_idxs=val_idxs
+    os.path.join(ml_settings["run_dir"], "idxs.npz"),
+    idxs=idxs,
+    train_idxs=train_idxs,
+    test_idxs=test_idxs,
+    val_idxs=val_idxs,
 )
 io.log(log_path, f"# total num. idxs: {len(idxs)}")
 
 # Construct dataset
 rho_data = data.RhoData(
     idxs=np.concatenate([train_idxs, test_idxs, val_idxs]),
-    train_idxs=train_idxs,
     in_path=lambda A: os.path.join(processed_dir(A), "lsoap.npz"),
     out_path=lambda A: os.path.join(processed_dir(A), "ri_coeffs.npz"),
     aux_path=lambda A: os.path.join(processed_dir(A), "ri_ovlp.npz"),
     keep_in_mem=ml_settings["loading"]["train"]["keep_in_mem"],
-    calc_out_train_inv_means=crossval_settings["calc_out_train_inv_means"],
-    calc_out_train_std_dev=crossval_settings["calc_out_train_std_dev"],
     **torch_settings,
 )
 
-# Get invariant means and standard deviation of training data
-calc_out_train_inv_means = None
-if crossval_settings["calc_out_train_inv_means"]:
-    calc_out_train_inv_means = rho_data.out_train_inv_means
-
-if crossval_settings["calc_out_train_std_dev"]:
-    out_train_std_dev = rho_data.out_train_std_dev.detach().numpy()
-    io.log(log_path, f"# out_train_std_dev: {out_train_std_dev}")
-    np.savez("ml/std_dev.npz", out_train=out_train_std_dev)
-
-# Construct dataloaders
-train_loader = data.RhoLoader(
-    rho_data,
-    idxs=train_idxs,
-    get_aux_data=True,
-    batch_size=ml_settings["loading"]["train"]["batch_size"],
-)
-test_loader = data.RhoLoader(
-    rho_data,
-    idxs=test_idxs,
-    get_aux_data=True,
-    batch_size=ml_settings["loading"]["test"]["batch_size"],
-)
-# For the validation set, we want to evaluate the performance of the model
-# against the real-space scalar field (requires calling AIMS), so the overlaps
-# do not need to be loaded.
-val_loader = data.RhoLoader(
-    rho_data,
-    idxs=val_idxs,
-    get_aux_data=False,
-    batch_size=None,
-)
+# if crossval_settings["calc_out_train_std_dev"]:
+#     out_train_std_dev = rho_data.out_train_std_dev.detach().numpy()
+#     io.log(log_path, f"# out_train_std_dev: {out_train_std_dev}")
+#     np.savez("ml/std_dev.npz", out_train=out_train_std_dev)
 
 # =================================================
-# Model initialization
+# Initialize model
 # =================================================
+
+# If usign a non-learnable bias in the form of a invariant baseline, calculate
+# it and store it in the model on initialization
+if ml_settings["model"]["use_invariant_baseline"]:
+    # This should only be calculated on the training data
+    out_train = metatensor.join(
+        [rho_data[A][2] for A in train_idxs], axis="samples", remove_tensor_name=True
+    )
+    invariant_baseline = data.get_invariant_means(out_train)
+else:
+    invariant_baseline = None
+
 
 # For descriptor building, we need to store the rascaline settings for
 # generating a SphericalExpansion and performing Clebsch-Gordan combinations.
@@ -126,6 +114,7 @@ descriptor_kwargs = {
     "rascal_settings": rascal_settings,
     "cg_settings": cg_settings,
 }
+
 # For target building, the base AIMS settings need to be stored, along with the
 # basis set definition.
 basis_set = io.unpickle_dict(os.path.join(processed_dir(idxs[0]), "calc_info.pickle"))[
@@ -139,21 +128,22 @@ target_kwargs = {
 # Here we initialize the model with the model architecture options, as well as
 # the descriptor/target builder settings needed for end-to-end predictions.
 model = models.RhoModel(
+    # Required args
     model_type=ml_settings["model"]["model_type"],
     input=rho_data[idxs[0]][1],  # for initializing ...
     output=rho_data[idxs[0]][2],  # ... the metadata of the model
     bias_invariants=ml_settings["model"]["bias_invariants"],
-    hidden_layer_widths=[8, 8],
-    activation_fn=torch.nn.Tanh(),
-    out_train_inv_means=calc_out_train_inv_means,
+    invariant_baseline=invariant_baseline,
+    # For nonlinear model
+    hidden_layer_widths=ml_settings["model"].get("hidden_layer_widths"),
+    activation_fn=ml_settings["model"].get("activation_fn"),
+    bias_nn=ml_settings["model"].get("bias_nn"),
+    # For end-to-end predictions
     descriptor_kwargs=descriptor_kwargs,
     target_kwargs=target_kwargs,
+    # Torch settings
     **torch_settings,
 )
-
-# Create a callable for directories to save predictions by structure index
-def save_dir(A):
-    return os.path.join("/scratch/abbott/h2o_homo/ml/predictions", f"{A}")
 
 # Settings specific to RI rebuild procedure
 ri_kwargs = {
@@ -195,26 +185,56 @@ torch.save(model, "_tmp.pt")
 torch.load("_tmp.pt")
 os.remove("_tmp.pt")
 
-# =================================================
-# Training
-# =================================================
 
-# Initialize optimizer, loss function, scheduler
-start_epoch = 1
+# ======================================================
+# Initialize training objects: loaders, loss, optimizers
+# ======================================================
+
+# Dataloaders
+train_loader = data.RhoLoader(
+    rho_data,
+    idxs=train_idxs,
+    get_aux_data=True,
+    batch_size=ml_settings["loading"]["train"]["batch_size"],
+)
+test_loader = data.RhoLoader(
+    rho_data,
+    idxs=test_idxs,
+    get_aux_data=True,
+    batch_size=ml_settings["loading"]["test"]["batch_size"],
+)
+val_loader = data.RhoLoader(
+    rho_data,
+    idxs=val_idxs,
+    get_aux_data=False,
+    batch_size=None,
+)
+
+# Loss function, optimizer, scheduler
 loss_fn = ml_settings["loss_fn"]["algorithm"]()
 optimizer = ml_settings["optimizer"]["algorithm"](
     params=model.parameters(), **ml_settings["optimizer"]["args"]
 )
 scheduler = ml_settings["scheduler"]["algorithm"](
-    optimizer, 
-    **ml_settings["scheduler"]["args"]
+    optimizer, **ml_settings["scheduler"]["args"]
 )
+
+# =================================================
+# Training
+# =================================================
+
+start_epoch = 1
 
 if ml_settings["training"].get("restart_epoch") is not None:
     start_epoch = ml_settings["training"]["restart_epoch"]
-    optimizer.load_state_dict(torch.load(os.path.join(chkpt_dir, f"optimizer_{start_epoch}.pt")))
-    scheduler.load_state_dict(torch.load(os.path.join(chkpt_dir, f"scheduler_{start_epoch}.pt")))
+    optimizer.load_state_dict(
+        torch.load(os.path.join(chkpt_dir, f"optimizer_{start_epoch}.pt"))
+    )
+    scheduler.load_state_dict(
+        torch.load(os.path.join(chkpt_dir, f"scheduler_{start_epoch}.pt"))
+    )
     start_epoch += 1
+
 # Start training loop
 io.log(log_path, "# epoch train_loss test_loss train_mae test_mae val_mae time")
 
@@ -228,35 +248,33 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
         loss_fn=loss_fn,
         optimizer=optimizer,
         scheduler=scheduler,
-        check_args=epoch == 1,  # Switch off metadata checks after 1st epoch
+        check_args=epoch == 1,  # switch off metadata checks after 1st epoch
     )
 
     # Calculate L1 error against real-space QM scalar fields
     mean_maes = {"train": -1, "test": -1, "val": -1}
     if (epoch - 1) % ml_settings["validation"]["interval"] == 0:
-    
         for tmp_idxs, category in zip(
-            [train_idxs, test_idxs],# val_idxs], 
-            ["train", "test"],# "val"]
+            [train_idxs, test_idxs],  # val_idxs],
+            ["train", "test"],  # "val"]
         ):
-
             # Get frames and make prediction
             tmp_frames = [all_frames[A] for A in tmp_idxs]
             pred_coeffs, pred_fields = model.predict(
                 structure_idxs=tmp_idxs,
                 frames=tmp_frames,
-                save_dir=save_dir,
+                pred_dir=pred_dir,
             )
 
             # Evaluate mean L1 Error
             mean_mae = []
             for A, pred_field in zip(tmp_idxs, pred_fields):
                 # Get grids and check they're the same in the SCF and ML directories
-                grid = np.loadtxt(os.path.join(struct_dir(A), "0/partition_tab.out"))
-                # assert np.allclose(scf_grid, np.loadtxt(os.path.join(model.target_kwargs["save_dir"](A), "partition_tab.out")))
+                grid = np.loadtxt(os.path.join(struct_dir(A), "partition_tab.out"))
+                # assert np.allclose(scf_grid, np.loadtxt(os.path.join(model.target_kwargs["pred_dir"](A), "partition_tab.out")))
 
                 # Get L1 error vs real-space QM scalar field
-                target_field = np.loadtxt(os.path.join(struct_dir(A), "0/rho_ref.out"))
+                target_field = np.loadtxt(os.path.join(struct_dir(A), "rho_ref.out"))
                 mae = aims_parser.get_percent_mae_between_fields(
                     input=pred_field,
                     target=target_field,
@@ -273,6 +291,10 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
     # Save model, optimizer, scheduler
     if (epoch - 1) % ml_settings["training"]["save_interval"] == 0:
         torch.save(model, os.path.join(chkpt_dir, f"model_{epoch}.pt"))
-        torch.save(optimizer.state_dict(), os.path.join(chkpt_dir, f"optimizer_{epoch}.pt"))
+        torch.save(
+            optimizer.state_dict(), os.path.join(chkpt_dir, f"optimizer_{epoch}.pt")
+        )
         if scheduler is not None:
-            torch.save(scheduler.state_dict(), os.path.join(chkpt_dir, f"scheduler_{epoch}.pt"))
+            torch.save(
+                scheduler.state_dict(), os.path.join(chkpt_dir, f"scheduler_{epoch}.pt")
+            )
