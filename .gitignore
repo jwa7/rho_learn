@@ -11,4 +11,8 @@ docs/example/azoswitch/runs/
 docs/example/water/data/
 docs/example/water/runs/
 docs/example/new_water/
-docs/example/h2o/data/lsoap/
+docs/example/h2o/data/*
+
+
+# Slurm log files and dirs
+*slurm*
