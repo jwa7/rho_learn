@@ -117,9 +117,8 @@ crossval_settings = {
     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
     "seed": 100,  # random seed for shuffling data indices
 
-    # Calculate the invariant means and standard deviation of training data
-    "calc_out_train_inv_means": True,
-    "calc_out_train_std_dev": True,
+    # Calculate the standard deviation of target training data?
+    "calc_out_train_std_dev": False,
 }
 
 
@@ -141,15 +140,15 @@ ml_settings = {
     "run_dir": "/home/abbott/rho/rho_learn/docs/example/h2o/ml",
 
     "model": {
+
         # Model architecture
         "model_type": "nonlinear",  # linear or nonlinear
         "bias_invariants": False,
-        "train_on_baselined_coeffs": True,
-
-        "args": {  # if using linear, pass an empty dict
-            "hidden_layer_widths": [64, 64, 64],
-            "activation_fn": torch.nn.SiLU(),
-        },
+        "use_invariant_baseline": True,
+        # Only if model_type == "nonlinear":
+        "hidden_layer_widths": [64, 64, 64],
+        "activation_fn": torch.nn.SiLU(),
+        "bias_nn": True,
     },
     "loss_fn": {
         "algorithm": loss.L2Loss,
