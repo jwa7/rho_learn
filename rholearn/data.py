@@ -28,10 +28,7 @@ class RhoData(torch.utils.data.Dataset):
     deviation of the training data, i.e. the L2 loss of the output training
     *density* relative to the baseline training density.
 
-    :param idxs: List[int], List of indices that define the complete
-        dataset.
-    :param train_idxs: List[int], List of indices corresponding to the
-        training data.
+    :param idxs: List[int], List of indices that define the complete dataset.
     :param in_path: Callable, a lambda function whose argument is an int
         structure index and returned is a str of the absolute path to the
         input/descriptor TensorMap for that structure.
@@ -46,11 +43,6 @@ class RhoData(torch.utils.data.Dataset):
         by `idxs`. When __getitem__ is called, the dict is just accessed from
         memory. If false, data is loaded from disk upon each call to
         __getitem__.
-    :param calc_out_train_inv_means: bool indicating whether or not to calculate
-        the means of invariant blocks of the output training data.
-    :param calc_out_train_std_dev: bool indicating whether to calculate the
-        standard deviation of the output training data. If true, the standard
-        deviation is calculated and stored in the attribute `out_train_std_dev`.
     **torch_kwargs: dict of kwargs for loading TensorMaps to torch backend.
         `dtype`, `device`, and `requires_grad` are required.
     """
@@ -58,30 +50,19 @@ class RhoData(torch.utils.data.Dataset):
     def __init__(
         self,
         idxs: List[int],
-        train_idxs: List[int],
         in_path: Callable,
         out_path: Callable,
         aux_path: Optional[Callable] = None,
         keep_in_mem: bool = True,
-        calc_out_train_inv_means: bool = True,
-        calc_out_train_std_dev: bool = False,
         **torch_kwargs,
     ):
         super(RhoData, self).__init__()
 
         # Check input args
-        RhoData._check_input_args(
-            idxs,
-            train_idxs,
-            in_path,
-            out_path,
-            aux_path,
-            calc_out_train_std_dev,
-        )
+        RhoData._check_input_args(idxs, train_idxs, in_path, out_path, aux_path)
 
         # Assign attributes
         self._all_idxs = idxs
-        self._train_idxs = train_idxs
         self._in_path = in_path
         self._out_path = out_path
         self._aux_path = aux_path
@@ -94,16 +75,6 @@ class RhoData(torch.utils.data.Dataset):
         else:
             self._data_in_mem = False
 
-        # If standardizing the outputs or calculating the standard deviation of
-        # the output training data, the invariant means of the output training
-        # data will be required. Calculate and store these.
-        if calc_out_train_inv_means or calc_out_train_std_dev:
-            self._calculate_out_train_inv_means()
-
-        # Calculate the standard deviation of the output training data
-        if calc_out_train_std_dev:
-            self._calculate_out_train_std_dev()
-
         gc.collect()
 
     @staticmethod
@@ -113,7 +84,6 @@ class RhoData(torch.utils.data.Dataset):
         in_path: Callable,
         out_path: Callable,
         aux_path: Callable,
-        calc_out_train_std_dev: bool,
     ):
         """Checks args to the constructor."""
         if not np.all([i in idxs for i in train_idxs]):
@@ -131,12 +101,6 @@ class RhoData(torch.utils.data.Dataset):
                 if not os.path.exists(aux_path(idx)):
                     raise FileNotFoundError(
                         f"Auxiliary/supporting TensorMap at {aux_path(idx)} does not exist."
-                    )
-            else:
-                if calc_out_train_std_dev:
-                    raise ValueError(
-                        "cannot calculate standard deviation of density without"
-                        " specification of the `aux_path`"
                     )
 
     def __loaditem__(self, idx: int) -> Tuple:
@@ -195,101 +159,6 @@ class RhoData(torch.utils.data.Dataset):
         self._loaded_data = {}
         for idx in self._all_idxs:
             self._loaded_data[idx] = self.__loaditem__(idx)
-
-    @property
-    def out_train_inv_means(self) -> TensorMap:
-        """
-        Returns a TensorMap containing the invariant block means of the output
-        training data.
-        """
-        return self._out_train_inv_means
-
-    def _calculate_out_train_inv_means(self) -> None:
-        """
-        Retrieves the `data="input"` or `data="output"` TensorMaps for the
-        `train_idxs`, joins them, then only for the invariant blocks performs a
-        reduction by taking the mean over samples. Stores the resulting
-        TensorMap in `self._out_train_inv_means`,
-        """
-        # Retrieve the output training data and join
-        out_train_list = [self[idx][2] for idx in self._train_idxs]
-        out_train = metatensor.join(
-            out_train_list,
-            axis="samples",
-            remove_tensor_name=True,
-        )
-        out_train = metatensor.to(out_train, "numpy")
-
-        # Calc and store invariant means
-        out_train_inv_means = get_invariant_means(out_train)
-        out_train_inv_means = metatensor.to(
-            out_train_inv_means,
-            "torch",
-            dtype=self._torch_kwargs["dtype"],
-            device=self._torch_kwargs["device"],
-            requires_grad=False,
-        )
-        self._out_train_inv_means = out_train_inv_means
-
-        # Clear memory
-        del out_train_list, out_train, out_train_inv_means
-        gc.collect()
-
-    @property
-    def out_train_std_dev(self) -> float:
-        """
-        Returns the standard deviation of the output training data, given by the
-        expression:
-
-        .. math:
-
-            \sqrt{
-                \frac{1}{N - 1} \sum_A^N ... \Delta \bar{c} \hat{S} \Delta
-                \bar{c}
-            }
-
-        where A is 1 of N training structures, and \Delta \bar{c} =
-        c^{\text{RI}} - \bar{c} is the vector of reference RI coefficients minus
-        the mean baseline, and \hat{S} is the overlap matrix.
-        """
-        return self._out_train_std_dev
-
-    def _calculate_out_train_std_dev(self) -> None:
-        """
-        Calculates the standard deviaton of the output training data.
-
-        See property `RhoData.out_train_std_dev` for the mathematical expression.
-        """
-        # We can use the RhoLoss function to evaluate the error in the
-        # output data relative to the mean baseline of the training data
-        loss_fn = loss.L2Loss()
-
-        # As this function is only ever called once for a given set of training
-        # indices, iterate over each training structure in turn to reduce memory
-        # overhead
-        stddev = 0
-        for idx in self._train_idxs:
-            # Load/retrieve the output training structure and overlap matrix
-            _, _, out_train, overlap = self[idx]
-
-            # If the output data hasn't been standardized, do it
-            out_train = standardize_invariants(out_train, self._out_train_inv_means)
-
-            # Build a dummy TensorMap of zeros - this will be used for input
-            # into the RhoLoss loss function as the 'target'
-            out_zeros = metatensor.zeros_like(out_train)
-
-            # Accumulate the 'loss' on the training ouput relative to the
-            # spherical baseline
-            stddev += loss_fn(input=out_train, target=out_zeros, overlap=overlap)
-
-            # Clear memory
-            del out_train, overlap, out_zeros
-            gc.collect()
-
-        # Calculate the final stddev and store
-        stddev = torch.sqrt(stddev / (len(self._train_idxs) - 1))
-        self._out_train_std_dev = stddev
 
 
 class RhoLoader:
@@ -599,52 +468,89 @@ def standardize_invariants(
 
     return TensorMap(new_keys, new_blocks)
 
+    # def _calculate_out_train_inv_means(self) -> None:
+    #     """
+    #     Retrieves the `data="input"` or `data="output"` TensorMaps for the
+    #     `train_idxs`, joins them, then only for the invariant blocks performs a
+    #     reduction by taking the mean over samples. Stores the resulting
+    #     TensorMap in `self._out_train_inv_means`,
+    #     """
+    #     # Retrieve the output training data and join
+    #     out_train_list = [self[idx][2] for idx in self._train_idxs]
+    #     out_train = metatensor.join(
+    #         out_train_list,
+    #         axis="samples",
+    #         remove_tensor_name=True,
+    #     )
+    #     out_train = metatensor.to(out_train, "numpy")
 
-# def _standardize_output_data(self) -> None:
-#         """
-#         Standardizes all the output data by subtracting baseline mean of the
-#         output training data. As the means of all covariant blocks (lambda > 0)
-#         are assumed to be zero, this in practice involves just subtracting the
-#         invariant means of the output training data from the invariant blocks of
-#         all output data.
+    #     # Calc and store invariant means
+    #     out_train_inv_means = get_invariant_means(out_train)
+    #     out_train_inv_means = metatensor.to(
+    #         out_train_inv_means,
+    #         "torch",
+    #         dtype=self._torch_kwargs["dtype"],
+    #         device=self._torch_kwargs["device"],
+    #         requires_grad=False,
+    #     )
+    #     self._out_train_inv_means = out_train_inv_means
 
-#         If `self.keep_in_mem=True`, the attribute appropraite data stored in
-#         `self._loaded_data` is overwritten with the standardized data.
+    #     # Clear memory
+    #     del out_train_list, out_train, out_train_inv_means
+    #     gc.collect()
 
-#         If `self.keep_in_mem=False`, the standardized data is written to file
-#         alongside the unstandardized data. In this case, standardized outputs
-#         are stored in `self._out_path` under filenames
-#         "{filenames[1]}_std.npz".
-#         """
-#         # Standardize and overwrite the unstd data already in memory
-#         if self._data_in_mem:
-#             for idx in self._all_idxs:
-#                 item = self._loaded_data[idx]
-#                 tmp_output = standardize_invariants(
-#                     item[2],
-#                     invariant_means=self._out_train_inv_means,
-#                     reverse=False,
-#                 )
-#                 if len(item) == 4:
-#                     self._loaded_data[idx] = (item[0], item[1], tmp_output, item[3])
-#                 else:
-#                     assert len(item) == 3
-#                     self._loaded_data[idx] = (item[0], item[1], tmp_output)
-#                 del item, tmp_output
-#                 gc.collect()
+    # @property
+    # def out_train_std_dev(self) -> float:
+    #     """
+    #     Returns the standard deviation of the output training data, given by the
+    #     expression:
 
-#         # Calculate standardized data and write to file
-#         else:
-#             for idx in self._all_idxs:
-#                 out_std = standardize_invariants(
-#                     self[idx][2],
-#                     invariant_means=self._out_train_inv_means,
-#                     reverse=False,
-#                 )
-#                 metatensor.save(
-#                     os.path.join(
-#                         self._out_path, f"{idx}/{self._filenames[1]}_std.npz"
-#                     )
-#                 )
-#                 del out_std
-#                 gc.collect()
+    #     .. math:
+
+    #         \sqrt{
+    #             \frac{1}{N - 1} \sum_A^N ... \Delta \bar{c} \hat{S} \Delta
+    #             \bar{c}
+    #         }
+
+    #     where A is 1 of N training structures, and \Delta \bar{c} =
+    #     c^{\text{RI}} - \bar{c} is the vector of reference RI coefficients minus
+    #     the mean baseline, and \hat{S} is the overlap matrix.
+    #     """
+    #     return self._out_train_std_dev
+
+    # def _calculate_out_train_std_dev(self) -> None:
+    #     """
+    #     Calculates the standard deviaton of the output training data.
+
+    #     See property `RhoData.out_train_std_dev` for the mathematical expression.
+    #     """
+    #     # We can use the RhoLoss function to evaluate the error in the
+    #     # output data relative to the mean baseline of the training data
+    #     loss_fn = loss.L2Loss()
+
+    #     # As this function is only ever called once for a given set of training
+    #     # indices, iterate over each training structure in turn to reduce memory
+    #     # overhead
+    #     stddev = 0
+    #     for idx in self._train_idxs:
+    #         # Load/retrieve the output training structure and overlap matrix
+    #         _, _, out_train, overlap = self[idx]
+
+    #         # If the output data hasn't been standardized, do it
+    #         out_train = standardize_invariants(out_train, self._out_train_inv_means)
+
+    #         # Build a dummy TensorMap of zeros - this will be used for input
+    #         # into the RhoLoss loss function as the 'target'
+    #         out_zeros = metatensor.zeros_like(out_train)
+
+    #         # Accumulate the 'loss' on the training ouput relative to the
+    #         # spherical baseline
+    #         stddev += loss_fn(input=out_train, target=out_zeros, overlap=overlap)
+
+    #         # Clear memory
+    #         del out_train, overlap, out_zeros
+    #         gc.collect()
+
+    #     # Calculate the final stddev and store
+    #     stddev = torch.sqrt(stddev / (len(self._train_idxs) - 1))
+    #     self._out_train_std_dev = stddev

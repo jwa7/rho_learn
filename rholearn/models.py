@@ -26,14 +26,56 @@ class RhoModel(torch.nn.Module):
     """
     A model that makes equivariant predictions on the TensorMap level.
 
-    If `out_train_inv_means` is passed as a TensorMap corresponding to the
-    invariant means of the output training data, these will be added back to the
-    appropriate block in the forward method. As such, the parameters of the
-    individual block models will be predicting the baselined coefficients, but
-    optimized on the total (unbaselined) coefficients.
+    The model can be either linear or nonlinear. In the linear case, the
+    prediction is made by a single linear layer. In the nonlinear case, the
+    prediction is made by passing the equivariant block through a linear layer,
+    then element-wise multiplying the output of this with the output of a neural
+    network that the corresponding invariant block for that chemical species is
+    passed through. The output of this is then passed through a linear output
+    layer to make the prediction.
 
-    Assumes that, if passed, `out_train_inv_means` is a torch-based TensorMap
-    with the same dtype and device as the model, and with `requires_grad=False`.
+    The model is initialized with a number of arguments. First, the model type
+    must be specified as either "linear" or "nonlinear". If "linear", the
+    ``hidden_layer_widths``, ``activation_fn``, and ``bias_nn`` arguments are
+    ignored. If "nonlinear", these must be specified.
+
+    The ``input`` and ``output`` TensorMaps must be passed, which define the
+    metadata of the model. These can be example training data. The samples are
+    ignored: only the keys, the components, and the properties are stored, as
+    these define the metadata of the model.
+
+    The ``bias_invariants`` argument controls whether or not to use a learnable
+    bias in the models for invariant blocks. This applies equally to both linear
+    and nonlinear models. If true, a bias is used. If false, no bias is used.
+
+    Altenatively (or additionally), if passed, `invariant_baseline` can be
+    passed as a non-learnable bias. This must consist of blocks indexed by keys
+    for each invariant block the model is trained on. This is added feature-wise
+    to the prediction output by invariant block models, essentially acting like
+    a non-learnable bias. This allows invariant block models to essentially
+    learn on a baselined quantity, which can be useful for improving the
+    accuracy in the case of globally-evaluated loss functions where the
+    magnitude of the target property is much larger for invariants than
+    covariants.
+
+    In both cases ``bias_invariants`` and ``invariant_baseline``, the bias can
+    only be applied to transformations of invariants so equivariance is not
+    broken.
+
+    ``descriptor_kwargs`` can be passed as a dict of the settings required to
+    build a descriptor from ASE frames, suitable for input to the model. These
+    should be the same settings used to generate the data the model was trained
+    on. These settings are passed to the function :py:func:`descriptor_builder`
+    in module :py:mod:`predictor`, which contains the recipe for building the
+    descriptor.
+
+    Similarly, ``target_kwargs`` can be passed as a dict of the settings
+    required to build a target from ASE frames and predictions outputted by
+    RhoModel.forward(). These are used by the custom function
+    :py:func:`target_builder` in module :py:mod:`predictor`, which contains the
+    recipe for building the target. For instance, in an indirect learning
+    scheme, this function may call a Quantum Chemistry code to calculate a
+    derived property.
     """
 
     # Initialize model
@@ -42,10 +84,11 @@ class RhoModel(torch.nn.Module):
         model_type: str,
         input: TensorMap,
         output: TensorMap,
-        bias_invariants: bool,
+        bias_invariants: bool = False,
+        invariant_baseline: Optional[TensorMap] = None,
         hidden_layer_widths: Optional[Union[List[List[int]], List[int]]] = None,
         activation_fn: Optional[torch.nn.Module] = None,
-        out_train_inv_means: Optional[TensorMap] = None,
+        bias_nn: bool = False,
         descriptor_kwargs: Optional[dict] = None,
         target_kwargs: Optional[dict] = None,
         **torch_settings,
@@ -65,11 +108,11 @@ class RhoModel(torch.nn.Module):
         if self._model_type == "nonlinear":
             self._set_hidden_layer_widths(hidden_layer_widths)
             self._set_activation_fn(activation_fn)
+            self._set_bias_nn(bias_nn)
 
-        # Passing `out_train_inv_means` as a TensorMap will add the training
-        # invariant means to the relevant block predictions in the `forward`
-        # method.
-        self._set_out_train_inv_means(out_train_inv_means)
+        # Passing `invariant_baseline` as a TensorMap will add this back to the
+        # predictions made on invariant blocks.
+        self._set_invariant_baseline(invariant_baseline)
 
         # Set the settings required to build a descriptor from ASE frames and
         # transform the raw prediction of the model
@@ -208,6 +251,21 @@ class RhoModel(torch.nn.Module):
         self._activation_fn = activation_fn
 
     @property
+    def bias_nn(self) -> str:
+        """
+        Returns whether a bias is used in the nonlinear mutliplier for each
+        equivariant block.
+        """
+        return self._bias_nn
+
+    def _set_bias_nn(self, bias_nn: bool):
+        """
+        Sets whether a bias is used in the nonlinear mutliplier for each
+        equivariant block.
+        """
+        self._bias_nn = bias_nn
+
+    @property
     def models(self) -> torch.nn.ModuleList:
         """
         Returns all the block models
@@ -240,24 +298,25 @@ class RhoModel(torch.nn.Module):
                     in_invariant_features=len(in_invariant_block.properties),
                     hidden_layer_widths=self._hidden_layer_widths[key_i],
                     activation_fn=self._activation_fn,
+                    bias_nn=self._bias_nn,
                 )
             tmp_models.append(block_model)
         self._models = torch.nn.ModuleList(tmp_models)
 
     @property
-    def out_train_inv_means(self) -> TensorMap:
-        return self._out_train_inv_means
+    def invariant_baseline(self) -> TensorMap:
+        return self._invariant_baseline
 
-    def _set_out_train_inv_means(self, out_train_inv_means: TensorMap) -> None:
+    def _set_invariant_baseline(self, invariant_baseline: TensorMap) -> None:
         """
         Sets the output invariant means TensorMap, and stores it in the
-        "out_train_inv_means" attribute.
+        "invariant_baseline" attribute.
         """
-        if out_train_inv_means is None:
-            self._out_train_inv_means = None
+        if invariant_baseline is None:
+            self._invariant_baseline = None
         else:
-            self._out_train_inv_means = metatensor.to(
-                out_train_inv_means,
+            self._invariant_baseline = metatensor.to(
+                invariant_baseline,
                 "torch",
                 dtype=self._torch_settings.get("dtype"),
                 device=self._torch_settings.get("device"),
@@ -396,20 +455,20 @@ class RhoModel(torch.nn.Module):
                     check_args=check_args,
                 )
 
-            # Add back in the invariant means of the training data to invariant blocks
+            # Add baseline to invariant blocks if required
             if (
-                self._out_train_inv_means is not None
+                self._invariant_baseline is not None
                 and key["spherical_harmonics_l"] == 0
             ):
-                if not isinstance(self._out_train_inv_means.block(0), torch.Tensor):
-                    self._out_train_inv_means = metatensor.to(
-                        self._out_train_inv_means,
+                if not isinstance(self._invariant_baseline.block(0), torch.Tensor):
+                    self._invariant_baseline = metatensor.to(
+                        self._invariant_baseline,
                         backend="torch",
                         requires_grad=False,
                         dtype=self._torch_settings["dtype"],
                         device=self._torch_settings["device"],
                     )
-                inv_means = self._out_train_inv_means.block(
+                inv_means = self._invariant_baseline.block(
                     spherical_harmonics_l=0, species_center=key["species_center"]
                 )
                 inv_means_vals = torch.vstack(
@@ -629,12 +688,13 @@ class _NonLinearModel(torch.nn.Module):
         in_invariant_features: int,
         hidden_layer_widths: List[int],
         activation_fn: torch.nn.Module,
+        bias_nn: bool = False,
     ):
         super(_NonLinearModel, self).__init__()
 
         # Define the input layer used on the input equivariant tensor. A
         # learnable bias should only be used if the equivariant passed is
-        # invariant.
+        # invariant, and if requested.
         self.input_layer = torch.nn.Linear(
             in_features=in_features,
             out_features=hidden_layer_widths[-1],
@@ -650,7 +710,7 @@ class _NonLinearModel(torch.nn.Module):
             torch.nn.Linear(
                 in_features=in_invariant_features,
                 out_features=hidden_layer_widths[0],
-                bias=bias,
+                bias=bias_nn,
             )
         ]
         for layer_i in range(0, len(hidden_layer_widths) - 1):
@@ -659,14 +719,14 @@ class _NonLinearModel(torch.nn.Module):
                 torch.nn.Linear(
                     in_features=hidden_layer_widths[layer_i],
                     out_features=hidden_layer_widths[layer_i + 1],
-                    bias=bias,
+                    bias=bias_nn,
                 )
             )
         self.invariant_nn = torch.nn.Sequential(*layers)
 
         # Define the output layer that makes the prediction. This acts on
         # equivariants, so should only use a learnable bias if the equivariant
-        # passed is an invariant.
+        # passed is an invariant, and if requested.
         self.output_layer = torch.nn.Linear(
             in_features=hidden_layer_widths[-1],
             out_features=out_features,
