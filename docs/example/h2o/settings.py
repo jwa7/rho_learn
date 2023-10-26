@@ -11,9 +11,11 @@ from rholearn import loss
 # ===== Define structural data from .xyz file =====
 # =================================================
 
-# Define path to top level of the data dir. Targets and descriptors will be
-# saved here (or should live here)
-data_dir = "/home/abbott/rho/rho_learn/docs/example/h2o/data"
+# Define path to where data is and where ml outputs shoudl be saved.
+top_dir = "/scratch/abbott/h2o_homo/"
+
+data_dir = os.path.join(top_dir, "data")
+run_dir = os.path.join(top_dir, "ml")
 
 # Load all the frames
 all_frames = ase.io.read(os.path.join(data_dir, "water_monomers_1k.xyz"), ":")
@@ -23,7 +25,7 @@ all_idxs = np.arange(len(all_frames))
 np.random.default_rng(seed=10).shuffle(all_idxs)
 
 # Take a subset of the frames if desired
-n_frames = 100
+n_frames = 10
 idxs = all_idxs[:n_frames]
 frames = [all_frames[A] for A in idxs]
 
@@ -116,9 +118,11 @@ crossval_settings = {
     "group_sizes": [0.6, 0.2, 0.2],  # the abs/rel group sizes for the data splits
     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
     "seed": 100,  # random seed for shuffling data indices
+}
 
+data_settings = {
     # Calculate the standard deviation of target training data?
-    "calc_out_train_std_dev": False,
+    "calc_out_train_std_dev": ("output", "train"),
 }
 
 
@@ -135,9 +139,6 @@ torch_settings = {
 
 # Define ML settings
 ml_settings = {
-
-    # Set path where the simulation should be run / results saved
-    "run_dir": "/home/abbott/rho/rho_learn/docs/example/h2o/ml",
 
     "model": {
 

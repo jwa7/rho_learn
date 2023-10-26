@@ -1,5 +1,6 @@
 # Useful standard and scientific ML libraries
 import os
+import shutil
 import time
 from typing import Tuple
 
@@ -28,7 +29,7 @@ from settings import *
 # =================================================
 
 # Log the start of the training
-log_path = os.path.join(ml_settings["run_dir"], "training.log")
+log_path = os.path.join(run_dir, "training.log")
 io.log(log_path, "# Starting training")
 
 
@@ -49,9 +50,15 @@ def processed_dir(A):
 
 
 # Define dir for running ML calculations
-chkpt_dir = os.path.join(ml_settings["run_dir"], "checkpoints")
+chkpt_dir = os.path.join(run_dir, "checkpoints")
 if not os.path.exists(chkpt_dir):
     os.makedirs(chkpt_dir)
+
+# Copy settings file to run dir
+shutil.copy(
+    os.path.join(os.getcwd(), "settings.py"), 
+    os.path.join(run_dir, "settings.py")
+)
 
 
 # =================================================
@@ -67,7 +74,7 @@ train_idxs, test_idxs, val_idxs = data.group_idxs(
     seed=crossval_settings["seed"],
 )
 np.savez(
-    os.path.join(ml_settings["run_dir"], "idxs.npz"),
+    os.path.join(run_dir, "idxs.npz"),
     idxs=idxs,
     train_idxs=train_idxs,
     test_idxs=test_idxs,
@@ -94,16 +101,27 @@ rho_data = data.RhoData(
 # Initialize model
 # =================================================
 
-# If usign a non-learnable bias in the form of a invariant baseline, calculate
-# it and store it in the model on initialization
+# If using a non-learnable bias in the form of a invariant baseline, calculate
+# it and store it in the model on initialization. This should only be
+# calculated on the training data.
 if ml_settings["model"]["use_invariant_baseline"]:
-    # This should only be calculated on the training data
-    out_train = metatensor.join(
-        [rho_data[A][2] for A in train_idxs], axis="samples", remove_tensor_name=True
+    invariant_baseline = rho_data.get_invariant_means(
+        idxs=train_idxs, which_data="output"
     )
-    invariant_baseline = data.get_invariant_means(out_train)
 else:
     invariant_baseline = None
+
+# Calculate the standard deviation of the training data
+if data_settings.get("standard_deviation"):
+    which_data, which_idxs = data_settings["standard_deviation"]
+    tmp_invariant_baseline = invariant_baseline if which_idxs == "train" else None
+    which_idxs = {"all": idxs, "train": train_idxs, "test": test_idxs, "val": val_idxs}[which_idxs]
+    stddev = rho_data.get_standard_deviation(
+        idxs=which_idxs, which_data="output", invariant_baseline=tmp_invariant_baseline,
+        use_overlaps=rho_data.aux_path is not None,
+    )
+    io.log(log_path, f"# stddev: {stddev}")
+    np.savez(os.path.join(run_dir, "stddev.npz"), stddev=stddev)
 
 
 # For descriptor building, we need to store the rascaline settings for
@@ -263,7 +281,7 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
             pred_coeffs, pred_fields = model.predict(
                 structure_idxs=tmp_idxs,
                 frames=tmp_frames,
-                pred_dir=pred_dir,
+                save_dir=pred_dir,
             )
 
             # Evaluate mean L1 Error
