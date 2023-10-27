@@ -18,10 +18,7 @@ top_dir = "/scratch/abbott/h2o_ksos"
 data_dir = os.path.join(top_dir, "data")
 
 # Where ML outputs should be written
-ml_dir = os.path.join(top_dir, "ml_lumo")
-
-# Define SCF restart index
-restart_idx = 1
+ml_dir = "."  # run in the dir that the run script is executed in
 
 data_settings = {
 
@@ -29,7 +26,7 @@ data_settings = {
     "all_frames": ase.io.read(os.path.join(data_dir, "water_monomers_1k.xyz"), ":"),
     
     # Define a subset of frames
-    "n_frames": 200,
+    "n_frames": 30,
 
     # Define a random seed
     "seed": 314,
@@ -205,7 +202,7 @@ ml_settings = {
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
     "validation": {
-        "interval": 5,  # validate every x epochs against real-space SCF field
+        "interval": 2,  # validate every x epochs against real-space SCF field
     },
     # "learning": {
         # Define the number of training subsets to use and which one to run
