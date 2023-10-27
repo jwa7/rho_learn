@@ -302,7 +302,7 @@ class RhoData(torch.utils.data.Dataset):
             stddev += loss_fn(input=output_std, target=out_zeros, overlap=overlap)
 
             # Clear memory
-            del out_train, overlap, out_zeros
+            del output, overlap, out_zeros
             gc.collect()
 
         # Return the standard deviation

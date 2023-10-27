@@ -33,9 +33,9 @@ log_path = os.path.join(run_dir, "training.log")
 io.log(log_path, "# Starting training")
 
 
-# Define a function that returns the data directory for a given structure based
-# on its structure index
-def struct_dir(A):
+# Define a function that returns the data directory containing RI outputs for a
+# given structure based on its structure index
+def ri_dir(A):
     return os.path.join(data_dir, f"{A}", "0")
 
 
@@ -46,7 +46,7 @@ def pred_dir(A):
 
 # Define callable for path to processed data (i.e. TensorMaps)
 def processed_dir(A):
-    return os.path.join(struct_dir(A), "processed/")
+    return os.path.join(ri_dir(A), "processed/")
 
 
 # Define dir for running ML calculations
@@ -56,8 +56,7 @@ if not os.path.exists(chkpt_dir):
 
 # Copy settings file to run dir
 shutil.copy(
-    os.path.join(os.getcwd(), "settings.py"), 
-    os.path.join(run_dir, "settings.py")
+    os.path.join(os.getcwd(), "settings.py"), os.path.join(run_dir, "settings.py")
 )
 
 
@@ -92,11 +91,6 @@ rho_data = data.RhoData(
     **torch_settings,
 )
 
-# if crossval_settings["calc_out_train_std_dev"]:
-#     out_train_std_dev = rho_data.out_train_std_dev.detach().numpy()
-#     io.log(log_path, f"# out_train_std_dev: {out_train_std_dev}")
-#     np.savez("ml/std_dev.npz", out_train=out_train_std_dev)
-
 # =================================================
 # Initialize model
 # =================================================
@@ -115,9 +109,13 @@ else:
 if data_settings.get("standard_deviation"):
     which_data, which_idxs = data_settings["standard_deviation"]
     tmp_invariant_baseline = invariant_baseline if which_idxs == "train" else None
-    which_idxs = {"all": idxs, "train": train_idxs, "test": test_idxs, "val": val_idxs}[which_idxs]
+    which_idxs = {"all": idxs, "train": train_idxs, "test": test_idxs, "val": val_idxs}[
+        which_idxs
+    ]
     stddev = rho_data.get_standard_deviation(
-        idxs=which_idxs, which_data="output", invariant_baseline=tmp_invariant_baseline,
+        idxs=which_idxs,
+        which_data="output",
+        invariant_baseline=tmp_invariant_baseline,
         use_overlaps=rho_data.aux_path is not None,
     )
     io.log(log_path, f"# stddev: {stddev}")
@@ -270,36 +268,41 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
     )
 
     # Calculate L1 error against real-space QM scalar fields
-    mean_maes = {"train": -1, "test": -1, "val": -1}
+    mean_maes = {"train": None, "test": None}
     if (epoch - 1) % ml_settings["validation"]["interval"] == 0:
-        for tmp_idxs, category in zip(
-            [train_idxs, test_idxs],  # val_idxs],
-            ["train", "test"],  # "val"]
-        ):
-            # Get frames and make prediction
-            tmp_frames = [all_frames[A] for A in tmp_idxs]
-            pred_coeffs, pred_fields = model.predict(
-                structure_idxs=tmp_idxs,
-                frames=tmp_frames,
-                save_dir=pred_dir,
+        mean_maes = {"train": [], "test": []}
+        
+        # Get frames and make prediction
+        tmp_idxs = np.concatenate([train_idxs, test_idxs])
+        tmp_frames = [all_frames[A] for A in tmp_idxs]
+        pred_coeffs, pred_fields = model.predict(
+            structure_idxs=tmp_idxs,
+            frames=tmp_frames,
+            save_dir=pred_dir,
+        )
+
+        # Evaluate mean L1 Error
+        for A, pred_field in zip(tmp_idxs, pred_fields):
+            # Get grids and check they're the same in the SCF and ML directories
+            grid = np.loadtxt(os.path.join(ri_dir(A), "partition_tab.out"))
+            assert np.allclose(
+                grid,
+                np.loadtxt(os.path.join(pred_dir(A), "partition_tab.out")),
             )
 
-            # Evaluate mean L1 Error
-            mean_mae = []
-            for A, pred_field in zip(tmp_idxs, pred_fields):
-                # Get grids and check they're the same in the SCF and ML directories
-                grid = np.loadtxt(os.path.join(struct_dir(A), "partition_tab.out"))
-                # assert np.allclose(scf_grid, np.loadtxt(os.path.join(model.target_kwargs["pred_dir"](A), "partition_tab.out")))
-
-                # Get L1 error vs real-space QM scalar field
-                target_field = np.loadtxt(os.path.join(struct_dir(A), "rho_ref.out"))
-                mae = aims_parser.get_percent_mae_between_fields(
-                    input=pred_field,
-                    target=target_field,
-                    grid=grid,
-                )
-                mean_mae.append(mae)
-            mean_maes[category] = np.mean(mean_mae)
+            # Get L1 error vs real-space QM scalar field
+            target_field = np.loadtxt(os.path.join(ri_dir(A), "rho_ref.out"))
+            mae = aims_parser.get_percent_mae_between_fields(
+                input=pred_field,
+                target=target_field,
+                grid=grid,
+            )
+            if A in train_idxs:
+                mean_maes["train"].append(mae)
+            elif A in test_idxs:
+                mean_maes["test"].append(mae)
+        for category in ["train", "test"]:
+            mean_maes[category] = np.mean(mean_maes[category])
 
     # Write epoch results
     io.log(
