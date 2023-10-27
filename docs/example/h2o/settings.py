@@ -12,26 +12,27 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-top_dir = "/scratch/abbott/h2o_homo/"
+top_dir = "/scratch/abbott/h2o_ksos"
+
+# Where the generated data should be written
+data_dir = os.path.join(top_dir, "data")
+
+# Where ML outputs should be written
+ml_dir = os.path.join(top_dir, "ml_lumo")
+
+# Define SCF restart index
+restart_idx = 1
 
 data_settings = {
 
-    # Define path to where data is
-    "data_dir": os.path.join(top_dir, "data"),
-
     # Read in all frames in complete dataset
-    "all_frames": ase.io.read(os.path.join(top_dir, "data", "water_monomers_1k.xyz"), ":"),
-
-    # Define where ML outputs should be saved. THis shoudl include a restart
-    # idx, i.e. the index of the RI calculation started from the same SCF restart
-    "restart_idx": 1,
-    "ml_dir": lambda restart_idx: os.path.join(top_dir, "ml", f"{restart_idx}"),
+    "all_frames": ase.io.read(os.path.join(data_dir, "water_monomers_1k.xyz"), ":"),
     
     # Define a subset of frames
-    "n_frames": 100,
+    "n_frames": 200,
 
     # Define a random seed
-    "seed": 10,
+    "seed": 314,
 
     # Calculate the standard deviation?
     # i.e. to calc it for output training data:
@@ -48,7 +49,7 @@ aims_path = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi
 
 # Define the AIMS settings that are common to all calculations
 base_aims_kwargs = {
-    "species_dir": "/home/abbott/codes/new_aims/FHIaims/species_defaults/defaults_2020/tight",
+    "species_dir": "/home/abbott/rho/rho_learn/docs/example/h2o/data/aims_species/tight/modified",
     "xc": "pbe0",
     "spin": "none",
     "relativistic": "none",
@@ -204,7 +205,7 @@ ml_settings = {
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
     "validation": {
-        "interval": 20,  # validate every x epochs against real-space SCF field
+        "interval": 5,  # validate every x epochs against real-space SCF field
     },
     # "learning": {
         # Define the number of training subsets to use and which one to run
