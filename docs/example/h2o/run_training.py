@@ -2,6 +2,7 @@
 import os
 import shutil
 import time
+from functools import partial
 from typing import Tuple
 
 import ase.io
@@ -28,37 +29,49 @@ from settings import *
 # Basic set up
 # =================================================
 
-# Log the start of the training
-log_path = os.path.join(run_dir, "training.log")
-io.log(log_path, "# Starting training")
+# Get all frames and the restart idx
+all_frames = data_settings["all_frames"]
+restart_idx = data_settings["restart_idx"]
+
+# Shuffle the total set of structure indices
+idxs = np.arange(len(all_frames))
+np.random.default_rng(seed=data_settings["seed"]).shuffle(idxs)
+
+# Take a subset of the frames if desired
+idxs = idxs[:data_settings["n_frames"]]
+frames = [all_frames[A] for A in idxs]
 
 
 # Define a function that returns the data directory containing RI outputs for a
 # given structure based on its structure index
-def ri_dir(A):
-    return os.path.join(data_dir, f"{A}", "0")
-
-
-# Create a callable for directories to save predictions by structure index
-def pred_dir(A):
-    return os.path.join("/scratch/abbott/h2o_homo/ml/predictions", f"{A}")
-
+def ri_dir(A, restart_idx):
+    return os.path.join(data_settings["data_dir"], f"{A}", f"{restart_idx}")
 
 # Define callable for path to processed data (i.e. TensorMaps)
-def processed_dir(A):
-    return os.path.join(ri_dir(A), "processed/")
+def processed_dir(A, restart_idx):
+    return os.path.join(ri_dir(A, restart_idx), "processed/")
 
+# Define a callable to where the ml will be run, based on the restart_idx
+def run_dir(restart_idx):
+    return data_settings["ml_dir"](restart_idx)
 
-# Define dir for running ML calculations
-chkpt_dir = os.path.join(run_dir, "checkpoints")
+# Create a callable for directories to save predictions by structure index
+def pred_dir(A, restart_idx):
+    return os.path.join(run_dir(restart_idx), "predictions", f"{A}")
+
+# Define a checkpoint dir
+chkpt_dir = os.path.join(run_dir(restart_idx), "checkpoints")
 if not os.path.exists(chkpt_dir):
     os.makedirs(chkpt_dir)
 
 # Copy settings file to run dir
 shutil.copy(
-    os.path.join(os.getcwd(), "settings.py"), os.path.join(run_dir, "settings.py")
+    os.path.join(os.getcwd(), "settings.py"), os.path.join(run_dir(restart_idx), "settings.py")
 )
 
+# Log the start of the training
+log_path = os.path.join(run_dir(restart_idx), "training.log")
+io.log(log_path, "# Starting training")
 
 # =================================================
 # Dataset and dataloaders
@@ -70,10 +83,10 @@ train_idxs, test_idxs, val_idxs = data.group_idxs(
     n_groups=crossval_settings["n_groups"],
     group_sizes=crossval_settings["group_sizes"],
     shuffle=crossval_settings["shuffle"],
-    seed=crossval_settings["seed"],
+    seed=data_settings["seed"],
 )
 np.savez(
-    os.path.join(run_dir, "idxs.npz"),
+    os.path.join(run_dir(restart_idx), "idxs.npz"),
     idxs=idxs,
     train_idxs=train_idxs,
     test_idxs=test_idxs,
@@ -84,9 +97,9 @@ io.log(log_path, f"# total num. idxs: {len(idxs)}")
 # Construct dataset
 rho_data = data.RhoData(
     idxs=np.concatenate([train_idxs, test_idxs, val_idxs]),
-    in_path=lambda A: os.path.join(processed_dir(A), "lsoap.npz"),
-    out_path=lambda A: os.path.join(processed_dir(A), "ri_coeffs.npz"),
-    aux_path=lambda A: os.path.join(processed_dir(A), "ri_ovlp.npz"),
+    in_path=lambda A: os.path.join(processed_dir(A, restart_idx), "lsoap.npz"),
+    out_path=lambda A: os.path.join(processed_dir(A, restart_idx), "ri_coeffs.npz"),
+    aux_path=lambda A: os.path.join(processed_dir(A, restart_idx), "ri_ovlp.npz"),
     keep_in_mem=ml_settings["loading"]["train"]["keep_in_mem"],
     **torch_settings,
 )
@@ -119,7 +132,7 @@ if data_settings.get("standard_deviation"):
         use_overlaps=rho_data.aux_path is not None,
     )
     io.log(log_path, f"# stddev: {stddev}")
-    np.savez(os.path.join(run_dir, "stddev.npz"), stddev=stddev)
+    np.savez(os.path.join(run_dir(restart_idx), "stddev.npz"), stddev=stddev)
 
 
 # For descriptor building, we need to store the rascaline settings for
@@ -133,7 +146,7 @@ descriptor_kwargs = {
 
 # For target building, the base AIMS settings need to be stored, along with the
 # basis set definition.
-basis_set = io.unpickle_dict(os.path.join(processed_dir(idxs[0]), "calc_info.pickle"))[
+basis_set = io.unpickle_dict(os.path.join(processed_dir(idxs[0], restart_idx), "calc_info.pickle"))[
     "basis_set"
 ]
 target_kwargs = {
@@ -252,7 +265,7 @@ if ml_settings["training"].get("restart_epoch") is not None:
     start_epoch += 1
 
 # Start training loop
-io.log(log_path, "# epoch train_loss test_loss train_mae test_mae val_mae time")
+io.log(log_path, "# epoch train_loss test_loss train_mae test_mae time")
 
 for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
     # Training step
@@ -268,7 +281,7 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
     )
 
     # Calculate L1 error against real-space QM scalar fields
-    mean_maes = {"train": None, "test": None}
+    mean_maes = {"train": -1, "test": -1}
     if (epoch - 1) % ml_settings["validation"]["interval"] == 0:
         mean_maes = {"train": [], "test": []}
         
@@ -278,20 +291,20 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
         pred_coeffs, pred_fields = model.predict(
             structure_idxs=tmp_idxs,
             frames=tmp_frames,
-            save_dir=pred_dir,
+            save_dir=partial(pred_dir, restart_idx=restart_idx),
         )
 
         # Evaluate mean L1 Error
         for A, pred_field in zip(tmp_idxs, pred_fields):
             # Get grids and check they're the same in the SCF and ML directories
-            grid = np.loadtxt(os.path.join(ri_dir(A), "partition_tab.out"))
+            grid = np.loadtxt(os.path.join(ri_dir(A, restart_idx), "partition_tab.out"))
             assert np.allclose(
                 grid,
-                np.loadtxt(os.path.join(pred_dir(A), "partition_tab.out")),
+                np.loadtxt(os.path.join(pred_dir(A, restart_idx), "partition_tab.out")),
             )
 
             # Get L1 error vs real-space QM scalar field
-            target_field = np.loadtxt(os.path.join(ri_dir(A), "rho_ref.out"))
+            target_field = np.loadtxt(os.path.join(ri_dir(A, restart_idx), "rho_ref.out"))
             mae = aims_parser.get_percent_mae_between_fields(
                 input=pred_field,
                 target=target_field,
@@ -307,7 +320,7 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
     # Write epoch results
     io.log(
         log_path,
-        f"{epoch} {train_loss_epoch} {test_loss_epoch} {mean_maes['train']} {mean_maes['test']} {mean_maes['val']} {time.time() - t0}",
+        f"{epoch} {train_loss_epoch} {test_loss_epoch} {mean_maes['train']} {mean_maes['test']} {time.time() - t0}",
     )
     # Save model, optimizer, scheduler
     if (epoch - 1) % ml_settings["training"]["save_interval"] == 0:

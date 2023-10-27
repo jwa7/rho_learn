@@ -7,27 +7,36 @@ import torch
 from rholearn import loss
 
 
-# =================================================
-# ===== Define structural data from .xyz file =====
-# =================================================
+# ====================================================
+# ===== Define data settings, including xyz data =====
+# ====================================================
 
-# Define path to where data is and where ml outputs shoudl be saved.
-top_dir = "/home/abbott/rho/rho_learn/docs/example/h2o"
+# Define the top level dir
+top_dir = "/scratch/abbott/h2o_homo/"
 
-data_dir = os.path.join(top_dir, "data")
-run_dir = os.path.join(top_dir, "ml")
+data_settings = {
 
-# Load all the frames
-all_frames = ase.io.read(os.path.join(data_dir, "water_monomers_1k.xyz"), ":")
+    # Define path to where data is
+    "data_dir": os.path.join(top_dir, "data"),
 
-# Shuffle the total set of structure indices
-all_idxs = np.arange(len(all_frames))
-np.random.default_rng(seed=10).shuffle(all_idxs)
+    # Read in all frames in complete dataset
+    "all_frames": ase.io.read(os.path.join(top_dir, "data", "water_monomers_1k.xyz"), ":"),
 
-# Take a subset of the frames if desired
-n_frames = 10
-idxs = all_idxs[:n_frames]
-frames = [all_frames[A] for A in idxs]
+    # Define where ML outputs should be saved. THis shoudl include a restart
+    # idx, i.e. the index of the RI calculation started from the same SCF restart
+    "restart_idx": 1,
+    "ml_dir": lambda restart_idx: os.path.join(top_dir, "ml", f"{restart_idx}"),
+    
+    # Define a subset of frames
+    "n_frames": 100,
+
+    # Define a random seed
+    "seed": 10,
+
+    # Calculate the standard deviation?
+    # i.e. to calc it for output training data:
+    "calc_out_train_std_dev": ("output", "train"),
+}
 
 
 # ====================================================
@@ -115,14 +124,8 @@ cg_settings = {
 crossval_settings = {
     # Settings for cross validation
     "n_groups": 3,  # num groups for data split (i.e. 3 for train-test-val)
-    "group_sizes": [0.6, 0.2, 0.2],  # the abs/rel group sizes for the data splits
+    "group_sizes": [0.7, 0.2, 0.1],  # the abs/rel group sizes for the data splits
     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
-    "seed": 100,  # random seed for shuffling data indices
-}
-
-data_settings = {
-    # Calculate the standard deviation of target training data?
-    "calc_out_train_std_dev": ("output", "train"),
 }
 
 
@@ -195,13 +198,13 @@ ml_settings = {
     },
     # Parameters for training procedure
     "training": {
-        "n_epochs": 10,  # number of total epochs to run
-        "save_interval": 5,  # save model and optimizer state every x intervals
+        "n_epochs": 2500,  # number of total epochs to run
+        "save_interval": 10,  # save model and optimizer state every x intervals
         "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
     "validation": {
-        "interval": 2,  # validate every x epochs against real-space SCF field
+        "interval": 20,  # validate every x epochs against real-space SCF field
     },
     # "learning": {
         # Define the number of training subsets to use and which one to run
