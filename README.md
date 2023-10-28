@@ -164,11 +164,12 @@ from rholearn.models import RhoModel
 # Examples
 
 An end-to-end workflow of learning the HOMO scalar field of gas-phase water
-monomers is provided in the `docs/example/scalar_field` directory. Note: generate of the
+monomers is provided in the `docs/example/field` directory. Note: generate of the
 learning targets requires a specific version of the quantum chemistry code
 `FHI-aims`, which is not yet publicly available.
 
-An example of tensorial learning is provided in 
+An example of tensorial learning is provided in `docs/example/field`, whereby
+the chemical shielding (or 'EFG') tensors are used as an example.
 
 ## Water
 
