@@ -12,13 +12,13 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-top_dir = "/scratch/abbott/h2o_ksos"
+top_dir = "/home/abbott/rho/rho_learn/docs/example/field"
 
 # Where the generated data should be written
 data_dir = os.path.join(top_dir, "data")
 
 # Where ML outputs should be written
-ml_dir = "."  # run in the dir that the run script is executed in
+ml_dir = os.path.join(top_dir, "ml")
 
 data_settings = {
 
@@ -26,7 +26,7 @@ data_settings = {
     "all_frames": ase.io.read(os.path.join(data_dir, "water_monomers_1k.xyz"), ":"),
     
     # Define a subset of frames
-    "n_frames": 30,
+    "n_frames": 10,
 
     # Define a random seed
     "seed": 314,
@@ -46,7 +46,7 @@ aims_path = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi
 
 # Define the AIMS settings that are common to all calculations
 base_aims_kwargs = {
-    "species_dir": "/home/abbott/rho/rho_learn/docs/example/h2o/data/aims_species/tight/modified",
+    "species_dir": "/home/abbott/rho/rho_learn/rhocalc/aims/aims_species/tight/default",
     "xc": "pbe0",
     "spin": "none",
     "relativistic": "none",
