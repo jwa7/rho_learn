@@ -196,13 +196,13 @@ ml_settings = {
     },
     # Parameters for training procedure
     "training": {
-        "n_epochs": 2500,  # number of total epochs to run
-        "save_interval": 10,  # save model and optimizer state every x intervals
+        "n_epochs": 10,  # number of total epochs to run
+        "save_interval": 5,  # save model and optimizer state every x intervals
         "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
     "validation": {
-        "interval": 2,  # validate every x epochs against real-space SCF field
+        "interval": 5,  # validate every x epochs against real-space SCF field
     },
     # "learning": {
         # Define the number of training subsets to use and which one to run
