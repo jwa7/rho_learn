@@ -493,7 +493,7 @@ class RhoModel(torch.nn.Module):
         structure_idxs: List[int],
         frames: List[ase.Atoms],
         descriptor: Optional[TensorMap] = None,
-        build_target: bool = True,
+        build_target: bool = False,
         save_dir: Optional[Callable] = None,
     ) -> TensorMap:
         """

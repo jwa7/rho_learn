@@ -11,3 +11,7 @@ docs/example/h2o/data/*
 docs/example/h2o/ml/*
 docs/example/h2o/slurm_out/*
 docs/example/h2o/*.sh
+
+# EFG example
+docs/example/efg/data/*
+docs/example/efg/ml/checkpoints/*

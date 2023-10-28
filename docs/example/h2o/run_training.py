@@ -291,6 +291,7 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
         pred_coeffs, pred_fields = model.predict(
             structure_idxs=tmp_idxs,
             frames=tmp_frames,
+            build_target=True,
             save_dir=partial(pred_dir, restart_idx=restart_idx),
         )
 
