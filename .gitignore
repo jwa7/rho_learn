@@ -3,15 +3,13 @@
 build/
 rho_learn.egg-info
 
+*slurm_out/*
+*.sh
+
 # Water example
-docs/example/water/data/
-docs/example/water/runs/
-docs/example/new_water/
-docs/example/h2o/data/*
-docs/example/h2o/ml/*
-docs/example/h2o/slurm_out/*
-docs/example/h2o/*.sh
+docs/example/field/data/*
+docs/example/field/ml/*
 
 # EFG example
-docs/example/efg/data/*
-docs/example/efg/ml/checkpoints/*
+docs/example/tensor/data/*
+docs/example/tensor/ml/*

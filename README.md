@@ -5,10 +5,11 @@ Author: Joseph W. Abbott, PhD Student @ Lab COSMO, EPFL
 
 ## About
 
-A proof-of-concept workflow for torch-based electron density learning.
+A proof-of-concept workflow for torch-based equivariant learning of scalar
+fields and tensorial properties.
+
 Equivariant structural representations, that is those that transform
-equivariantly under rotation with the irreducible spherical components of the
-target property (i.e. whether they be invariant or covariant), can be
+equivariantly under rotation with the irreducible spherical components of thetarget property (i.e. whether they be invariant or covariant), can be
 constructed using the xyz coordinates of a set of training molecules. As part of
 a supervised machine learning scheme, these structural representations form
 inputs to the machine learning model, while reference electron densities
@@ -155,19 +156,19 @@ from rascaline.utils import clebsch_gordan
 import metatensor
 from metatensor import Labels, TensorMap
 
-from rholearn.loss import RhoLoss
+from rholearn.loss import L2Loss
 from rholearn.models import RhoModel
-from rhoparse import aims_parser
 ```
 
 
 # Examples
 
-An end-to-end workflow, including training and prediction, is provided in XXX
+An end-to-end workflow of learning the HOMO scalar field of gas-phase water
+monomers is provided in the `docs/example/scalar_field` directory. Note: generate of the
+learning targets requires a specific version of the quantum chemistry code
+`FHI-aims`, which is not yet publicly available.
 
-The functionality of this package is demonstrated in the example notebooks in
-the ``rho_learn/docs/example/azoswitch`` directory. This section will briefly the
-various parts of the workflow.
+An example of tensorial learning is provided in 
 
 ## Water
 
