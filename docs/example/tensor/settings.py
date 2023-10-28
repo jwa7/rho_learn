@@ -12,7 +12,7 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-top_dir = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/docs/example/efg"
+top_dir = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/docs/example/tensor"
 
 # Where the generated data should be written
 data_dir = os.path.join(top_dir, "data")
