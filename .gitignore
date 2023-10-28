@@ -8,6 +8,7 @@ rho_learn.egg-info
 docs/example/field/data/*
 docs/example/field/ml/*
 docs/example/field/slurm_out/*
+docs/example/field/precalc_data/*/lsoap.npz
 
 # Tensor example
 docs/example/tensor/data/*
