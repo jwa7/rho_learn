@@ -30,22 +30,22 @@ from settings import *
 # =================================================
 
 # Get all frames and the restart idx
-all_frames = data_settings["all_frames"]
-restart_idx = data_settings["restart_idx"]
+all_frames = DATA_SETTINGS["all_frames"]
+restart_idx = DATA_SETTINGS["restart_idx"]
 
 # Shuffle the total set of structure indices
 idxs = np.arange(len(all_frames))
-np.random.default_rng(seed=data_settings["seed"]).shuffle(idxs)
+np.random.default_rng(seed=DATA_SETTINGS["seed"]).shuffle(idxs)
 
 # Take a subset of the frames if desired
-idxs = idxs[:data_settings["n_frames"]]
+idxs = idxs[:DATA_SETTINGS["n_frames"]]
 frames = [all_frames[A] for A in idxs]
 
 
 # Define a function that returns the data directory containing RI outputs for a
 # given structure based on its structure index
 def ri_dir(A, restart_idx):
-    return os.path.join(data_settings["data_dir"], f"{A}", f"{restart_idx}")
+    return os.path.join(DATA_SETTINGS["DATA_DIR"], f"{A}", f"{restart_idx}")
 
 # Define callable for path to processed data (i.e. TensorMaps)
 def processed_dir(A, restart_idx):
@@ -53,7 +53,7 @@ def processed_dir(A, restart_idx):
 
 # Define a callable to where the ml will be run, based on the restart_idx
 def run_dir(restart_idx):
-    return data_settings["ml_dir"](restart_idx)
+    return DATA_SETTINGS["ML_DIR"](restart_idx)
 
 # Create a callable for directories to save predictions by structure index
 def pred_dir(A, restart_idx):
@@ -80,10 +80,10 @@ io.log(log_path, "# Starting training")
 # Perform a train/test/val split of structure idxs
 train_idxs, test_idxs, val_idxs = data.group_idxs(
     idxs=idxs,
-    n_groups=crossval_settings["n_groups"],
-    group_sizes=crossval_settings["group_sizes"],
-    shuffle=crossval_settings["shuffle"],
-    seed=data_settings["seed"],
+    n_groups=CROSSVAL_SETTINGS["n_groups"],
+    group_sizes=CROSSVAL_SETTINGS["group_sizes"],
+    shuffle=CROSSVAL_SETTINGS["shuffle"],
+    seed=DATA_SETTINGS["seed"],
 )
 np.savez(
     os.path.join(run_dir(restart_idx), "idxs.npz"),
@@ -100,8 +100,8 @@ rho_data = data.RhoData(
     in_path=lambda A: os.path.join(processed_dir(A, restart_idx), "lsoap.npz"),
     out_path=lambda A: os.path.join(processed_dir(A, restart_idx), "ri_coeffs.npz"),
     aux_path=lambda A: os.path.join(processed_dir(A, restart_idx), "ri_ovlp.npz"),
-    keep_in_mem=ml_settings["loading"]["train"]["keep_in_mem"],
-    **torch_settings,
+    keep_in_mem=ML_SETTINGS["loading"]["train"]["keep_in_mem"],
+    **TORCH_SETTINGS,
 )
 
 # =================================================
@@ -111,7 +111,7 @@ rho_data = data.RhoData(
 # If using a non-learnable bias in the form of a invariant baseline, calculate
 # it and store it in the model on initialization. This should only be
 # calculated on the training data.
-if ml_settings["model"]["use_invariant_baseline"]:
+if ML_SETTINGS["model"]["use_invariant_baseline"]:
     invariant_baseline = rho_data.get_invariant_means(
         idxs=train_idxs, which_data="output"
     )
@@ -119,8 +119,8 @@ else:
     invariant_baseline = None
 
 # Calculate the standard deviation of the training data
-if data_settings.get("standard_deviation"):
-    which_data, which_idxs = data_settings["standard_deviation"]
+if DATA_SETTINGS.get("standard_deviation"):
+    which_data, which_idxs = DATA_SETTINGS["standard_deviation"]
     tmp_invariant_baseline = invariant_baseline if which_idxs == "train" else None
     which_idxs = {"all": idxs, "train": train_idxs, "test": test_idxs, "val": val_idxs}[
         which_idxs
@@ -140,8 +140,8 @@ if data_settings.get("standard_deviation"):
 # The `descriptor_builder` function in "predictor.py" contains the 'recipe' for
 # using these settings to transform an ASE Atoms object.
 descriptor_kwargs = {
-    "rascal_settings": rascal_settings,
-    "cg_settings": cg_settings,
+    "rascal_settings": RASCAL_SETTINGS,
+    "cg_settings": CG_SETTINGS,
 }
 
 # For target building, the base AIMS settings need to be stored, along with the
@@ -150,7 +150,7 @@ basis_set = io.unpickle_dict(os.path.join(processed_dir(idxs[0], restart_idx), "
     "basis_set"
 ]
 target_kwargs = {
-    "aims_kwargs": {**base_aims_kwargs},
+    "aims_kwargs": {**BASE_AIMS_KWARGS},
     "basis_set": {**basis_set},
 }
 
@@ -158,24 +158,24 @@ target_kwargs = {
 # the descriptor/target builder settings needed for end-to-end predictions.
 model = models.RhoModel(
     # Required args
-    model_type=ml_settings["model"]["model_type"],
+    model_type=ML_SETTINGS["model"]["model_type"],
     input=rho_data[idxs[0]][1],  # for initializing ...
     output=rho_data[idxs[0]][2],  # ... the metadata of the model
-    bias_invariants=ml_settings["model"]["bias_invariants"],
+    bias_invariants=ML_SETTINGS["model"]["bias_invariants"],
     invariant_baseline=invariant_baseline,
     # For nonlinear model
-    hidden_layer_widths=ml_settings["model"].get("hidden_layer_widths"),
-    activation_fn=ml_settings["model"].get("activation_fn"),
-    bias_nn=ml_settings["model"].get("bias_nn"),
+    hidden_layer_widths=ML_SETTINGS["model"].get("hidden_layer_widths"),
+    activation_fn=ML_SETTINGS["model"].get("activation_fn"),
+    bias_nn=ML_SETTINGS["model"].get("bias_nn"),
     # For end-to-end predictions
     descriptor_kwargs=descriptor_kwargs,
     target_kwargs=target_kwargs,
     # Torch settings
-    **torch_settings,
+    **TORCH_SETTINGS,
 )
 
 # Settings specific to RI rebuild procedure
-ri_kwargs = {
+RI_KWARGS = {
     # Force no SCF
     "sc_iter_limit": 0,
     "postprocess_anyway": True,
@@ -190,10 +190,10 @@ ri_kwargs = {
 
 # Update the AIMS and SBATCH kwargs
 tmp_aims_kwargs = {**model.target_kwargs["aims_kwargs"]}
-tmp_aims_kwargs.update(ri_kwargs)
+tmp_aims_kwargs.update(RI_KWARGS)
 
 # Settings for slurm
-sbatch_kwargs = {
+SBATCH_KWARGS = {
     "job-name": "h2o-pred",
     "nodes": 1,
     "time": "01:00:00",
@@ -203,9 +203,9 @@ sbatch_kwargs = {
 }
 model.update_target_kwargs(
     {
-        "aims_path": aims_path,
+        "AIMS_PATH": AIMS_PATH,
         "aims_kwargs": tmp_aims_kwargs,
-        "sbatch_kwargs": sbatch_kwargs,
+        "SBATCH_KWARGS": SBATCH_KWARGS,
     }
 )
 
@@ -224,13 +224,13 @@ train_loader = data.RhoLoader(
     rho_data,
     idxs=train_idxs,
     get_aux_data=True,
-    batch_size=ml_settings["loading"]["train"]["batch_size"],
+    batch_size=ML_SETTINGS["loading"]["train"]["batch_size"],
 )
 test_loader = data.RhoLoader(
     rho_data,
     idxs=test_idxs,
     get_aux_data=True,
-    batch_size=ml_settings["loading"]["test"]["batch_size"],
+    batch_size=ML_SETTINGS["loading"]["test"]["batch_size"],
 )
 val_loader = data.RhoLoader(
     rho_data,
@@ -240,12 +240,12 @@ val_loader = data.RhoLoader(
 )
 
 # Loss function, optimizer, scheduler
-loss_fn = ml_settings["loss_fn"]["algorithm"]()
-optimizer = ml_settings["optimizer"]["algorithm"](
-    params=model.parameters(), **ml_settings["optimizer"]["args"]
+loss_fn = ML_SETTINGS["loss_fn"]["algorithm"]()
+optimizer = ML_SETTINGS["optimizer"]["algorithm"](
+    params=model.parameters(), **ML_SETTINGS["optimizer"]["args"]
 )
-scheduler = ml_settings["scheduler"]["algorithm"](
-    optimizer, **ml_settings["scheduler"]["args"]
+scheduler = ML_SETTINGS["scheduler"]["algorithm"](
+    optimizer, **ML_SETTINGS["scheduler"]["args"]
 )
 
 # =================================================
@@ -254,8 +254,8 @@ scheduler = ml_settings["scheduler"]["algorithm"](
 
 start_epoch = 1
 
-if ml_settings["training"].get("restart_epoch") is not None:
-    start_epoch = ml_settings["training"]["restart_epoch"]
+if ML_SETTINGS["training"].get("restart_epoch") is not None:
+    start_epoch = ML_SETTINGS["training"]["restart_epoch"]
     optimizer.load_state_dict(
         torch.load(os.path.join(chkpt_dir, f"optimizer_{start_epoch}.pt"))
     )
@@ -267,7 +267,7 @@ if ml_settings["training"].get("restart_epoch") is not None:
 # Start training loop
 io.log(log_path, "# epoch train_loss test_loss train_mae test_mae time")
 
-for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
+for epoch in range(start_epoch, ML_SETTINGS["training"]["n_epochs"] + 1):
     # Training step
     t0 = time.time()
     train_loss_epoch, test_loss_epoch = train.training_step(
@@ -282,7 +282,7 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
 
     # Calculate L1 error against real-space QM scalar fields
     mean_maes = {"train": -1, "test": -1}
-    if (epoch - 1) % ml_settings["validation"]["interval"] == 0:
+    if (epoch - 1) % ML_SETTINGS["validation"]["interval"] == 0:
         mean_maes = {"train": [], "test": []}
         
         # Get frames and make prediction
@@ -324,7 +324,7 @@ for epoch in range(start_epoch, ml_settings["training"]["n_epochs"] + 1):
         f"{epoch} {train_loss_epoch} {test_loss_epoch} {mean_maes['train']} {mean_maes['test']} {time.time() - t0}",
     )
     # Save model, optimizer, scheduler
-    if (epoch - 1) % ml_settings["training"]["save_interval"] == 0:
+    if (epoch - 1) % ML_SETTINGS["training"]["save_interval"] == 0:
         torch.save(model, os.path.join(chkpt_dir, f"model_{epoch}.pt"))
         torch.save(
             optimizer.state_dict(), os.path.join(chkpt_dir, f"optimizer_{epoch}.pt")

@@ -12,18 +12,18 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-top_dir = "/home/abbott/rho/rho_learn/docs/example/field"
+TOP_DIR = "/home/abbott/rho/rho_learn/docs/example/field"
 
 # Where the generated data should be written
-data_dir = os.path.join(top_dir, "data")
+DATA_DIR = os.path.join(TOP_DIR, "data")
 
 # Where ML outputs should be written
-ml_dir = os.path.join(top_dir, "ml")
+ML_DIR = os.path.join(TOP_DIR, "ml")
 
-data_settings = {
+DATA_SETTINGS = {
 
     # Read in all frames in complete dataset
-    "all_frames": ase.io.read(os.path.join(data_dir, "water_monomers_1k.xyz"), ":"),
+    "all_frames": ase.io.read(os.path.join(DATA_DIR, "water_monomers_1k.xyz"), ":"),
     
     # Define a subset of frames
     "n_frames": 10,
@@ -42,10 +42,10 @@ data_settings = {
 # ====================================================
 
 # Path to AIMS binary
-aims_path = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"
+AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"
 
 # Define the AIMS settings that are common to all calculations
-base_aims_kwargs = {
+BASE_AIMS_KWARGS = {
     "species_dir": "/home/abbott/rho/rho_learn/rhocalc/aims/aims_species/tight/default",
     "xc": "pbe0",
     "spin": "none",
@@ -56,13 +56,13 @@ base_aims_kwargs = {
 }
 
 # Settings specific to SCF
-scf_kwargs = {
+SCF_KWARGS = {
     "elsi_restart": "write 1",
     "ri_fit_write_orbital_info": True,
 }
 
 # Settings for the RI procedure
-ri_kwargs = {
+RI_KWARGS = {
     # ===== To restart from a converged density matrix and force no SCF:
     "elsi_restart": "read",
     "sc_iter_limit": 0,
@@ -83,7 +83,7 @@ ri_kwargs = {
 }
 
 # Settings for HPC job scheduler
-sbatch_kwargs = {
+SBATCH_KWARGS = {
     "job-name": "h2o",
     "nodes": 1,
     "time": "01:00:00",
@@ -96,7 +96,7 @@ sbatch_kwargs = {
 # ===== Settings for generating structural descriptors =====
 # ==========================================================
 
-rascal_settings = {
+RASCAL_SETTINGS = {
     "hypers": {
         "cutoff": 3.0,  # Angstrom
         "max_radial": 6,  # Exclusive
@@ -109,7 +109,7 @@ rascal_settings = {
     "compute": {},
 }
 
-cg_settings = {
+CG_SETTINGS = {
     "angular_cutoff": None,
     "angular_selection": np.arange(9).tolist(),
     "parity_selection": [+1],
@@ -119,7 +119,7 @@ cg_settings = {
 # ===== Settings for cross validation =====
 # =========================================
 
-crossval_settings = {
+CROSSVAL_SETTINGS = {
     # Settings for cross validation
     "n_groups": 3,  # num groups for data split (i.e. 3 for train-test-val)
     "group_sizes": [0.7, 0.2, 0.1],  # the abs/rel group sizes for the data splits
@@ -132,14 +132,14 @@ crossval_settings = {
 # =======================================
 
 # Setting for torch backend
-torch_settings = {
+TORCH_SETTINGS = {
     "dtype": torch.float64,  # important for model accuracy
     "requires_grad": True,
     "device": torch.device(type="cpu"),
 }
 
 # Define ML settings
-ml_settings = {
+ML_SETTINGS = {
 
     "model": {
 

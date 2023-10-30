@@ -12,18 +12,18 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-top_dir = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/docs/example/tensor"
+TOP_DIR = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/docs/example/tensor"
 
 # Where the generated data should be written
-data_dir = os.path.join(top_dir, "data")
+DATA_DIR = os.path.join(TOP_DIR, "data")
 
 # Where ML outputs should be written
-ml_dir = os.path.join(top_dir, "ml")
+ML_DIR = os.path.join(TOP_DIR, "ml")
 
-data_settings = {
+DATA_SETTINGS = {
 
     # Read in all frames in complete dataset
-    "all_frames": ase.io.read(os.path.join(data_dir, "combined_magres_spherical.xyz"), ":"),
+    "all_frames": ase.io.read(os.path.join(DATA_DIR, "combined_magres_spherical.xyz"), ":"),
     
     # Define a subset of frames
     "n_frames": 30,
@@ -36,7 +36,7 @@ data_settings = {
 # ===== Settings for generating structural descriptors =====
 # ==========================================================
 
-rascal_settings = {
+RASCAL_SETTINGS = {
     "hypers": {
         "cutoff": 3.0,  # Angstrom
         "max_radial": 6,  # Exclusive
@@ -49,7 +49,7 @@ rascal_settings = {
     "compute": {},
 }
 
-cg_settings = {
+CG_SETTINGS = {
     "angular_cutoff": None,
     "angular_selection": [0, 2],
     "parity_selection": [+1],
@@ -59,7 +59,7 @@ cg_settings = {
 # ===== Settings for cross validation =====
 # =========================================
 
-crossval_settings = {
+CROSSVAL_SETTINGS = {
     # Settings for cross validation
     "n_groups": 3,  # num groups for data split (i.e. 3 for train-test-val)
     "group_sizes": [0.6, 0.2, 0.2],  # the abs/rel group sizes for the data splits
@@ -72,14 +72,14 @@ crossval_settings = {
 # =======================================
 
 # Setting for torch backend
-torch_settings = {
+TORCH_SETTINGS = {
     "dtype": torch.float64,  # important for model accuracy
     "requires_grad": True,
     "device": torch.device(type="cpu"),
 }
 
 # Define ML settings
-ml_settings = {
+ML_SETTINGS = {
 
     "model": {
 
