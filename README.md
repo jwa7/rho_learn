@@ -7,10 +7,9 @@ Author: Joseph W. Abbott, PhD Student @ Lab COSMO, EPFL
 ## About
 
 A proof-of-concept framework for torch-based equivariant learning of scalar
-fields and tensorial properties expanded in the angular basis. 
-
-This package provides the building blocks for end-to-end `torch`-based learning
-and prediction pipelines interfaced with `metatensor`, a storage format for
+fields and tensorial properties expanded in the angular basis. This package
+provides the building blocks for end-to-end `torch`-based learning and
+prediction pipelines interfaced with `metatensor`, a storage format for
 atomistic data. 
 
 The subpackage `rholearn` contains modules for loss functions, datasets,
@@ -18,15 +17,15 @@ dataloaders, models, and training, allowing gradient-based workflows with
 minibatching to be built. 
 
 The subpackage `rhocalc` contains infrastructure to interface the core
-functionality in `rholearn` with Qunatum Chemistry codes. This involves routines
+functionality in `rholearn` with Quantum Chemistry codes. This involves routines
 to generate learning targets and parse outputs into `metatensor` format for
 input in the ML workflow. Currently, only a simple interface (via `ase`
 calculators) with the electronic structure code `FHI-aims` is implemented, with
 a focus on the generation of scalar fields expanded onto a fitted RI basis.
 
 
-Some of the software modules `rho_learn` conbines are described below:
-
+Some of the software modules `rho_learn` conbines into a workflow are described
+below:
 
 * **``rascaline``**: [Luthaf/rascaline](https://github.com/Luthaf/rascaline).
   This is used to transform xyz coordinates of systems into a suitable
