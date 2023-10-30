@@ -1,127 +1,137 @@
 """
-Module to make an electron density prediction on an xyz file using a pretrained
-model.
+Module for user-defined functions.
 """
-from typing import Optional
+import os
+from typing import List, Callable
 
-import ase.io
+import ase
 import numpy as np
-import pyscf
-import torch
 
-import equistore
-from equistore import TensorMap
+import metatensor
+import rascaline
+from metatensor import Labels, TensorMap
+from rascaline.utils import clebsch_gordan
 
-import qstack
-from qstack import equio
-
-from rholearn import io, features, utils
+from rhocalc import convert
+from rhocalc.aims import aims_calc, aims_parser
 
 
-def predict_density_from_xyz(
-    xyz_path: str,
-    rascal_hypers: dict,
-    model_path: str,
-    basis: str,
-    inv_means_path: Optional[str] = None,
-) -> np.ndarray:
+def _template_descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
     """
-    Loads a xyz file of structure(s) at `xyz_path` and uses the `rascal_hypers`
-    to generate a lambda-SOAP structural representation. Loads the the
-    pretrained torch model from `model_path` and uses it to make a prediction on
-    the electron density. Returns the prediction both as a TensorMap and as a
-    vector of coefficients.
-
-    :param xyz_path: Path to xyz file containing structure to predict density
-        for.
-    :param rascal_hypers: dict of rascaline hyperparameters to use when
-        computing the lambda-SOAP representation of the input structure.
-    :param model_path: path to the trained rholearn/torch model to use for
-        prediction.
-    :param basis: the basis set, i.e. "ccpvqz jkfit", to use when constructing
-        the vectorised density coefficients. Must be the same as the basis used
-        to calculate the training data.
-    :param inv_means_path: if the invariant blocks have been standardized by
-        subtraction of the mean of their features, the mean needs to be added
-        back to the prediction. If so, `inv_means_path` should be the path to
-        the TensorMap containing these means. Otherwise, pass as None (default).
+    Function to build a descriptor for input into a ML model. Must take as input
+    a list of ASE Atoms objects, and return a TensorMap. What happens within the
+    function body is completely customizable, but must be deterministic based on
+    the inputs.
     """
+    descriptor = None
 
-    # Load xyz file to ASE
-    frame = ase.io.read(xyz_path)
+    # Code here
 
-    # Create a molecule object with Q-Stack
-    mol = qstack.compound.xyz_to_mol(xyz_path, basis=basis)
+    return descriptor
 
-    # Generate lambda-SOAP representation
-    input = features.lambda_soap_vector([frame], rascal_hypers, even_parity_only=True)
 
-    # Load model from file
-    model = io.load_torch_object(
-        model_path, device=torch.device("cpu"), torch_obj_str="model"
+def _template_target_builder(target: TensorMap, **kwargs):
+    """
+    Function to transform the raw prediction of a metatensor/torch model into
+    the desired format. This may include converting the TensorMap prediction
+    into a format suitable for re-integration into a QC code and calculating a
+    derived quantity.
+    """
+    # Code here
+
+    return target
+
+
+def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
+    """
+    Function to build a descriptor for input into a ML model. This function
+    generates a spherical expansion with rascaline, then perfroms a single
+    Clebsch-Gordan combination step to build a lambda-SOAP vector.
+    """
+    # Get relevant kwargs
+    global_species = kwargs.get("global_species")
+    rascal_settings = kwargs.get("rascal_settings")
+    cg_settings = kwargs.get("cg_settings")
+    torch_settings = kwargs.get("torch_settings")
+
+    # Build spherical expansion
+    nu_1_tensor = rascaline.SphericalExpansion(**rascal_settings["hypers"]).compute(
+        frames, **rascal_settings["compute"]
+    )
+    nu_1_tensor = nu_1_tensor.keys_to_properties(
+        keys_to_move=Labels(
+            names=["species_neighbor"], values=np.array(global_species).reshape(-1, 1)
+        )
     )
 
-    # Drop blocks from input that aren't present in the model
-    input = equistore.drop_blocks(input, keys=np.setdiff1d(input.keys, model.keys))
+    # Build lambda-SOAP vector
+    lsoap = clebsch_gordan.lambda_soap_vector(nu_1_tensor, **cg_settings)
 
-    # Convert the input TensorMap to torch
-    input = utils.tensor_to_torch(
-        input, requires_grad=False, dtype=torch.float64, device=torch.device("cpu")
-    )
+    # Convert to torch backend and return
+    if torch_settings is not None:
+        lsoap = metatensor.to(lsoap, "torch", **torch_settings)
 
-    return predict_density_from_mol(input, mol, model_path, inv_means_path)
+    return lsoap
 
 
-def predict_density_from_mol(
-    input: TensorMap,
-    mol: pyscf.gto.Mole,
-    model_path: str,
-    inv_means_path: Optional[str] = None,
-) -> np.ndarray:
+def target_builder(
+    structure_idxs: List[int],
+    frames: List[ase.Atoms],
+    predictions: List[TensorMap],
+    save_dir: Callable,
+    **kwargs
+):
     """
-    Loads the the pretrained torch model from `model_path` and uses it to make a
-    prediction on the electron density. Returns the prediction both as a
-    TensorMap and as a vector of coefficients.
-
-    :param input: a TensorMap containing the lambda-SOAP representation of the
-        structure to predict the density for.
-    :param mol: a PySCF :py:class:`Mole` object, initialized with the correct
-        basis, for the specific xyz structure the structural representation in
-        `input` is constructed for.
-    :param model_path: path to the trained rholearn/torch model to use for
-        prediction.
-    :param inv_means_path: if the invariant blocks have been standardized by
-        subtraction of the mean of their features, the mean needs to be added
-        back to the prediction. If so, `inv_means_path` should be the path to
-        the TensorMap containing these means. Otherwise, pass as None (default).
+    Takes the RI coefficients predicted by the model. Converts it from TensorMap
+    to numpy format, reorders the array according to the AIMS convention, then
+    rebuilds the scalar field by calling AIMS.
     """
-    # Load model from file
-    model = io.load_torch_object(
-        model_path, device=torch.device("cpu"), torch_obj_str="model"
-    )
+    calcs = {
+        A: {"atoms": frame, "run_dir": save_dir(A)}
+        for A, frame in zip(structure_idxs, frames)
+    }
 
-    # Make a prediction using the model
-    with torch.no_grad():
-        out_pred = model(input)
-
-    # Add back the feature means to the invariant (l=0) blocks if the model was trained
-    # against electron densities with standardized invariants
-    if inv_means_path is not None:
-        inv_means = equistore.load(inv_means_path)
-        out_pred = utils.standardize_invariants(
-            tensor=utils.tensor_to_numpy(out_pred),
-            invariant_means=inv_means,
-            reverse=True,
+    # Convert to a list of numpy arrays
+    for A, frame, pred in zip(structure_idxs, frames, predictions):
+        pred_np = convert.coeff_vector_tensormap_to_ndarray(
+            frame=frame,
+            tensor=pred,
+            lmax=kwargs["basis_set"]["def"]["lmax"],
+            nmax=kwargs["basis_set"]["def"]["nmax"],
+        )
+        # Convert to AIMS ordering and save to "ri_coeffs.in"
+        pred_aims = aims_parser.coeff_vector_ndarray_to_aims_coeffs(
+            coeffs=pred_np,
+            basis_set_idxs=kwargs["basis_set"]["idxs"],
+            save_dir=save_dir(A),
         )
 
-    # Drop the structure label from the TensorMap
-    tmp_out_pred = utils.drop_metadata_name(out_pred, axis="samples", name="structure")
-
-    # Convert TensorMap to Q-Stack coeffs. Need to rename the TensorMap keys
-    # here to fit LCMD naming convention
-    vect_coeffs = qstack.equio.tensormap_to_vector(
-        mol,
-        utils.rename_tensor(tmp_out_pred, keys_names=["spherical_harmonics_l", "element"]),
+    # Run AIMS to build the target scalar field for each structure
+    aims_calc.run_aims_array(
+        calcs=calcs,
+        aims_path=kwargs["aims_path"],
+        aims_kwargs=kwargs["aims_kwargs"],
+        sbatch_kwargs=kwargs["sbatch_kwargs"],
+        run_dir=save_dir,  # must be a callable
     )
+    
+    # Wait until all AIMS calcs have finished, then read in and return the
+    # target scalar fields
+    all_finished = False
+    while not all_finished:
+        calcs_finished = []
+        for A in structure_idxs:
+            aims_out_path = os.path.join(save_dir(A), "aims.out")
+            if os.path.exists(aims_out_path):
+                with open(aims_out_path, "r") as f:
+                    # Basic check to see if AIMS calc has finished
+                    calcs_finished.append("Leaving FHI-aims." in f.read())
+            else:
+                calcs_finished.append(False)
+        all_finished = np.all(calcs_finished)
 
-    return out_pred, vect_coeffs
+    targets = []
+    for A in structure_idxs:
+        targets.append(np.loadtxt(os.path.join(save_dir(A), "rho_rebuilt.out")))
+
+    return targets

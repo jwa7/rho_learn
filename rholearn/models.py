@@ -1,492 +1,655 @@
-from typing import List, Dict, Union, Optional
+"""
+Module containing the RhoModel class that makes predictions on TensorMaps.
+"""
+import os
+from functools import partial
+from typing import Union, Optional, List, Tuple, Callable
+import warnings
 
+import ase
 import numpy as np
 import torch
 
-from equistore import Labels, TensorBlock, TensorMap
-from rholearn import utils
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 
-# TODO:
-# - allow option to control GELU approximation
+from rholearn import predictor
+
 
 VALID_MODEL_TYPES = ["linear", "nonlinear"]
-VALID_ACTIVATION_FNS = ["Tanh", "GELU", "SiLU"]
-
-# ===== EquiModelGlobal for making predictions on the TensorMap level
 
 
-class EquiModelGlobal(torch.nn.Module):
+# ===== RhoModel class for making predictions on TensorMaps
+
+
+class RhoModel(torch.nn.Module):
     """
-    A single global model that wraps multiple individual models for each block
-    of the input TensorMaps. Returns a prediction TensorMap from its ``forward``
-    method.
+    A model that makes equivariant predictions on the TensorMap level.
+
+    The model can be either linear or nonlinear. In the linear case, the
+    prediction is made by a single linear layer. In the nonlinear case, the
+    prediction is made by passing the equivariant block through a linear layer,
+    then element-wise multiplying the output of this with the output of a neural
+    network that the corresponding invariant block for that chemical species is
+    passed through. The output of this is then passed through a linear output
+    layer to make the prediction.
+
+    The model is initialized with a number of arguments. First, the model type
+    must be specified as either "linear" or "nonlinear". If "linear", the
+    ``hidden_layer_widths``, ``activation_fn``, and ``bias_nn`` arguments are
+    ignored. If "nonlinear", these must be specified.
+
+    The ``input`` and ``output`` TensorMaps must be passed, which define the
+    metadata of the model. These can be example training data. The samples are
+    ignored: only the keys, the components, and the properties are stored, as
+    these define the metadata of the model.
+
+    The ``bias_invariants`` argument controls whether or not to use a learnable
+    bias in the models for invariant blocks. This applies equally to both linear
+    and nonlinear models. If true, a bias is used. If false, no bias is used.
+
+    Altenatively (or additionally), if passed, `invariant_baseline` can be
+    passed as a non-learnable bias. This must consist of blocks indexed by keys
+    for each invariant block the model is trained on. This is added feature-wise
+    to the prediction output by invariant block models, essentially acting like
+    a non-learnable bias. This allows invariant block models to essentially
+    learn on a baselined quantity, which can be useful for improving the
+    accuracy in the case of globally-evaluated loss functions where the
+    magnitude of the target property is much larger for invariants than
+    covariants.
+
+    In both cases ``bias_invariants`` and ``invariant_baseline``, the bias can
+    only be applied to transformations of invariants so equivariance is not
+    broken.
+
+    ``descriptor_kwargs`` can be passed as a dict of the settings required to
+    build a descriptor from ASE frames, suitable for input to the model. These
+    should be the same settings used to generate the data the model was trained
+    on. These settings are passed to the function :py:func:`descriptor_builder`
+    in module :py:mod:`predictor`, which contains the recipe for building the
+    descriptor.
+
+    Similarly, ``target_kwargs`` can be passed as a dict of the settings
+    required to build a target from ASE frames and predictions outputted by
+    RhoModel.forward(). These are used by the custom function
+    :py:func:`target_builder` in module :py:mod:`predictor`, which contains the
+    recipe for building the target. For instance, in an indirect learning
+    scheme, this function may call a Quantum Chemistry code to calculate a
+    derived property.
     """
 
     # Initialize model
     def __init__(
         self,
         model_type: str,
-        keys: Labels,
-        in_feature_labels: Dict[np.void, Labels],
-        out_feature_labels: Dict[np.void, Labels],
-        in_invariant_features: Optional[Dict[np.void, int]] = None,
-        hidden_layer_widths: Optional[
-            Union[Dict[np.void, List[int]], List[int]]
-        ] = None,
-        activation_fn: Optional[str] = None,
+        input: TensorMap,
+        output: TensorMap,
+        bias_invariants: bool = False,
+        invariant_baseline: Optional[TensorMap] = None,
+        hidden_layer_widths: Optional[Union[List[List[int]], List[int]]] = None,
+        activation_fn: Optional[torch.nn.Module] = None,
+        bias_nn: bool = False,
+        descriptor_kwargs: Optional[dict] = None,
+        target_kwargs: Optional[dict] = None,
+        **torch_settings,
     ):
-        super(EquiModelGlobal, self).__init__()
-        EquiModelGlobal._check_init_args(
-            model_type,
-            keys,
-            in_feature_labels,
-            out_feature_labels,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
-        )
-        self.model_type = model_type
-        self.keys = keys
-        self.in_feature_labels = in_feature_labels
-        self.out_feature_labels = out_feature_labels
-        if model_type == "nonlinear":
-            in_invariant_features = (
-                in_invariant_features
-                if isinstance(in_invariant_features, dict)
-                else {k: in_invariant_features for k in self.keys}
-            )
-            hidden_layer_widths = (
-                hidden_layer_widths
-                if isinstance(hidden_layer_widths, dict)
-                else {k: hidden_layer_widths for k in self.keys}
-            )
-            self.in_invariant_features = in_invariant_features
-            self.hidden_layer_widths = hidden_layer_widths
-            self.activation_fn = activation_fn
-        self.models = EquiModelGlobal.build_model_dict(
-            model_type,
-            keys,
-            in_feature_labels,
-            out_feature_labels,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
-        )
+        super(RhoModel, self).__init__()
+        # Set the torch settings
+        self._torch_settings = torch_settings
+        if self._torch_settings.get("dtype"):
+            torch.set_default_dtype(self._torch_settings.get("dtype"))
 
-    @staticmethod
-    def _check_init_args(
-        model_type: str,
-        keys: Labels,
-        in_feature_labels: Dict[np.void, Labels],
-        out_feature_labels: Dict[np.void, Labels],
-        in_invariant_features: Optional[Dict[np.void, int]] = None,
-        hidden_layer_widths: Optional[
-            Union[Dict[np.void, List[int]], List[int]]
-        ] = None,
-        activation_fn: Optional[str] = None,
-    ):
-        # Check the length of keys labels
-        if (len(keys) != len(in_feature_labels.keys())) or (
-            len(keys) != len(out_feature_labels.keys())
-        ):
-            raise ValueError(
-                "there must be the same number of labels in ``keys`` as there are keys in"
-                + " the dict keys of ``in_feature_labels`` and ``out_feature_labels``"
-            )
+        # Set the base attributes
+        self._set_model_type(model_type)
+        self._set_metadata(input, output)
+        self._set_biases(bias_invariants)
 
+        # Set attributes specific to a nonlinear model
+        if self._model_type == "nonlinear":
+            self._set_hidden_layer_widths(hidden_layer_widths)
+            self._set_activation_fn(activation_fn)
+            self._set_bias_nn(bias_nn)
+
+        # Passing `invariant_baseline` as a TensorMap will add this back to the
+        # predictions made on invariant blocks.
+        self._set_invariant_baseline(invariant_baseline)
+
+        # Set the settings required to build a descriptor from ASE frames and
+        # transform the raw prediction of the model
+        self._set_descriptor_kwargs(descriptor_kwargs)
+        self._set_target_kwargs(target_kwargs)
+
+        # Build the models
+        self._set_models()
+
+    @property
+    def model_type(self) -> str:
+        return self._model_type
+
+    def _set_model_type(self, model_type: str) -> None:
+        """
+        Sets the "_model_type" attr to either "linear" or "nonlinear"
+        """
+        assert model_type in VALID_MODEL_TYPES
+        self._model_type = model_type
+
+    @property
+    def in_metadata(self) -> TensorMap:
+        return self._in_metadata
+
+    @property
+    def out_metadata(self) -> TensorMap:
+        return self._out_metadata
+
+    def _set_metadata(self, input: TensorMap, output: TensorMap) -> None:
+        """
+        Sets the attributes "_in_metadata" and "_out_metadata" as minimal
+        TensorMaps storing the relevant metadata data of input and output.
+        These are only defined for the intersection between the input and output
+        keys.
+        """
+        keys = input.keys.intersection(output.keys)
+        in_blocks, out_blocks = [], []
         for key in keys:
-            # Check all keys are in the in_feature_labels and out_feature_labels
-            # dict keys
-            if key not in in_feature_labels.keys():
-                raise ValueError(
-                    "``keys`` contains a key that isn't present in the dict keys of ``in_feature_labels``"
+            assert metatensor.equal_metadata_block(
+                input[key], output[key], check=["components"]
+            )
+            in_block = TensorBlock(
+                values=torch.zeros(
+                    (
+                        1,
+                        *[len(c) for c in input[key].components],
+                        len(input[key].properties),
+                    ),
+                    dtype=self._torch_settings.get("dtype"),
+                    device=self._torch_settings.get("device"),
+                ),
+                samples=Labels.single(),
+                components=input[key].components,
+                properties=input[key].properties,
+            )
+            out_block = TensorBlock(
+                values=torch.zeros(
+                    (
+                        1,
+                        *[len(c) for c in output[key].components],
+                        len(output[key].properties),
+                    ),
+                    dtype=self._torch_settings.get("dtype"),
+                    device=self._torch_settings.get("device"),
+                ),
+                samples=Labels.single(),
+                components=output[key].components,
+                properties=output[key].properties,
+            )
+            in_blocks.append(in_block)
+            out_blocks.append(out_block)
+        self._in_metadata = TensorMap(keys, in_blocks)
+        self._out_metadata = TensorMap(keys, out_blocks)
+
+    @property
+    def biases(self) -> torch.tensor:
+        return self._biases
+
+    def _set_biases(self, bias_invariants: bool) -> None:
+        """
+        Sets the "_biases" attribute of the model to True for invariant blocks if
+        `bias_invariants` is true and false otherwise, and false for all
+        covariant (l > 0) blocks.
+
+        This is returned as a list, where each element corresponds to the key
+        index stored in self._in_metadata.keys
+        """
+        if bias_invariants:
+            biases = [
+                key["spherical_harmonics_l"] == 0 for key in self._in_metadata.keys
+            ]
+        else:
+            biases = [False for key in self._in_metadata.keys]
+        self._biases = biases
+
+    @property
+    def hidden_layer_widths(self) -> List:
+        return self._hidden_layer_widths
+
+    def _set_hidden_layer_widths(
+        self, hidden_layer_widths: Union[List[List[int]], List[int]]
+    ):
+        """
+        Sets the hidden layer widths for each block, stored in the
+        "_hidden_layer_widths" attribute.
+        """
+        if hidden_layer_widths is None:
+            raise ValueError(
+                "if ``model_type`` is nonlinear, ``hidden_layer_widths`` must be passed"
+            )
+        # If passed as a single list, set this as the list for every block
+        if isinstance(hidden_layer_widths, List) and isinstance(
+            hidden_layer_widths[0], int
+        ):
+            hidden_layer_widths = [
+                hidden_layer_widths for key in self._in_metadata.keys
+            ]
+        # Check it is now a list of list of int
+        assert isinstance(hidden_layer_widths, List) and isinstance(
+            hidden_layer_widths[0], List
+        )
+        self._hidden_layer_widths = hidden_layer_widths
+
+    @property
+    def activation_fn(self) -> str:
+        return self._activation_fn
+
+    def _set_activation_fn(self, activation_fn):
+        """
+        Sets the activation function used in the nonlinear model.
+        """
+        if activation_fn is None:
+            raise ValueError(
+                "if ``model_type`` is nonlinear, ``activation_fn`` must be passed"
+            )
+        self._activation_fn = activation_fn
+
+    @property
+    def bias_nn(self) -> str:
+        """
+        Returns whether a bias is used in the nonlinear mutliplier for each
+        equivariant block.
+        """
+        return self._bias_nn
+
+    def _set_bias_nn(self, bias_nn: bool):
+        """
+        Sets whether a bias is used in the nonlinear mutliplier for each
+        equivariant block.
+        """
+        self._bias_nn = bias_nn
+
+    @property
+    def models(self) -> torch.nn.ModuleList:
+        """
+        Returns all the block models
+        """
+        return self._models
+
+    def _set_models(self) -> None:
+        """
+        Builds a model for each block and stores them as a torch ModuleList in
+        the "_models" attribute.
+        """
+        tmp_models = []
+        for key_i, key in enumerate(self._in_metadata.keys):
+            if self._model_type == "linear":
+                block_model = _LinearModel(
+                    in_features=len(self._in_metadata[key].properties),
+                    out_features=len(self._out_metadata[key].properties),
+                    bias=self._biases[key_i],
                 )
-            if key not in out_feature_labels.keys():
-                raise ValueError(
-                    "``keys`` contains a key that isn't present in the dict keys of ``out_feature_labels``"
+
+            else:
+                assert self._model_type == "nonlinear"
+                in_invariant_block = self._in_metadata.block(
+                    spherical_harmonics_l=0, species_center=key["species_center"]
                 )
-            # Check all values of the dicts are Labels objects
-            if not isinstance(in_feature_labels[key], Labels):
-                raise TypeError(
-                    "values of the ``in_features_labels`` dict must be Labels objects"
+                block_model = _NonLinearModel(
+                    in_features=len(self._in_metadata[key].properties),
+                    out_features=len(self._out_metadata[key].properties),
+                    bias=self._biases[key_i],
+                    in_invariant_features=len(in_invariant_block.properties),
+                    hidden_layer_widths=self._hidden_layer_widths[key_i],
+                    activation_fn=self._activation_fn,
+                    bias_nn=self._bias_nn,
                 )
-            if not isinstance(out_feature_labels[key], Labels):
-                raise TypeError(
-                    "values of the ``out_feature_labels`` dict must be Labels objects"
-                )
-        # Check model type
-        if model_type not in VALID_MODEL_TYPES:
-            raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
-        if model_type == "nonlinear":
-            # Check in_invariant_features if using nonlinear model
-            if in_invariant_features is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the number"
-                    + " ``in_invariant_features`` of features that the invariant blocks"
-                    + " used as nonlinear multipliers for each equivariant block will contain."
-                    + " This must be passed as a dict indexed by equivariant block key."
-                )
-            if not isinstance(in_invariant_features, dict):
-                raise TypeError(
-                    "``in_invariant_features`` must be passed as a dict of int"
-                )
-            for v in in_invariant_features.values():
-                if not isinstance(v, int):
-                    raise TypeError(
-                        "each value in ``in_invariant_features`` must be passed as an int"
+            tmp_models.append(block_model)
+        self._models = torch.nn.ModuleList(tmp_models)
+
+    @property
+    def invariant_baseline(self) -> TensorMap:
+        return self._invariant_baseline
+
+    def _set_invariant_baseline(self, invariant_baseline: TensorMap) -> None:
+        """
+        Sets the output invariant means TensorMap, and stores it in the
+        "invariant_baseline" attribute.
+        """
+        if invariant_baseline is None:
+            self._invariant_baseline = None
+        else:
+            self._invariant_baseline = metatensor.to(
+                invariant_baseline,
+                "torch",
+                dtype=self._torch_settings.get("dtype"),
+                device=self._torch_settings.get("device"),
+                requires_grad=False,
+            )
+
+    @property
+    def descriptor_kwargs(self) -> dict:
+        return self._descriptor_kwargs
+
+    def _set_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`descriptor_builder`.
+        """
+        if descriptor_kwargs is not None:
+            # Also required for descriptor generation are the global species.
+            descriptor_kwargs.update(
+                {
+                    "global_species": np.sort(
+                        np.unique(self._in_metadata.keys.column("species_center"))
                     )
-            # Check hidden_layer_widths if using nonlinear model
-            if hidden_layer_widths is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the number"
-                    + " ``hidden_layer_widths`` of features in the final hidden"
-                    + " layer of the NN applied to the invariant blocks, for each block"
-                    + " indexed by block key"
-                    "if using a nonlinear model, you must specify the widths"
-                    + " ``hidden_layer_widths`` of each hidden layer in the neural network"
-                )
-            if not isinstance(hidden_layer_widths, (dict, list)):
-                raise TypeError(
-                    "``hidden_layer_widths`` must be passed as a dict of list of int, or a list of int"
-                )
-            if isinstance(hidden_layer_widths, dict):
-                for v1 in hidden_layer_widths.values():
-                    if not isinstance(v1, list):
-                        raise TypeError(
-                            "each value in ``hidden_layer_widths`` must be passed as a list of int"
-                        )
-                    for v2 in v1:
-                        if not isinstance(v2, int):
-                            raise TypeError(
-                                "each value in ``hidden_layer_widths`` must be passed as an int"
-                            )
-            if not isinstance(activation_fn, str):
-                raise TypeError("``activation_fn`` must be passed as a str")
-            if activation_fn not in VALID_ACTIVATION_FNS:
-                raise ValueError(
-                    f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}"
-                )
+                }
+            )
+        self._descriptor_kwargs = descriptor_kwargs
 
-    @staticmethod
-    def build_model_dict(
-        model_type: str,
-        keys: Labels,
-        in_feature_labels: Dict[np.void, Labels],
-        out_feature_labels: Dict[np.void, Labels],
-        in_invariant_features: Optional[Dict[np.void, int]] = None,
-        hidden_layer_widths: Optional[
-            Union[Dict[np.void, List[int]], List[int]]
-        ] = None,
-        activation_fn: Optional[str] = None,
-    ) -> dict:
+    def set_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
         """
-        Builds a dict of torch models for each block in the input/output
-        TensorMaps, using a linear or nonlinear model depending on the passed
-        ``model_type``. For the invariant (lambda=0) blocks, a learnable bias is
-        used in the models, but for covariant blocks no bias is applied.
+        Sets the kwargs needed for calling the function
+        :py:func:`descriptor_builder`.
         """
-        if model_type == "linear":
-            models = {
-                key: EquiModelLocal(
-                    model_type=model_type,
-                    in_feature_labels=in_feature_labels[key],
-                    out_feature_labels=out_feature_labels[key],
-                    bias=True
-                    if key[list(keys.names).index("spherical_harmonics_l")] == 0
-                    else False,
-                )
-                for key in keys
-            }
-        elif model_type == "nonlinear":
-            models = {
-                key: EquiModelLocal(
-                    model_type=model_type,
-                    in_feature_labels=in_feature_labels[key],
-                    out_feature_labels=out_feature_labels[key],
-                    bias=True
-                    if key[list(keys.names).index("spherical_harmonics_l")] == 0
-                    else False,
-                    in_invariant_features=in_invariant_features[key],
-                    hidden_layer_widths=hidden_layer_widths[key],
-                    activation_fn=activation_fn,
-                )
-                for key in keys
-            }
+        self._set_descriptor_kwargs(descriptor_kwargs)
+
+    def update_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        if self._descriptor_kwargs is not None:
+            tmp_descriptor_kwargs = self._descriptor_kwargs.copy()
+            tmp_descriptor_kwargs.update(descriptor_kwargs)
         else:
-            raise ValueError(
-                "only 'linear' and 'nonlinear' base model types implemented for EquiModelGlobal"
-            )
-        return models
+            tmp_descriptor_kwargs = descriptor_kwargs
+        self._set_descriptor_kwargs(tmp_descriptor_kwargs)
 
-    def forward(self, input: TensorMap):
-        """
-        Makes a prediction on the ``input`` TensorMap. If the base model type is
-        "linear", a simple linear regression of ``input`` is performed. If the
-        model type is "nonlinear", the invariant blocks of the ``input``
-        TensorMap are nonlinearly transformed and used as multipliers for
-        linearly transformed equivariant blocks, which are then regressed in a
-        final linear output layer.
-        """
-        if not isinstance(input, TensorMap):
-            raise TypeError("``input`` must be an equistore TensorMap")
-        if not np.all([input_key in self.keys for input_key in input.keys]):
-            raise ValueError(
-                "the keys of the ``input`` TensorMap given to forward() must match"
-                " the keys used to initialize the EquiModelGlobal object. Model keys:"
-                f"{self.keys}, input keys: {input.keys}"
-            )
+    @property
+    def target_kwargs(self) -> dict:
+        return self._target_kwargs
 
-        if self.model_type == "linear":
-            output = TensorMap(
-                keys=self.keys,
-                blocks=[self.models[key](input[key]) for key in self.keys],
-            )
-        elif self.model_type == "nonlinear":
-            # Store the invariant (\lambda = 0) blocks in a dict, indexed by
-            # the unique chemical species present in the ``input`` TensorMap
-            invariants = {
-                specie: input.block(spherical_harmonics_l=0, species_center=specie)
-                for specie in np.unique(input.keys["species_center"])
-            }
-            # Make a prediction for each block
-            pred_blocks = []
-            for key in self.keys:
-                _, specie = key
-                pred_blocks.append(
-                    self.models[key](input=input[key], invariant=invariants[specie])
-                )
-            output = TensorMap(keys=self.keys, blocks=pred_blocks)
+    def _set_target_kwargs(self, target_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        self._target_kwargs = target_kwargs
+
+    def set_target_kwargs(self, target_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        self._set_target_kwargs(target_kwargs)
+
+    def update_target_kwargs(self, target_kwargs: dict) -> None:
+        """
+        Sets the kwargs needed for calling the function
+        :py:func:`target_builder`.
+        """
+        if self._target_kwargs is not None:
+            tmp_target_kwargs = self._target_kwargs.copy()
+            tmp_target_kwargs.update(target_kwargs)
         else:
-            raise ValueError(
-                "only 'linear' and 'nonlinear' base model types implemented for EquiModelGlobal"
-            )
-        return output
+            tmp_target_kwargs = target_kwargs
+        self._set_target_kwargs(tmp_target_kwargs)
 
     def parameters(self):
         """
-        Generator for the parameters of each model.
+        Generator for the parameters of each block model.
         """
-        for model in self.models.values():
-            yield from model.parameters()
+        for m in self._models:
+            yield from m.parameters()
 
+    def forward(self, input: TensorMap, check_args: bool = True) -> TensorMap:
+        """
+        Makes a prediction on an `input` TensorMap.
 
-# ===== EquiLocalModel for making predictions on the TensorBlock level
-
-
-class EquiModelLocal(torch.nn.Module):
-    """
-    A local model used to make predictions at the TensorBlock level. This is
-    initialized with input and output feature Labels objects, and returns a
-    prediction TensorBlock from its ``forward`` method.
-
-    If the base torch model type specified is ``model_type="nonlinear"``, then
-    ``nn_layer_width`` and ``last_hidden_features`` must also be specified upon
-    class initialization. The former controls the width of all except the last
-    hidden layers in the neural network used to nonlinearly transform invariant
-    features when calling ``forward()``. The latter controls the width of the
-    final hidden layer, before the output layer.
-    """
-
-    # Initialize model
-    def __init__(
-        self,
-        model_type: str,
-        in_feature_labels: Labels,
-        out_feature_labels: Labels,
-        bias: bool,
-        in_invariant_features: Optional[int] = None,
-        hidden_layer_widths: Optional[List[int]] = None,
-        activation_fn: Optional[str] = None,
-    ):
-        super(EquiModelLocal, self).__init__()
-        EquiModelLocal._check_init_args(
-            model_type,
-            in_feature_labels,
-            out_feature_labels,
-            bias,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
+        If the model is trained on standardized outputs, i.e. where the mean
+        baseline has been subtracted, this is automatically added back in.
+        """
+        # Predict on the keys of the *input* TensorMap
+        keys = input.keys
+        key_mask = torch.tensor(
+            [key in self._in_metadata.keys for key in keys], dtype=torch.bool
         )
-        self.model_type = model_type
-        self.in_feature_labels = in_feature_labels
-        self.out_feature_labels = out_feature_labels
-        self.bias = bias
-        if model_type == "nonlinear":
-            self.in_invariant_features = in_invariant_features
-            self.hidden_layer_widths = hidden_layer_widths
-            self.activation_fn = activation_fn
-        self.model = EquiModelLocal.build_model(
-            model_type,
-            in_feature_labels,
-            out_feature_labels,
-            bias,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
-        )
-
-    @staticmethod
-    def _check_init_args(
-        model_type: str,
-        in_feature_labels: Labels,
-        out_feature_labels: Labels,
-        bias: bool,
-        in_invariant_features: Optional[int] = None,
-        hidden_layer_widths: Optional[List[int]] = None,
-        activation_fn: Optional[str] = None,
-    ):
-        # Check types
-        if not isinstance(in_feature_labels, Labels):
-            raise TypeError(
-                "``in_feature_labels`` must be passed as an equistore Labels object"
+        if not torch.all(key_mask):
+            offending_keys = [key for key in keys if key not in self._in_metadata.keys]
+            warnings.warn(
+                f"one or more of input blocks at keys {offending_keys} is not "
+                " part of the keys of the model. The returned prediction will "
+                "not contain this block."
             )
-        if not isinstance(out_feature_labels, Labels):
-            raise TypeError(
-                "``out_feature_labels`` must be passed as an equistore Labels object"
-            )
-        if not isinstance(bias, bool):
-            raise TypeError("``bias`` must be passed as a bool")
-        if not isinstance(model_type, str):
-            raise TypeError("``model_type`` must be passed as a str")
-        # Check model type
-        if model_type not in VALID_MODEL_TYPES:
-            raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
-        if model_type == "nonlinear":
-            # Check in_invariant_features
-            if in_invariant_features is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the number"
-                    + " ``in_invariant_features`` of features that the invariant block"
-                    + " will contain"
-                )
-            if not isinstance(in_invariant_features, int):
-                raise TypeError("``in_invariant_features`` must be passed as an int")
-            # Check hidden_layer_widths
-            if hidden_layer_widths is None:
-                raise ValueError(
-                    "if using a nonlinear model, you must specify the widths"
-                    + " ``hidden_layer_widths`` of each hidden layer in the neural network"
-                )
-            if not isinstance(hidden_layer_widths, list):
-                raise TypeError("``hidden_layer_widths`` must be passed as list of int")
-            # Check activation_fn
-            if not isinstance(activation_fn, str):
-                raise TypeError("``activation_fn`` must be passed as a str")
-            if activation_fn not in VALID_ACTIVATION_FNS:
-                raise ValueError(
-                    f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}"
+        keys = Labels(names=keys.names, values=keys.values[key_mask])
+        pred_blocks = []
+        for key in keys:
+            if check_args:
+                assert key in self._in_metadata.keys
+                assert metatensor.equal_metadata_block(
+                    input[key],
+                    self._in_metadata[key],
+                    check=["components", "properties"],
                 )
 
-    @staticmethod
-    def build_model(
-        model_type: str,
-        in_feature_labels: Labels,
-        out_feature_labels: Labels,
-        bias: bool,
-        in_invariant_features: Optional[int] = None,
-        hidden_layer_widths: Optional[List[int]] = None,
-        activation_fn: Optional[str] = None,
-    ) -> torch.nn.Module:
-        """
-        Builds and returns a torch model according to the specified model type
-        """
-        if model_type == "linear":
-            model = LinearModel(
-                in_features=len(in_feature_labels),
-                out_features=len(out_feature_labels),
-                bias=bias,
-            )
-        elif model_type == "nonlinear":
-            model = NonLinearModel(
-                in_features=len(in_feature_labels),
-                out_features=len(out_feature_labels),
-                bias=bias,
-                in_invariant_features=in_invariant_features,
-                hidden_layer_widths=hidden_layer_widths,
-                activation_fn=activation_fn,
-            )
-        else:
-            raise ValueError(
-                "only 'linear' and 'nonlinear' base model types implemented for EquiModelLocal"
-            )
-        return model
+            # Get the model
+            block_model = self._models[self._in_metadata.keys.position(key)]
 
-    def forward(self, input: TensorBlock, invariant: Optional[TensorBlock] = None):
-        """
-        Makes a prediction on the ``input`` TensorBlock, returning a prediction
-        TensorBlock.
-        """
-        if not isinstance(input, TensorBlock):
-            raise TypeError("``input`` must be an equistore TensorBlock")
+            # Make a prediction
+            if self._model_type == "linear":
+                pred_values = block_model(input[key].values, check_args=check_args)
+            else:
+                assert self._model_type == "nonlinear"
+                in_invariant = input.block(
+                    spherical_harmonics_l=0, species_center=key["species_center"]
+                )
+                if check_args:
+                    assert metatensor.equal_metadata_block(
+                        in_invariant,
+                        self._in_metadata.block(
+                            spherical_harmonics_l=0,
+                            species_center=key["species_center"],
+                        ),
+                        check=["components", "properties"],
+                    )
+                pred_values = block_model(
+                    input[key].values,
+                    in_invariant=in_invariant.values,
+                    check_args=check_args,
+                )
 
-        if self.model_type == "linear":
-            output = self.model(input.values)
-        elif self.model_type == "nonlinear":
-            # Check exact equivalence of samples
-            if not utils.labels_equal(
-                input.samples, invariant.samples, correct_order=True
+            # Add baseline to invariant blocks if required
+            if (
+                self._invariant_baseline is not None
+                and key["spherical_harmonics_l"] == 0
             ):
-                raise ValueError(
-                    "``input`` and ``invariant`` TensorBlocks must have the"
-                    + " the same samples Labels, in the same order."
+                if not isinstance(self._invariant_baseline.block(0), torch.Tensor):
+                    self._invariant_baseline = metatensor.to(
+                        self._invariant_baseline,
+                        backend="torch",
+                        requires_grad=False,
+                        dtype=self._torch_settings["dtype"],
+                        device=self._torch_settings["device"],
+                    )
+                inv_means = self._invariant_baseline.block(
+                    spherical_harmonics_l=0, species_center=key["species_center"]
                 )
-            output = self.model(input=input.values, invariant=invariant.values)
+                inv_means_vals = torch.vstack(
+                    [inv_means.values for _ in range(pred_values.shape[0])]
+                )
+                pred_values += inv_means_vals
+
+            # Wrap prediction in a TensorBlock and store
+            pred_blocks.append(
+                TensorBlock(
+                    values=pred_values,
+                    samples=input[key].samples,
+                    components=self._out_metadata[key].components,
+                    properties=self._out_metadata[key].properties,
+                )
+            )
+
+        return TensorMap(keys, pred_blocks)
+
+    def predict(
+        self,
+        structure_idxs: List[int],
+        frames: List[ase.Atoms],
+        descriptor: Optional[TensorMap] = None,
+        build_target: bool = False,
+        save_dir: Optional[Callable] = None,
+    ) -> TensorMap:
+        """
+        Performs inference with no gradient tracking to make a prediction on an
+        input TensorMap or list of ASE Atoms objects.
+
+        In the case of the former, the descriptor TensorMap is assumed to have
+        been generated with the same rascaline hypers as the data the model was
+        trained on. In the latter case, the store rascaline hypers are used to
+        generate a descriptor for which a prediction is made.
+
+        If `build_target` is false, a list of TensorMaps of predictions for each
+        structure in `frames` is returned. If true, a 2-element tuple containing
+        a list of prediction TensorMaps and a list of targets for each structure
+        in `frames` is returned.
+
+        :param build_target: bool. If true, uses the `predictor.target_builder`
+            function along with the `target_kwargs` attribute of the model to
+            transform the prediction TensorMap into the desired target. This
+            may, for instance, involve calling an external QChem code.
+        :param save_dir: callable that returns the directory to save each
+            prediction in, taking a single argument corresponding to the
+            structure index. Only required if `build_target` is true.
+        """
+        # Check args
+        if build_target:
+            if self._target_kwargs is None:
+                raise ValueError(
+                    "if ``build_target`` is true, ``target_kwargs`` must be set"
+                    " for the model. Use the setter `set_target_kwargs` to do so."
+                )
+            if save_dir is None:
+                raise ValueError(
+                    "if ``build_target`` is true, ``save_dir`` must be specified"
+                )
+
+        # If the equivariant descriptor `input` is not specified, generate a
+        # descriptor from the ASE frames
+        if descriptor is None:
+            if self._descriptor_kwargs is None:
+                raise ValueError(
+                    "if making a prediction on ASE ``frames``,"
+                    " ``descriptor_kwargs`` must be passed so that a"
+                    " descriptor can be generated. Use the setter"
+                    " `_set_descriptor_kwargs` to set these and try again."
+                )
+
+            # Build the descriptor
+            descriptor = predictor.descriptor_builder(
+                frames,
+                torch_settings=self._torch_settings,
+                **self._descriptor_kwargs,
+            )
+
+            # The structure indices in the descriptor TensorMap will be 0, 1,
+            # ..., N_frames by default, according to the order of the structures
+            # passed in frames. These will need to be reindexed to match those
+            # in `structure_idxs` later.
+            actual_structure_idxs = np.arange(len(frames))
+
+        # Check the specified descriptor
         else:
-            raise ValueError(f"``model_type`` must be one of: {VALID_MODEL_TYPES}")
+            if not isinstance(descriptor, TensorMap):
+                raise TypeError("``descriptor`` must be a TensorMap")
 
-        return TensorBlock(
-            samples=input.samples,
-            components=input.components,
-            properties=self.out_feature_labels,
-            values=output,
-        )
+            # Check the structure indices
+            tmp_stucture_idxs = metatensor.unique_metadata(
+                descriptor, "samples", "structure"
+            ).values.reshape(-1)
 
-    def parameters(self):
-        """
-        Generator for the parameters of the model
-        """
-        return self.model.parameters()
+            err_msg = (
+                f"structure indices found in ``descriptor`` ({tmp_stucture_idxs})"
+                f" do not match those passed in ``structure_idxs`` ({structure_idxs})."
+            )
+            if not np.all(np.sort(tmp_stucture_idxs) == np.sort(structure_idxs)):
+                raise ValueError(err_msg)
+
+            # The actual structure indices present in the descriptor are the
+            # correct ones so will not need modification
+            actual_structure_idxs = structure_idxs
+
+        # Make prediction with the model
+        with torch.no_grad():
+
+            prediction = self(descriptor, check_args=True)
+
+            # Split the prediction TensorMap by structure index
+            predictions = []
+            for A, actual_A in zip(structure_idxs, actual_structure_idxs):
+                # Split the TensorMap based on the actual structure index present
+                tmp_pred = metatensor.slice(
+                    prediction,
+                    axis="samples",
+                    labels=Labels(
+                        names=["structure"], 
+                        values=np.array([actual_A]).reshape(-1, 1)
+                    ),
+                )
+                if actual_A != A:  # reindex the structure
+                    tmp_pred = metatensor.remove_dimension(
+                        tmp_pred, axis="samples", name="structure"
+                    )
+                    tmp_pred = metatensor.insert_dimension(
+                        tmp_pred,
+                        axis="samples",
+                        name="structure",
+                        values=np.array([A]),
+                        index=0,
+                    )
+                predictions.append(tmp_pred)
+
+            if not build_target:  # just return the predicted TensorMap
+                return predictions
+
+            # Now build the target
+            targets = predictor.target_builder(
+                structure_idxs=structure_idxs,
+                frames=frames,
+                predictions=predictions,
+                save_dir=save_dir,
+                **self._target_kwargs,
+            )
+
+            return predictions, targets
 
 
-# === Torch models that makes predictions on torch Tensors
-
-
-class LinearModel(torch.nn.Module):
+class _LinearModel(torch.nn.Module):
     """
     A linear model, initialized with a number of in and out features (i.e. the
-    properties dimension of an equistore TensorBlock), as well as a bool that
+    properties dimension of an metatensor TensorBlock), as well as a bool that
     controls whether or not to use a learnable bias.
     """
 
     # Initialize model
     def __init__(self, in_features: int, out_features: int, bias: bool):
-        super(LinearModel, self).__init__()
-        LinearModel._check_init_args(in_features, out_features, bias)
+        super(_LinearModel, self).__init__()
         self.linear = torch.nn.Linear(
             in_features=in_features,
             out_features=out_features,
             bias=bias,
         )
 
-    @staticmethod
-    def _check_init_args(in_features: int, out_features: int, bias: bool):
-        if not isinstance(in_features, int):
-            raise TypeError("``in_features`` must be passed as an int")
-        if not isinstance(out_features, int):
-            raise TypeError("``out_features`` must be passed as an int")
-        if not isinstance(bias, bool):
-            raise TypeError("``bias`` must be passed as an bool")
-
-    def forward(self, input: torch.Tensor):
+    def forward(self, input: torch.Tensor, check_args: bool = True):
         """
         Makes a forward prediction on the ``input`` tensor using linear
         regression.
+
+        If `add_back_inv_means` is true, adds back in the invariant means.
         """
+        if check_args:
+            if not isinstance(input, torch.Tensor):
+                raise TypeError("``input`` must be a torch Tensor")
         return self.linear(input)
 
 
-class NonLinearModel(torch.nn.Module):
+class _NonLinearModel(torch.nn.Module):
     """
     A nonlinear torch model. The forward() method takes as input an equivariant
     (i.e. invariant or covariant) torch tensor and an invariant torch tensor.
@@ -500,19 +663,19 @@ class NonLinearModel(torch.nn.Module):
     This model class must be initialized with several arguments. First, the
     number of ``in_features`` and ``out_features`` of the equivariant block,
     which dictates the widths of the input and output linear layers applied to
-    the equivariant. 
-    
+    the equivariant.
+
     Second, the number of features present in the supplementary invariant block,
     ``in_invariant_features`` - this controls the width of the input layer to
-    the neural network that the invariant block is passed through. 
-    
+    the neural network that the invariant block is passed through.
+
     Third, the ``hidden_layer_widths`` passed as a list of int. For ``n_elems``
     number of elements in the list, there will be ``n_elems`` number of hidden
     linear layers in the NN architecture, but ``n_elems - 1`` number of
     nonlinear activation layers. Passing a list with 1 element therefore
     corresponds to a linear model, where all equivariant blocks are multiplied
-    by their corresponding invariants, but with no nonlinearities included.
-    
+    by their corresponding in_invariant, but with no nonlinearities included.
+
     Finally, the ``activation_fn`` that should be used must be specified.
     """
 
@@ -524,21 +687,14 @@ class NonLinearModel(torch.nn.Module):
         bias: bool,
         in_invariant_features: int,
         hidden_layer_widths: List[int],
-        activation_fn: str,
+        activation_fn: torch.nn.Module,
+        bias_nn: bool = False,
     ):
-        super(NonLinearModel, self).__init__()
-        NonLinearModel._check_init_args(
-            in_features,
-            out_features,
-            bias,
-            in_invariant_features,
-            hidden_layer_widths,
-            activation_fn,
-        )
+        super(_NonLinearModel, self).__init__()
 
         # Define the input layer used on the input equivariant tensor. A
         # learnable bias should only be used if the equivariant passed is
-        # invariant.
+        # invariant, and if requested.
         self.input_layer = torch.nn.Linear(
             in_features=in_features,
             out_features=hidden_layer_widths[-1],
@@ -554,115 +710,87 @@ class NonLinearModel(torch.nn.Module):
             torch.nn.Linear(
                 in_features=in_invariant_features,
                 out_features=hidden_layer_widths[0],
-                bias=True,
+                bias=bias_nn,
             )
         ]
         for layer_i in range(0, len(hidden_layer_widths) - 1):
-            if activation_fn == "Tanh":
-                layers.append(torch.nn.Tanh())
-            elif activation_fn == "GELU":
-                layers.append(torch.nn.GELU())
-            elif activation_fn == "SiLU":
-                layers.append(torch.nn.SiLU())
-            else:
-                raise ValueError(
-                    f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}"
-                )
+            layers.append(activation_fn)
             layers.append(
                 torch.nn.Linear(
                     in_features=hidden_layer_widths[layer_i],
                     out_features=hidden_layer_widths[layer_i + 1],
-                    bias=True,
+                    bias=bias_nn,
                 )
             )
         self.invariant_nn = torch.nn.Sequential(*layers)
 
         # Define the output layer that makes the prediction. This acts on
         # equivariants, so should only use a learnable bias if the equivariant
-        # passed is an invariant.
+        # passed is an invariant, and if requested.
         self.output_layer = torch.nn.Linear(
             in_features=hidden_layer_widths[-1],
             out_features=out_features,
             bias=bias,
         )
 
-    @staticmethod
-    def _check_init_args(
-        in_features: int,
-        out_features: int,
-        bias: bool,
-        in_invariant_features: int,
-        hidden_layer_widths: List[int],
-        activation_fn: str,
-    ):
-        if not isinstance(in_features, int):
-            raise TypeError("``in_features`` must be passed as an int")
-        if not isinstance(out_features, int):
-            raise TypeError("``out_features`` must be passed as an int")
-        if not isinstance(bias, bool):
-            raise TypeError("``bias`` must be passed as a bool")
-        if not isinstance(in_invariant_features, int):
-            raise TypeError("``in_invariant_features`` must be passed as an int")
-        if not isinstance(hidden_layer_widths, list):
-            raise TypeError("``hidden_layer_widths`` must be passed as a list of int")
-        for width in hidden_layer_widths:
-            if not isinstance(width, int):
-                raise TypeError(
-                    "``hidden_layer_widths`` must be passed as a list of int"
-                )
-        if not isinstance(activation_fn, str):
-            raise TypeError("``activation_fn`` must be passed as a str")
-        if activation_fn not in VALID_ACTIVATION_FNS:
-            raise ValueError(f"``activation_fn`` must be one of {VALID_ACTIVATION_FNS}")
-
-    def forward(self, input: torch.Tensor, invariant: torch.Tensor):
+    def forward(
+        self,
+        input: torch.Tensor,
+        in_invariant: torch.Tensor,
+        check_args: bool = True,
+    ) -> torch.Tensor:
         """
         Makes a forward prediction on the ``input`` tensor that corresponds to
-        an equivariant feature. Requires specification of an invariant feature
-        tensor that is passed through a NN and used as a nonlinear multiplier to
-        the ``input`` tensor, whilst preserving its equivariant behaviour.
+        an equivariant feature. Requires specification of an input invariant
+        feature tensor that is passed through a NN and used as a nonlinear
+        multiplier to the ``input`` tensor, whilst preserving its equivariant
+        behaviour.
 
-        The ``input`` and ``invariant`` tensors are torch tensors corresponding
-        to i.e. the values of equistore TensorBlocks. As such, they must be 3D
-        tensors, where the first dimension is the samples, the last the
-        properties/features, and the 1st (middle) the components. The components
-        dimension of the invariant block must necessarily be of size 1, though
-        that of the equivariant ``input`` can be >= 1, equal to (2 \lambda + 1),
-        where \lambda is the spherical harmonic order.
+        The ``input`` and ``in_invariant`` tensors are torch tensors
+        corresponding to i.e. the values of metatensor TensorBlocks. As such,
+        they must be 3D tensors, where the first dimension is the samples, the
+        last the properties/features, and the 1st (middle) the components. The
+        components dimension of the in_invariant block must necessarily be of
+        size 1, though that of the equivariant ``input`` can be >= 1, equal to
+        (2 \lambda + 1), where \lambda is the spherical harmonic order.
+
+        The ``check_args`` flag can be used to disable the input checking, which
+        could be useful for perfomance reasons.
         """
-        # Check inputs are torch tensors
-        if not isinstance(input, torch.Tensor):
-            raise TypeError("``input`` must be a torch Tensor")
-        if not isinstance(invariant, torch.Tensor):
-            raise TypeError("``invariant`` must be a torch Tensor")
-        # Check the samples dimensions are the same size between the ``input``
-        # equivariant and the ``invariant``
-        if input.shape[0] != invariant.shape[0]:
-            raise ValueError(
-                "the samples (1st) dimension of the ``input`` equivariant"
-                + " and the ``invariant`` tensors must be equivalent"
-            )
-        # Check the components (i.e. 2nd) dimension of the invariant is 1
-        if invariant.shape[1] != 1:
-            raise ValueError(
-                "the components dimension of the invariant block must"
-                + " necessarily be 1"
-            )
-        # Check the components (i.e. 2nd) dimension of the input equivariant is
-        # >= 1 and is odd
-        if not (input.shape[1] >= 1 and input.shape[1] % 2 == 1):
-            raise ValueError(
-                "the components dimension of the equivariant ``input`` block must"
-                + " necessarily be greater than 1 and odd, corresponding to (2l + 1)"
-            )
+        if check_args:
+            # Check inputs are torch tensors
+            if not isinstance(input, torch.Tensor):
+                raise TypeError("``input`` must be a torch Tensor")
+            if not isinstance(in_invariant, torch.Tensor):
+                raise TypeError("``in_invariant`` must be a torch Tensor")
+            # Check the samples dimensions are the same size between the ``input``
+            # equivariant and the ``in_invariant``
+            if input.shape[0] != in_invariant.shape[0]:
+                raise ValueError(
+                    "the samples (1st) dimension of the ``input`` equivariant"
+                    + " and the ``in_invariant`` tensors must be equivalent"
+                )
+            # Check the components (i.e. 2nd) dimension of the in_invariant is 1
+            if in_invariant.shape[1] != 1:
+                raise ValueError(
+                    "the components dimension of the in_invariant block must"
+                    + " necessarily be 1"
+                )
+            # Check the components (i.e. 2nd) dimension of the input equivariant is
+            # >= 1 and is odd
+            if not (input.shape[1] >= 1 and input.shape[1] % 2 == 1):
+                raise ValueError(
+                    "the components dimension of the equivariant ``input`` block must"
+                    + " necessarily be greater than 1 and odd, corresponding to (2l + 1)"
+                )
 
-        # H-stack the invariant along the components dimension so that there are
+        # H-stack the in_invariant along the components dimension so that there are
         # (2 \lambda + 1) copies and the dimensions match the equivariant
-        invariant = torch.hstack([invariant] * input.shape[1])
+        in_invariant = torch.hstack([in_invariant] * input.shape[1])
 
-        # Pass the invariant tensor through the NN to create a nonlinear
+        # Pass the in_invariant tensor through the NN to create a nonlinear
         # multiplier. Also pass the equivariant through a linear input layer.
-        nonlinear_multiplier = self.invariant_nn(invariant)
+        nonlinear_multiplier = self.invariant_nn(in_invariant)
         linear_input = self.input_layer(input)
 
         # Perform element-wise (Hadamard) multiplication of the transformed
@@ -670,5 +798,4 @@ class NonLinearModel(torch.nn.Module):
         # dimensions
         nonlinear_input = torch.mul(linear_input, nonlinear_multiplier)
 
-        # Finally pass through the output layer and return
         return self.output_layer(nonlinear_input)

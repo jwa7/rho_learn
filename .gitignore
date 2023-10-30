@@ -1,12 +1,15 @@
 **__pycache__/
 **.DS_Store
 build/
-rholearn.egg-info
+rho_learn.egg-info
 
-# Azoswitch example
-docs/example/azoswitch/data/
-docs/example/azoswitch/runs/
 
-# Water example
-docs/example/water/data/
-docs/example/water/runs/
+# Field example
+docs/example/field/data/*
+docs/example/field/ml/*
+docs/example/field/slurm_out/*
+docs/example/field/precalc_data/*/lsoap.npz
+
+# Tensor example
+docs/example/tensor/data/*
+docs/example/tensor/ml/*
