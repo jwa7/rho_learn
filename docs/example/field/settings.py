@@ -176,38 +176,21 @@ ML_SETTINGS = {
         },
     },
     "loading": {
-        "train": {
-            # "do_batching": True,  # whether to batch the train data
-            "batch_size": 5,  # number of samples per train batch
-            "args": {
-                # "num_workers": 0,  # number of workers for data loading
-                # "prefetch_factor": None,  # number of batches to prefetch
-            },
-            "keep_in_mem": True,  # whether to keep the train data in memory or I/O from disk
+        "batch_size": 5,  # number of samples per train batch
+        "args": {
+            # "num_workers": 0,  # number of workers for data loading
+            # "prefetch_factor": None,  # number of batches to prefetch
         },
-        "test": {
-            # "do_batching": False,  # whether to batch the test data
-            "batch_size": 5,  # number of samples per batch
-            "args": {
-                # "num_workers": 0,  # number of workers for data loading
-                # "prefetch_factor": None,  # number of batches to prefetch
-            },
-        },
+        "keep_in_mem": True,  # whether to keep the train data in memory or I/O from disk
     },
     # Parameters for training procedure
     "training": {
-        "n_epochs": 10,  # number of total epochs to run
+        "n_epochs": 5,  # number of total epochs to run
         "save_interval": 5,  # save model and optimizer state every x intervals
         "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
-    "validation": {
+    "testing": {
         "interval": 5,  # validate every x epochs against real-space SCF field
     },
-    # "learning": {
-        # Define the number of training subsets to use and which one to run
-        # "n_train_subsets": 4,      # the number of training subsets to use (i.e. for learning exercise). 0 for no subsets.
-        # "i_train_subset": 0,       # the subset number to run, from 0 to n_train_subsets - 1, inclusive
-        # "subset_sizes": [10, 20, 40, 80],
-#     }
 }

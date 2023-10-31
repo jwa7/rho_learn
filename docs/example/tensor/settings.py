@@ -116,27 +116,16 @@ ML_SETTINGS = {
         },
     },
     "loading": {
-        "train": {
-            # "do_batching": True,  # whether to batch the train data
-            "batch_size": 2,  # number of samples per train batch
-            "args": {
-                # "num_workers": 0,  # number of workers for data loading
-                # "prefetch_factor": None,  # number of batches to prefetch
-            },
-            "keep_in_mem": True,  # whether to keep the train data in memory or I/O from disk
+        "batch_size": 2,  # number of samples per train batch
+        "args": {
+            # "num_workers": 0,  # number of workers for data loading
+            # "prefetch_factor": None,  # number of batches to prefetch
         },
-        "test": {
-            # "do_batching": False,  # whether to batch the test data
-            "batch_size": 2,  # number of samples per batch
-            "args": {
-                # "num_workers": 0,  # number of workers for data loading
-                # "prefetch_factor": None,  # number of batches to prefetch
-            },
-        },
+        "keep_in_mem": True,  # whether to keep the train data in memory or I/O from disk
     },
     # Parameters for training procedure
     "training": {
-        "n_epochs": 30,  # number of total epochs to run
+        "n_epochs": 10,  # number of total epochs to run
         "save_interval": 5,  # save model and optimizer state every x intervals
         "restart_epoch": None,  # The epoch of the last saved checkpoint. None for no restart
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
