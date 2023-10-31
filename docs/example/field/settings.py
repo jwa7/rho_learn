@@ -12,7 +12,7 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-TOP_DIR = "/home/abbott/rho/rho_learn/docs/example/field"
+TOP_DIR = "/scratch/abbott/rho_learn/docs/example/field"
 
 # Where the generated data should be written
 DATA_DIR = os.path.join(TOP_DIR, "data")
@@ -46,7 +46,7 @@ AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi
 
 # Define the AIMS settings that are common to all calculations
 BASE_AIMS_KWARGS = {
-    "species_dir": "/home/abbott/rho/rho_learn/rhocalc/aims/aims_species/tight/default",
+    "species_dir": "/scratch/abbott/rho_learn/rhocalc/aims/aims_species/tight/default",
     "xc": "pbe0",
     "spin": "none",
     "relativistic": "none",
