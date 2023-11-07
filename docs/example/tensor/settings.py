@@ -12,7 +12,7 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-TOP_DIR = "/scratch/abbott/rho_learn/docs/example/tensor"
+TOP_DIR = "/Users/joe.abbott/Documents/phd/code/rho/rho_learn/docs/example/tensor"
 
 # Where the generated data should be written
 DATA_DIR = os.path.join(TOP_DIR, "data")
@@ -23,7 +23,7 @@ ML_DIR = os.path.join(TOP_DIR, "ml")
 DATA_SETTINGS = {
 
     # Read in all frames in complete dataset
-    "all_frames": ase.io.read(os.path.join(DATA_DIR, "combined_magres_spherical.xyz"), ":"),
+    "all_frames": ase.io.read(os.path.join(DATA_DIR, "frames.xyz"), ":"),
     
     # Define a subset of frames
     "n_frames": 30,
