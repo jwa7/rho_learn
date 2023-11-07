@@ -163,9 +163,9 @@ publicly available. The notebook `ml_homo_no_aims.ipynb` features the same
 workflow but without dependency on `FHI-aims`, using instead pre-calculated
 target for the HOMOs of 10 water monomers.
 
-**Tensors**. As for tensorial learning, an example notebook `ml_efg.ipynb` is
-provided in `docs/example/tensor`, with an application to chemical shielding (or
-'EFG') tensors.
+**Tensors**. As for tensorial learning, an example notebook `ml_training.ipynb` is
+provided in `docs/example/tensor`, learning pseudo-data in the form of random
+tensors decomposed in the angular basis.
 
 
 # References
