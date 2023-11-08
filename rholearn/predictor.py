@@ -2,6 +2,7 @@
 Module for user-defined functions.
 """
 import os
+import shutil
 from typing import List, Callable
 
 import ase
@@ -105,6 +106,14 @@ def target_builder(
             basis_set_idxs=kwargs["basis_set"]["idxs"],
             save_dir=save_dir(A),
         )
+    
+    # If an "aims.out" file already exists in the save directory, delete it.
+    # This prevents this function from incorrectly determining that the AIMS
+    # calculation has finished, while not being able to delete the directory
+    all_aims_outs = [os.path.join(save_dir(A), "aims.out") for A in structure_idxs]
+    for aims_out in all_aims_outs:
+        if os.path.exists(aims_out):
+            os.remove(aims_out)
 
     # Run AIMS to build the target scalar field for each structure
     aims_calc.run_aims_array(
@@ -118,20 +127,20 @@ def target_builder(
     # Wait until all AIMS calcs have finished, then read in and return the
     # target scalar fields
     all_finished = False
-    while not all_finished:
-        calcs_finished = []
-        for A in structure_idxs:
-            aims_out_path = os.path.join(save_dir(A), "aims.out")
-            if os.path.exists(aims_out_path):
-                with open(aims_out_path, "r") as f:
+    while len(all_aims_outs) > 0:
+        for aims_out in all_aims_outs:
+            if os.path.exists(aims_out):
+                with open(aims_out, "r") as f:
                     # Basic check to see if AIMS calc has finished
-                    calcs_finished.append("Leaving FHI-aims." in f.read())
-            else:
-                calcs_finished.append(False)
-        all_finished = np.all(calcs_finished)
+                    if "Leaving FHI-aims." in f.read():
+                        all_aims_outs.remove(aims_out)
 
     targets = []
     for A in structure_idxs:
-        targets.append(np.loadtxt(os.path.join(save_dir(A), "rho_rebuilt.out")))
+        target = np.loadtxt(
+            os.path.join(save_dir(A), "rho_rebuilt.out"), 
+            usecols=(0, 1, 2, 3),
+        )
+        targets.append(target)
 
     return targets
