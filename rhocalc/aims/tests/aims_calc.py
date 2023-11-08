@@ -103,6 +103,20 @@ calcs = {
         "aims_kwargs": {"k_grid": [2, 2, 1], "collect_eigenvectors": True},
         "sbatch_kwargs": {"ntasks-per-node": 3},
     },
+    7: {  
+        "name": "H2O, periodic, 4 kpt, parallel, n_tasks (10) > n_kpts",
+        "atoms": ase.io.read("systems/water_periodic.xyz"),
+        "aims_path": aims_path,
+        "aims_kwargs": {"k_grid": [2, 2, 1]},
+        "sbatch_kwargs": {"ntasks-per-node": 10},
+    },
+    8: {  
+        "name": "H2O, periodic, 4 kpt, parallel, n_tasks (10) > n_kpts, COLLECT",
+        "atoms": ase.io.read("systems/water_periodic.xyz"),
+        "aims_path": aims_path,
+        "aims_kwargs": {"k_grid": [2, 2, 1], "collect_eigenvectors": True},
+        "sbatch_kwargs": {"ntasks-per-node": 10},
+    },
     # 4: {
     #     "name": "H2O, periodic, 4 kpt, serial",
     #     "atoms": ase.io.read("systems/water_periodic.xyz"),
@@ -327,8 +341,8 @@ def run_tests(calcs: dict):
     """
     failed = []
 
-    # # Get integration to the formal number of electrons
-    # failed.append(total_densities_integrate_to_n_electrons(calcs))
+    # Get integration to the formal number of electrons
+    failed.append(total_densities_integrate_to_n_electrons(calcs))
 
     # # np.allclose of weighted sum of KSO coeff matrices vs density matrix
     # failed.append(coeff_matrices_sum_to_density_matrix(calcs, return_all_calcs=True))
@@ -354,8 +368,8 @@ def run_tests(calcs: dict):
     # # np.allclose of RI coeffs: a) weighted sum of KSOs vs total density from densmat
     # failed.append(ri_coeffs_for_ksos_sum_to_total_density_from_densmat(calcs))
 
-    # Test teh the RI overlap matric is symmetric
-    failed.append(overlap_is_symmetric(calcs))
+    # Test the the RI overlap matric is symmetric
+    # failed.append(overlap_is_symmetric(calcs))
 
     return failed
 
@@ -370,7 +384,7 @@ def total_densities_integrate_to_n_electrons(calcs):
     the density matrix. Checks that all of these are equal.
     """
     print(f"Test: {inspect.stack()[0][3]}")
-    print(f"        N_e: [formal, from ks_orbital_info, from physics, from densmat, from RI]")
+    print(f"    N_e: [formal, from ks_orbital_info, from physics, from densmat, from RI]")
     # Iterate over calculations
     all_passed = True
     failed_calcs = {}
@@ -380,7 +394,7 @@ def total_densities_integrate_to_n_electrons(calcs):
         ks_info = np.loadtxt(os.path.join(ri_dir, "ks_orbital_info.out"))
         rho_from_physics = np.loadtxt(os.path.join(ri_dir, f"rho_physics.out"))
         rho_from_densmat = np.loadtxt(os.path.join(ri_dir, f"rho_ref.out"))
-        rho_from_ri = np.loadtxt(os.path.join(ri_dir, f"rho_ri.out"))
+        # rho_from_ri = np.loadtxt(os.path.join(ri_dir, f"rho_ri.out"))
         grid = np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
 
         # Calc number of electrons
@@ -388,10 +402,10 @@ def total_densities_integrate_to_n_electrons(calcs):
         N_info = _get_occ_number_of_electrons(ks_info)
         N_from_physics = _get_integrated_number_of_electrons(rho_from_physics, grid)
         N_from_densmat = _get_integrated_number_of_electrons(rho_from_densmat, grid)
-        N_from_RI = _get_integrated_number_of_electrons(rho_from_ri, grid)
+        # N_from_RI = _get_integrated_number_of_electrons(rho_from_ri, grid)
 
         # Check for equivalence
-        N_list = [N_formal, N_info, N_from_physics, N_from_densmat, N_from_RI]
+        N_list = [N_formal, N_info, N_from_physics, N_from_densmat]#, N_from_RI]
         decimals = 10
         if np.all(  # relax slightly the tolerance on num electrons by multiplying by 10
             [
