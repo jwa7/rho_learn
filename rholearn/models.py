@@ -76,6 +76,11 @@ class RhoModel(torch.nn.Module):
     recipe for building the target. For instance, in an indirect learning
     scheme, this function may call a Quantum Chemistry code to calculate a
     derived property.
+
+    If ``global_species`` is passed, these are set and may for instance be used
+    to define global correlations in the descriptor builder of the predictor. If
+    not passed, the gloabl species are inferred from the keys of the ``input``
+    TensorMap.
     """
 
     # Initialize model
@@ -91,6 +96,7 @@ class RhoModel(torch.nn.Module):
         bias_nn: bool = False,
         descriptor_kwargs: Optional[dict] = None,
         target_kwargs: Optional[dict] = None,
+        global_species: Optional[List[int]] = None,
         **torch_settings,
     ):
         super(RhoModel, self).__init__()
@@ -113,6 +119,9 @@ class RhoModel(torch.nn.Module):
         # Passing `invariant_baseline` as a TensorMap will add this back to the
         # predictions made on invariant blocks.
         self._set_invariant_baseline(invariant_baseline)
+
+        # Set the global species if passed
+        self._set_global_species(global_species)
 
         # Set the settings required to build a descriptor from ASE frames and
         # transform the raw prediction of the model
@@ -324,6 +333,20 @@ class RhoModel(torch.nn.Module):
             )
 
     @property
+    def global_species(self) -> List[int]:
+        return self._global_species
+
+    def _set_global_species(self, global_species: List[int]) -> None:
+        """
+        Sets the global species.
+        """
+        if global_species is None:
+            global_species = np.sort(
+                np.unique(self._in_metadata.keys.column("species_center"))
+            )
+        self._global_species = global_species
+
+    @property
     def descriptor_kwargs(self) -> dict:
         return self._descriptor_kwargs
 
@@ -334,13 +357,7 @@ class RhoModel(torch.nn.Module):
         """
         if descriptor_kwargs is not None:
             # Also required for descriptor generation are the global species.
-            descriptor_kwargs.update(
-                {
-                    "global_species": np.sort(
-                        np.unique(self._in_metadata.keys.column("species_center"))
-                    )
-                }
-            )
+            descriptor_kwargs.update({"global_species": self._global_species})
         self._descriptor_kwargs = descriptor_kwargs
 
     def set_descriptor_kwargs(self, descriptor_kwargs: dict) -> None:
