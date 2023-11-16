@@ -56,17 +56,20 @@ def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
     torch_settings = kwargs.get("torch_settings")
 
     # Build spherical expansion
-    nu_1_tensor = rascaline.SphericalExpansion(**rascal_settings["hypers"]).compute(
+    nu1_tensor = rascaline.SphericalExpansion(**rascal_settings["hypers"]).compute(
         frames, **rascal_settings["compute"]
     )
-    nu_1_tensor = nu_1_tensor.keys_to_properties(
+    nu1_tensor = nu1_tensor.keys_to_properties(
         keys_to_move=Labels(
             names=["species_neighbor"], values=np.array(global_species).reshape(-1, 1)
         )
     )
 
     # Build lambda-SOAP vector
-    lsoap = clebsch_gordan.lambda_soap_vector(nu_1_tensor, **cg_settings)
+    lsoap = clebsch_gordan.single_center_combine_to_order(
+        nu1_tensor, 
+        **cg_settings,
+    )
 
     # Convert to torch backend and return
     if torch_settings is not None:

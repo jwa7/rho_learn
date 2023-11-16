@@ -110,9 +110,11 @@ RASCAL_SETTINGS = {
 }
 
 CG_SETTINGS = {
+    "correlation_order": 2,
     "angular_cutoff": None,
     "angular_selection": np.arange(9).tolist(),
     "parity_selection": [+1],
+    "skip_redundant": True,
 }
 
 # =========================================
