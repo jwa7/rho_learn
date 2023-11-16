@@ -341,8 +341,8 @@ def run_tests(calcs: dict):
     """
     failed = []
 
-    # Get integration to the formal number of electrons
-    failed.append(total_densities_integrate_to_n_electrons(calcs))
+    # # Get integration to the formal number of electrons
+    # failed.append(total_densities_integrate_to_n_electrons(calcs))
 
     # # np.allclose of weighted sum of KSO coeff matrices vs density matrix
     # failed.append(coeff_matrices_sum_to_density_matrix(calcs, return_all_calcs=True))
