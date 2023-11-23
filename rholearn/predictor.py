@@ -83,12 +83,16 @@ def target_builder(
     frames: List[ase.Atoms],
     predictions: List[TensorMap],
     save_dir: Callable,
+    return_targets: bool = True,
     **kwargs
 ):
     """
     Takes the RI coefficients predicted by the model. Converts it from TensorMap
     to numpy format, reorders the array according to the AIMS convention, then
     rebuilds the scalar field by calling AIMS.
+
+    if `return_targets` is True, then this function waits for the AIMS
+    calcualtions to finish then returns rebuilt scalar fields.
     """
     calcs = {
         A: {"atoms": frame, "run_dir": save_dir(A)}
@@ -126,6 +130,9 @@ def target_builder(
         sbatch_kwargs=kwargs["sbatch_kwargs"],
         run_dir=save_dir,  # must be a callable
     )
+
+    if not return_targets:
+        return
     
     # Wait until all AIMS calcs have finished, then read in and return the
     # target scalar fields

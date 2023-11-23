@@ -512,6 +512,7 @@ class RhoModel(torch.nn.Module):
         descriptor: Optional[TensorMap] = None,
         build_target: bool = False,
         save_dir: Optional[Callable] = None,
+        return_targets: bool = True,
     ) -> TensorMap:
         """
         Performs inference with no gradient tracking to make a prediction on an
@@ -631,6 +632,7 @@ class RhoModel(torch.nn.Module):
                 frames=frames,
                 predictions=predictions,
                 save_dir=save_dir,
+                return_targets=return_targets,
                 **self._target_kwargs,
             )
 
