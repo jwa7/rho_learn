@@ -10,5 +10,7 @@ pip uninstall -y rascaline rascaline-torch
 pip cache remove "metatensor*"
 pip cache remove "rascaline*"
 
-pip install --no-build-isolation git+https://github.com/lab-cosmo/metatensor@659ce8dc6cab85cbea95371a4f841cd3bd686b54
+# Has to be in this order, such that the recent changes in metatensor overrides
+# the older metatensor version installed by rascaline
 pip install --no-build-isolation git+https://github.com/luthaf/rascaline@6dc73889a6adcf2e34fb24967cbd039f45055bbe
+pip install --no-build-isolation git+https://github.com/lab-cosmo/metatensor@659ce8dc6cab85cbea95371a4f841cd3bd686b54
