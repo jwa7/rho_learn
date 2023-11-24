@@ -5,7 +5,7 @@ dependencies:
   - rust
   - cmake
   - pip:
-    - ase
+    - git+https://gitlab.com/ase/ase.git  # dev version needed for AIMS IO
     - chemiscope
     - ipython
     - jupyter
