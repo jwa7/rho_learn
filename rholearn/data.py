@@ -184,6 +184,7 @@ class RhoData(torch.utils.data.Dataset):
         tensor = metatensor.join(
             [self[A][which_idx] for A in idxs],
             axis="samples",
+            different_keys="union",
             remove_tensor_name=True,
         )
         tensor = metatensor.to(tensor, "numpy")
@@ -385,16 +386,16 @@ class RhoLoader:
         if self._get_aux_data:
             return (
                 batch[0],
-                metatensor.join(batch[1], axis="samples", remove_tensor_name=True),
-                metatensor.join(batch[2], axis="samples", remove_tensor_name=True),
-                metatensor.join(batch[3], axis="samples", remove_tensor_name=True),
+                metatensor.join(batch[1], axis="samples", different_keys="union", remove_tensor_name=True),
+                metatensor.join(batch[2], axis="samples", different_keys="union", remove_tensor_name=True),
+                metatensor.join(batch[3], axis="samples", different_keys="union", remove_tensor_name=True),
             )
         # Otherwise, just return the idxs and the input/output pair, with None
         # in place of the auxiliary data
         return (
             batch[0],
-            metatensor.join(batch[1], axis="samples", remove_tensor_name=True),
-            metatensor.join(batch[2], axis="samples", remove_tensor_name=True),
+            metatensor.join(batch[1], axis="samples", different_keys="union", remove_tensor_name=True),
+            metatensor.join(batch[2], axis="samples", different_keys="union", remove_tensor_name=True),
             None,
         )
 

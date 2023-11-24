@@ -503,7 +503,9 @@ def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
         )
     if as_array:
         if with_weights:
-            w_col = [("kso_weight", float),]
+            w_col = [
+                ("kso_weight", float),
+            ]
         else:
             w_col = []
         info = np.array(
@@ -516,7 +518,8 @@ def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
                 ("k_weight", float),
                 ("occ", float),
                 ("energy_eV", float),
-            ] + w_col,
+            ]
+            + w_col,
         )
 
     else:
@@ -704,9 +707,7 @@ def process_aims_ri_results(
         else:
             n_kpts = 1
         assert aims_out["num_ks_orbitals"] == (
-            aims_out["num_ks_states"]
-            * aims_out["num_spin_states"]
-            * n_kpts
+            aims_out["num_ks_states"] * aims_out["num_spin_states"] * n_kpts
         )
 
     # Now perform processing that is dependent on the RI calculation index
@@ -736,7 +737,9 @@ def process_aims_ri_results(
         aims_out["df_error_percent"][
             "total" if ri_calc_idx is None else ri_calc_idx
         ] = get_percent_mae_between_fields(
-            input=np.loadtxt(os.path.join(aims_output_dir, f"rho_ri{ri_calc_suffix}.out")),
+            input=np.loadtxt(
+                os.path.join(aims_output_dir, f"rho_ri{ri_calc_suffix}.out")
+            ),
             target=np.loadtxt(
                 os.path.join(aims_output_dir, f"rho_ref{ri_calc_suffix}.out")
             ),

@@ -1,0 +1,16 @@
+name: rho
+dependencies:
+  - python=3.11
+  - pip
+  - rust
+  - cmake
+  - pip:
+    - git+https://gitlab.com/ase/ase.git  # dev version needed for AIMS IO
+    - chemiscope
+    - ipython
+    - jupyter
+    - jupyterlab
+    - sympy
+    - torch==2.1.0
+    - wheel
+    - wigners

@@ -57,78 +57,23 @@ below:
 
 # Set up
 
-## Requirements
-
-The only requirements to begin installation are ``git``, ``conda`` and ``rustc``:
-
-* ``git >= 2.37``
-* ``conda >= 22.9``
-* ``rustc >= 1.65``
-
-**``conda``**
- 
-Is used as a package and environment manager. It allows a virtual environment
-will be created within which the appropriate version of Python (``== 3.10``) and
-required packages will be installed.
-
-If you don't already have ``conda``, the latest version of the lightweight
-[``miniforge``](https://github.com/conda-forge/miniforge/releases/) can be
-downloaded from [here](https://github.com/conda-forge/miniforge/releases/), for
-your specific operating system. After downloading, change the execute
-permissions and run the installer, for instance as follows:
-
-```
-chmod +x Miniforge3-Linux-x86_64.sh
-./Miniforge3-Linux-x86_64.sh
-```
-
-and follow the installation instructions.
-
-When starting up a terminal, if the ``(base)`` label on the terminal user prompt
-is not seen, the command ``bash`` might have to be run to activate ``conda``.
-
-**``rustc``**
-
-Is used to compile code in ``rascaline`` and ``metatensor``. To install
-``rustc``, run the following command, taken from the ['Install
-Rust'](https://www.rust-lang.org/tools/install) webpage:
-
-```
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-and follow the installation instructions.
-
-
 ## Installation
 
-
-Clone this repo and create a ``conda`` environment using the ``environment.yml``
-file. This will install all the required base packages, such as ase,
-numpy, torch and matplotlib, into an environment called ``rho``.
-
-1. Clone the **``rho_learn``** repo and create a virtual environment.
+Pre-requisite: a working `conda` installation. With this, follow the
+installation instructions below.
 
 ```
-git clone https://github.com/jwa7/rho_learn.git
+git clone https://github.com/jwa7/rho_learn
 cd rho_learn
-conda env create -f environment.yml
+conda env create --file install/environment.yaml
 conda activate rho
+./install/extra-pip-packages.sh
+pip install .
 ```
 
-Then, some atomistic ML packages can be installed in the ``rho`` environment.
-Ensure you install these **in the order shown below** (this is very important)
-and with the exact commands, as some development branches are required for this
-setup.
-
-  2. **chemiscope**: ``pip install chemiscope``
-  
-  2. **metatensor**: ``pip install metatensor``
-  
-  2. **rascaline**: ``pip install git+https://github.com/luthaf/rascaline.git@b2cedfe870541e6d037357db58de1901eb116c41``
-
-  2. **rho_learn**: ensure you're in the ``rho_learn/`` directory then ``pip install .``
-
+In the case of error `bash: ./install/extra-pip-packages.sh: Permission denied` you
+might have to change the permission using 
+`chmod +x ./install/extra-pip-packages.sh` before running `./install/extra-pip-packages.sh`.
 
 ## Jupyter Notebooks
 

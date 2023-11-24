@@ -317,3 +317,67 @@ def run_aims_array(
     run_aims_in_dir(top_dir, check_input_files=False)
 
     return
+
+
+def process_aims_results_sbatch_array(
+    fname: str,
+    structure_idxs: List[int],
+    run_dir: Callable,
+    process_what: List[str],
+    **kwargs,
+):
+    """
+    Writes a bash script to `fname` that allows running of Python code to
+    process AIMS RI results as an SBATCH array.
+    """
+    top_dir = os.getcwd()
+    os.chdir(top_dir)
+
+    with open(fname, "wt") as f:
+
+        # Make a dir for the slurm outputs
+        if not os.path.exists("slurm_out"):
+            os.mkdir("slurm_out")
+
+        # Write the header
+        f.write("#!/bin/bash\n")
+
+        # Write the sbatch parameters
+        for tag, val in kwargs.items():
+            f.write(f"#SBATCH --{tag}={val}\n")
+        
+        # Write the array of structure indices
+        f.write(f"#SBATCH --array={','.join(map(str, structure_idxs))}\n")
+        f.write("#SBATCH --output=slurm_out/%a_slurm.out\n")
+        f.write("#SBATCH --get-user-env\n")
+        f.write("\n\n")
+
+        # Get the structure idx in the sbatch array
+        f.write("# Get the structure idx from the SLURM job ID\n")
+        f.write("STRUCTURE_ID=${SLURM_ARRAY_TASK_ID}\n\n")
+
+        # Define the run directory and cd to it
+        f.write("# Define the run directory and cd into it\n")
+        f.write(f"RUNDIR={run_dir('${STRUCTURE_ID}')}\n")
+        f.write("cd $RUNDIR\n\n")
+
+        f.write("# Run the Python command\n")
+        f.write("python process_aims.py\n\n")
+
+    # Write a Python script for each structure
+    for A in structure_idxs:
+        with open(os.path.join(run_dir(A), "process_aims.py"), "w") as g:
+            g.write("import ase.io \n")
+            g.write("from rhocalc.aims import aims_parser \n\n")
+            g.write("frame = ase.io.read('geometry.in') \n")
+            g.write(
+                "aims_parser.process_aims_ri_results( \n"
+                f"    frame, '.', process_what={process_what}, structure_idx={A} \n"
+                ")\n"
+            )
+
+    os.system(f"sbatch {fname}")
+
+    return
+
+

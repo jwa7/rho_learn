@@ -72,6 +72,7 @@ RI_KWARGS = {
     # ===== Specific setting for RI fitting
     "ri_fit_ovlp_cutoff_radius": 2.0,
     "ri_fit_assume_converged": True,
+    "default_max_l_prodbas": 5,
     # ===== What to write as output
     "ri_fit_write_coeffs": True,  # RI coeffs (the learning target)
     "ri_fit_write_ovlp": True,  # RI overlap (needed for loss evaluation)
@@ -110,9 +111,11 @@ RASCAL_SETTINGS = {
 }
 
 CG_SETTINGS = {
+    "correlation_order": 2,
     "angular_cutoff": None,
     "angular_selection": np.arange(9).tolist(),
     "parity_selection": [+1],
+    "skip_redundant": True,
 }
 
 # =========================================

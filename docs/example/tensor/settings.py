@@ -50,9 +50,11 @@ RASCAL_SETTINGS = {
 }
 
 CG_SETTINGS = {
+    "correlation_order": 2,
     "angular_cutoff": None,
     "angular_selection": [0, 2],
     "parity_selection": [+1],
+    "skip_redundant": True,
 }
 
 # =========================================

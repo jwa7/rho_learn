@@ -425,17 +425,34 @@ class RhoModel(torch.nn.Module):
         """
         # Predict on the keys of the *input* TensorMap
         keys = input.keys
+
+        # Remove keys that aren't part of the model
         key_mask = torch.tensor(
             [key in self._in_metadata.keys for key in keys], dtype=torch.bool
         )
         if not torch.all(key_mask):
             offending_keys = [key for key in keys if key not in self._in_metadata.keys]
             warnings.warn(
-                f"one or more of input blocks at keys {offending_keys} is not "
-                " part of the keys of the model. The returned prediction will "
-                "not contain this block."
+                f"one or more of input blocks at keys {offending_keys} is not"
+                " part of the keys of the model. The returned prediction will"
+                " not contain these blocks."
             )
         keys = Labels(names=keys.names, values=keys.values[key_mask])
+
+        # Remove the keys for blocks that have no samples
+        key_mask = torch.tensor(
+            [input[key].values.shape[0] > 0 for key in keys], dtype=torch.bool
+        )
+        if not torch.all(key_mask):
+            offending_keys = [key for key in keys if input[key].values.shape[0] == 0]
+            warnings.warn(
+                f"one or more of input blocks at keys {offending_keys} has"
+                " zero samples. The returned prediction will not contain"
+                " these blocks."
+            )
+        keys = Labels(names=keys.names, values=keys.values[key_mask])
+
+        # Make predictions on each block and build the prediction TensorMap
         pred_blocks = []
         for key in keys:
             if check_args:
@@ -512,6 +529,7 @@ class RhoModel(torch.nn.Module):
         descriptor: Optional[TensorMap] = None,
         build_target: bool = False,
         save_dir: Optional[Callable] = None,
+        return_targets: bool = True,
     ) -> TensorMap:
         """
         Performs inference with no gradient tracking to make a prediction on an
@@ -631,6 +649,7 @@ class RhoModel(torch.nn.Module):
                 frames=frames,
                 predictions=predictions,
                 save_dir=save_dir,
+                return_targets=return_targets,
                 **self._target_kwargs,
             )
 

@@ -56,17 +56,26 @@ def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
     torch_settings = kwargs.get("torch_settings")
 
     # Build spherical expansion
-    nu_1_tensor = rascaline.SphericalExpansion(**rascal_settings["hypers"]).compute(
+    density = rascaline.SphericalExpansion(**rascal_settings["hypers"]).compute(
         frames, **rascal_settings["compute"]
     )
-    nu_1_tensor = nu_1_tensor.keys_to_properties(
+    density = density.keys_to_properties(
         keys_to_move=Labels(
             names=["species_neighbor"], values=np.array(global_species).reshape(-1, 1)
         )
     )
 
     # Build lambda-SOAP vector
-    lsoap = clebsch_gordan.lambda_soap_vector(nu_1_tensor, **cg_settings)
+    lsoap = clebsch_gordan.correlate_density(
+        density,
+        correlation_order=cg_settings["correlation_order"],
+        angular_cutoff=cg_settings["angular_cutoff"],
+        selected_keys=Labels(
+            names=["spherical_harmonics_l", "inversion_sigma"],
+            values=np.array(cg_settings["selected_keys"], dtype=np.int32),
+        ),
+        skip_redundant=cg_settings["skip_redundant"],
+    )[0]
 
     # Convert to torch backend and return
     if torch_settings is not None:
@@ -80,12 +89,16 @@ def target_builder(
     frames: List[ase.Atoms],
     predictions: List[TensorMap],
     save_dir: Callable,
+    return_targets: bool = True,
     **kwargs
 ):
     """
     Takes the RI coefficients predicted by the model. Converts it from TensorMap
     to numpy format, reorders the array according to the AIMS convention, then
     rebuilds the scalar field by calling AIMS.
+
+    if `return_targets` is True, then this function waits for the AIMS
+    calcualtions to finish then returns rebuilt scalar fields.
     """
     calcs = {
         A: {"atoms": frame, "run_dir": save_dir(A)}
@@ -123,6 +136,9 @@ def target_builder(
         sbatch_kwargs=kwargs["sbatch_kwargs"],
         run_dir=save_dir,  # must be a callable
     )
+
+    if not return_targets:
+        return
     
     # Wait until all AIMS calcs have finished, then read in and return the
     # target scalar fields
