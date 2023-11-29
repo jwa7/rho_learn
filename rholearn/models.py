@@ -457,11 +457,15 @@ class RhoModel(torch.nn.Module):
         for key in keys:
             if check_args:
                 assert key in self._in_metadata.keys
-                assert metatensor.equal_metadata_block(
+                if not metatensor.equal_metadata_block(
                     input[key],
                     self._in_metadata[key],
                     check=["components", "properties"],
-                )
+                ):
+                    raise ValueError(
+                        f"the metadata of the input block at key {key} does not"
+                        + " match that of the model"
+                    )
 
             # Get the model
             block_model = self._models[self._in_metadata.keys.position(key)]

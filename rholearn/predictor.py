@@ -113,13 +113,11 @@ def target_builder(
             lmax=kwargs["basis_set"]["def"]["lmax"],
             nmax=kwargs["basis_set"]["def"]["nmax"],
         )
-        # Convert to AIMS ordering and save to "ri_coeffs.in"
-        pred_aims = aims_parser.coeff_vector_ndarray_to_aims_coeffs(
-            coeffs=pred_np,
-            basis_set_idxs=kwargs["basis_set"]["idxs"],
-            save_dir=save_dir(A),
-        )
-    
+        # Save coeffs to "ri_coeffs.in"
+        if not os.path.exists(save_dir(A)):
+            os.makedirs(save_dir(A))
+        np.savetxt(os.path.join(save_dir(A), "ri_coeffs.in"), pred_np)
+
     # If an "aims.out" file already exists in the save directory, delete it.
     # This prevents this function from incorrectly determining that the AIMS
     # calculation has finished, while not being able to delete the directory
@@ -139,7 +137,7 @@ def target_builder(
 
     if not return_targets:
         return
-    
+
     # Wait until all AIMS calcs have finished, then read in and return the
     # target scalar fields
     all_finished = False
@@ -154,7 +152,7 @@ def target_builder(
     targets = []
     for A in structure_idxs:
         target = np.loadtxt(
-            os.path.join(save_dir(A), "rho_rebuilt.out"), 
+            os.path.join(save_dir(A), "rho_rebuilt.out"),
             usecols=(0, 1, 2, 3),
         )
         targets.append(target)
