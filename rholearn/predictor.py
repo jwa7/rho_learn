@@ -75,7 +75,7 @@ def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
             values=np.array(cg_settings["selected_keys"], dtype=np.int32),
         ),
         skip_redundant=cg_settings["skip_redundant"],
-    )[0]
+    )
 
     # Convert to torch backend and return
     if torch_settings is not None:
@@ -110,8 +110,8 @@ def target_builder(
         pred_np = convert.coeff_vector_tensormap_to_ndarray(
             frame=frame,
             tensor=pred,
-            lmax=kwargs["basis_set"]["def"]["lmax"],
-            nmax=kwargs["basis_set"]["def"]["nmax"],
+            lmax=kwargs["basis_set"]["lmax"],
+            nmax=kwargs["basis_set"]["nmax"],
         )
         # Save coeffs to "ri_coeffs.in"
         if not os.path.exists(save_dir(A)):
