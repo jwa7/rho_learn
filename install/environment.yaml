@@ -10,7 +10,7 @@ dependencies:
     - ipython
     - jupyter
     - jupyterlab
+    - numpy
     - sympy
-    - torch==2.1.0
     - wheel
     - wigners
