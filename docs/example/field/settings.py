@@ -12,7 +12,7 @@ from rholearn import loss
 # ====================================================
 
 # Define the top level dir
-TOP_DIR = "/scratch/abbott/rho_learn/docs/example/field"
+TOP_DIR = "/home/abbott/rho/rho_learn/docs/example/field"
 
 # Where the generated data should be written
 DATA_DIR = os.path.join(TOP_DIR, "data")
@@ -27,6 +27,12 @@ DATA_SETTINGS = {
     
     # Define a subset of frames
     "n_frames": 10,
+
+    # Define the index of the RI calculation
+    "ri_restart_idx": 0,
+
+    # Global speices required
+    "global_species": [1, 8],
 
     # Define a random seed
     "seed": 314,
@@ -46,7 +52,7 @@ AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi
 
 # Define the AIMS settings that are common to all calculations
 BASE_AIMS_KWARGS = {
-    "species_dir": "/scratch/abbott/rho_learn/rhocalc/aims/aims_species/tight/default",
+    "species_dir": "/home/abbott/rho/rho_learn/rhocalc/aims/aims_species/tight/default",
     "xc": "pbe0",
     "spin": "none",
     "relativistic": "none",
@@ -83,6 +89,23 @@ RI_KWARGS = {
     "ri_fit_write_rebuilt_field_cube": True,  # RI-rebuilt scalar field on CUBE grid
 }
 
+# Settings for the RI rebuild procedure
+REBUILD_KWARGS = {
+    # ===== Force no SCF
+    "sc_iter_limit": 0,
+    "postprocess_anyway": True,
+    "ri_fit_assume_converged": True,
+    # ===== What we want to do
+    "ri_fit_rebuild_from_coeffs": True,
+    # ===== Specific settings for RI rebuild
+    "ri_fit_ovlp_cutoff_radius": RI_KWARGS["ri_fit_ovlp_cutoff_radius"],
+    "default_max_l_prodbas": RI_KWARGS["default_max_l_prodbas"],
+    # ===== What to write as output
+    "ri_fit_write_rebuilt_field": True,
+    "ri_fit_write_rebuilt_field_cube": True,
+    "output": ["cube ri_fit"],  # needed for cube files
+}
+
 # Settings for HPC job scheduler
 SBATCH_KWARGS = {
     "job-name": "h2o",
@@ -91,6 +114,17 @@ SBATCH_KWARGS = {
     "mem-per-cpu": 2000,
     "partition": "bigmem",
     "ntasks-per-node": 10,
+}
+
+# ==============================
+# ===== Settings for torch =====
+# ==============================
+
+# Setting for torch backend
+TORCH_SETTINGS = {
+    "dtype": torch.float64,  # important for model accuracy
+    "requires_grad": True,
+    "device": torch.device(type="cpu"),
 }
 
 # ==========================================================
@@ -113,8 +147,7 @@ RASCAL_SETTINGS = {
 CG_SETTINGS = {
     "correlation_order": 2,
     "angular_cutoff": None,
-    "angular_selection": np.arange(9).tolist(),
-    "parity_selection": [+1],
+    "selected_keys": [[l, 1] for l in np.arange(RI_KWARGS["default_max_l_prodbas"] + 1)],
     "skip_redundant": True,
 }
 
@@ -133,13 +166,6 @@ CROSSVAL_SETTINGS = {
 # =======================================
 # ===== Settings for model training =====
 # =======================================
-
-# Setting for torch backend
-TORCH_SETTINGS = {
-    "dtype": torch.float64,  # important for model accuracy
-    "requires_grad": True,
-    "device": torch.device(type="cpu"),
-}
 
 # Define ML settings
 ML_SETTINGS = {
@@ -193,7 +219,9 @@ ML_SETTINGS = {
         "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
-    "testing": {
-        "interval": 5,  # validate every x epochs against real-space SCF field
+    "calc_mae": {
+        "interval": 2,  # validate every x epochs against real-space SCF field
+        "which": ["test"],
+        "return_targets": False,  # whether to wait for AIMS calcs to finish
     },
 }
