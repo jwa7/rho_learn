@@ -9,6 +9,7 @@ import numpy as np
 from rhocalc.aims import aims_calc
 
 TOLERANCE = {"rtol": 1e-5, "atol": 1e-10}
+DF_ERROR_TOLERANCE = 0.3 # percent MAE tolerance for RI density fitting
 
 
 def run_scf(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
@@ -102,6 +103,79 @@ def run_ri(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict, use_restart: boo
             )
             for density_matrix in glob.glob(os.path.join(f"{calc_i}/", "D*.csc")):
                 shutil.copy(density_matrix, run_dir)
+
+
+        # Settings for sbatch run script
+        sbatch_kwargs_calc = sbatch_kwargs.copy()
+        sbatch_kwargs_calc.update(calc["sbatch_kwargs"])
+
+        # Write AIMS input files
+        aims_calc.write_input_files(
+            atoms=calc["atoms"], 
+            run_dir=run_dir, 
+            aims_kwargs=aims_kwargs_calc,
+        )
+
+        # Write sbatch run script
+        aims_calc.write_aims_sbatch(
+            fname=os.path.join(run_dir, "run-aims.sh"), 
+            aims=calc["aims_path"], 
+            load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            **sbatch_kwargs_calc
+        )
+
+        # Run aims
+        aims_calc.run_aims_in_dir(run_dir)
+
+    return
+
+def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
+    """
+    Runs an RI rebuild calculation for the total electron density
+
+    In each of the run directories, uses the previously calculted RI
+    coefficients (i.e. .../ri/ri_coeffs.in) are used to rebuild the density
+    
+    converged SCF (using func
+    `run_scf`) as the restart density matrix. Runs the RI calculation with no
+    SCF iterations from this denisty matrix in a subfolder "ri/" for each
+    system.
+    """
+
+    top_dir = os.getcwd()
+    os.chdir(top_dir)
+
+    for calc_i, calc in calcs.items():
+
+        # Define run dir and AIMS path
+        run_dir = f"{calc_i}/rebuild/"
+        if not os.path.exists(run_dir):
+            os.makedirs(run_dir)
+
+        # Settings for control.in
+        aims_kwargs_calc = aims_kwargs.copy()
+        aims_kwargs_calc.update(calc["aims_kwargs"])
+
+        # Copy restart density matrix
+        aims_kwargs_calc.update(
+            {
+                # ===== Force no SCF
+                "sc_iter_limit": 0,
+                "postprocess_anyway": True,
+                "ri_fit_assume_converged": True,
+                # ===== What we want to do
+                "ri_fit_rebuild_from_coeffs": True,
+                # ===== What to write as output
+                "ri_fit_write_rebuilt_field": True,
+                # "ri_fit_write_rebuilt_field_cube": True,
+                # "output": ["cube ri_fit"],  # needed for cube files
+            }
+        )
+        # Copy RI coeffs as the input coeffs to rebuild from
+        shutil.copy(
+            f"{calc_i}/ri/ri_coeffs.out",
+            f"{calc_i}/rebuild/ri_coeffs.in"
+        )
 
 
         # Settings for sbatch run script
@@ -232,9 +306,8 @@ def coeff_matrices_sum_to_density_matrix(calcs: dict, return_all_calcs: bool = F
 
 def density_from_densmat_equals_density_from_physics(calcs: dict):
     """
-    Tests that the coefficient matrices for each KSO, wieghted by their
-    electronic occupation, sum to the density matrix constructed in AIMS by the
-    same procedure. 
+    Tests that the density built from the density matrix constructed manually in
+    AIMS equals the density imported from physics.f90 in AIMS.
     """
     print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
@@ -262,9 +335,11 @@ def density_from_densmat_equals_density_from_physics(calcs: dict):
 
 def density_from_ri_equals_density_from_densmat(calcs: dict):
     """
-    Tests that the coefficient matrices for each KSO, wieghted by their
-    electronic occupation, sum to the density matrix constructed in AIMS by the
-    same procedure. 
+    Tests that the RI density reasonably approximates the density built from the
+    the density matrix constructed in AIMS. As there will be some density
+    fitting error associated with the RI procedure, exact equivalence is not
+    checked but rather that the error is within a tolerance (usually between
+    0.1% - 1% depending on settings).
     """
     print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
@@ -280,7 +355,7 @@ def density_from_ri_equals_density_from_densmat(calcs: dict):
         
         # Check pass/fail
         mae = _get_percent_mae_between_fields(input=rho_from_ri, target=rho_from_densmat, grid=grid)
-        if mae < TOLERANCE["rtol"] * 100:
+        if mae < DF_ERROR_TOLERANCE:
             print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
         else:
             print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
@@ -366,7 +441,8 @@ def ksos_from_coeffmats_sum_to_density_from_physics(calcs: dict):
 def ksos_from_ri_sum_to_density_from_densmat(calcs: dict):
     """
     Tests that the real-space KS-orbitals formed from RI coefficients sum to the
-    total density formed from the NAO density matrix.
+    total density formed from the NAO density matrix, within a tolerance for the
+    denisty fitting error.
     """
     print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
@@ -389,7 +465,7 @@ def ksos_from_ri_sum_to_density_from_densmat(calcs: dict):
 
         # Check for equivalence with the density matrix
         mae = _get_percent_mae_between_fields(input=rho_from_ksos, target=rho_from_densmat, grid=grid)
-        if mae < TOLERANCE["rtol"] * 100:
+        if mae < DF_ERROR_TOLERANCE:
             print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
         else:
             print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
@@ -425,7 +501,7 @@ def ksos_from_ri_sum_to_density_from_physics(calcs: dict):
 
         # Check for equivalence with the density matrix
         mae = _get_percent_mae_between_fields(input=rho_from_ksos, target=rho_from_densmat, grid=grid)
-        if mae < TOLERANCE["rtol"] * 100:
+        if mae < DF_ERROR_TOLERANCE:
             print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
         else:
             print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
@@ -438,7 +514,7 @@ def ksos_from_ri_sum_to_density_from_physics(calcs: dict):
 def ri_coeffs_for_ksos_sum_to_total_density_from_densmat(calcs: dict):
     """
     Tests that the weighted sum of RI coefficients for each KS-orbital is
-    equivaltent to the RI coefficients for the total density built from the
+    equivalent to the RI coefficients for the total density built from the
     NAO density matrix.
     """
     print(f"Test: {inspect.stack()[0][3]}")
@@ -480,6 +556,72 @@ def ri_coeffs_for_ksos_sum_to_total_density_from_densmat(calcs: dict):
 def overlap_is_symmetric(calcs: dict):
     """Tests the the RI basis overlap matrix is symmetric"""
     raise NotImplementedError
+
+def rebuild_reordering_coeffs_in_equals_coeffs_out(calcs: dict):
+    """
+    Tests that the input RI coeffs used in a RI rebuild calculation are the same
+    as those output. This tests that the internal oreding/reordering and
+    application/undoing of Condon-Shortley convention going from rho_learn
+    convention -to-> AIMS convention -back_to-> rho_learn convention is
+    consistent.
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+        ri_dir = f"{calc_i}/ri/"
+        rebuild_dir = f"{calc_i}/rebuild/"
+
+        # Load the density matrix constructed in AIMS
+        ri_coeffs_in = np.loadtxt(os.path.join(rebuild_dir, "ri_coeffs.in"))
+        ri_coeffs_out = np.loadtxt(os.path.join(rebuild_dir, "ri_coeffs.out"))
+
+        # Check pass/fail
+        mae = np.abs(ri_coeffs_in - ri_coeffs_out).mean()
+        if np.allclose(mae, 0, **TOLERANCE):
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae}")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae}")
+            all_passed = False
+            failed_calcs[calc_i] = (ri_coeffs_from_ksos, ri_coeffs)
+    print("\n")
+    return failed_calcs
+
+def rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs: dict):
+    """
+    Tests that the total density rebuilt from RI coefficients within the RI
+    fitting procedure is exactly equivalent to those rebuilt in a separate
+    calculation from the same coefficients.
+    """
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+        ri_dir = f"{calc_i}/ri/"
+        rebuild_dir = f"{calc_i}/rebuild/"
+
+        # Load the RI and rebuilt densities
+        rho_ri = np.loadtxt(os.path.join(ri_dir, "rho_ri.out"))
+        rho_rebuilt = np.loadtxt(os.path.join(rebuild_dir, "rho_rebuilt.out"))
+        grid = np.loadtxt(os.path.join(rebuild_dir, "partition_tab.out"))
+        assert np.allclose(
+            grid, 
+            np.loadtxt(os.path.join(ri_dir, "partition_tab.out"))
+        )
+
+        # Check for exact equivalence with the density matrix
+        mae = _get_percent_mae_between_fields(input=rho_rebuilt, target=rho_ri, grid=grid)
+        if mae < TOLERANCE["rtol"]:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae} %")
+            all_passed = False
+            failed_calcs[calc_i] = (rho_rebuilt, rho_ri)
+    print("\n")
+    return failed_calcs
+
 
 
 # ==========================================

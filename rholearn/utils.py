@@ -126,16 +126,6 @@ def num_elements_tensormap(tensor: TensorMap) -> int:
     return int(n_elems)
 
 
-def evaluate_gaussian(target, center, width):
-    """
-    Evaluates a Gaussian function with the specified parameters at the target
-    value
-    """
-    return (1.0 / (width * np.sqrt(2 * np.pi))) * np.exp(
-        -0.5 * ((target - center) / width) ** 2
-    )
-
-
 def trim_memory() -> int:
     # Garbage collect
     gc.collect()

@@ -55,7 +55,14 @@ calcs = {
         "atoms": ase.io.read("systems/water_periodic.xyz"),
         "aims_kwargs": {"k_grid": [2, 2, 1], "collect_eigenvectors": True},
         "sbatch_kwargs": {"ntasks-per-node": 10},
-    }
+    },
+    9: {  
+        "name": "H2O, periodic, 4 kpt, serial, n_tasks (1) < n_kpts",
+        "atoms": ase.io.read("systems/water_periodic.xyz"),
+        "aims_kwargs": {"k_grid": [2, 2, 1]},
+        "sbatch_kwargs": {"ntasks-per-node": 1},
+    },
+    # ===== Old test cases =====
     # 4: {
     #     "name": "H2O, periodic, 4 kpt, serial",
     #     "atoms": ase.io.read("systems/water_periodic.xyz"),
