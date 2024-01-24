@@ -87,17 +87,23 @@ def run_tests(calcs: dict, test_ksos: bool = False):
     # MAE of total density built from RI coefficients vs that built from NAO densmat
     failed.append(density_from_ri_equals_density_from_densmat(calcs))
 
-    # # TODO: Test the the RI overlap matric is symmetric
-    # failed.append(overlap_is_symmetric(calcs))
+    # Test the the RI overlap matric is symmetric
+    failed.append(overlap_is_symmetric(calcs))
 
-    # RI coeffs read in, convention changed, and changed back gives
-    # the same coeffs as read in
+    # Test that w = Sc for the output RI projections, overlap, and coefficients
+    # (respectively)
+    failed.append(w_equals_Sc(calcs))
+
+    # NOTE: test not runnable with current API as RI-coeffs not re-written to
+    # file. Kept here in case of debugging. 
+    # RI coeffs read in, convention changed, and changed back gives the same
+    # coeffs as read in
     # failed.append(rebuild_reordering_coeffs_in_equals_coeffs_out(calcs))
 
     # MAE of total density rebuilt from RI coefficients within the RI
     # fitting procedure is exactly equivalent to those rebuilt in a separate
     # calculation from the same coefficients
-    # failed.append(rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs))
+    failed.append(rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs))
 
     # ===== Tests for `generate_sanity_check_data_ksos`
     if test_ksos:
@@ -128,7 +134,7 @@ if __name__ == "__main__":
 
     scf = True
     ri = True
-    rebuild = False
+    rebuild = True
 
     # Add AIMS path to calcs
     for key, calc in calcs.items():
@@ -139,7 +145,7 @@ if __name__ == "__main__":
     if scf:
         
         # Run SCF
-        # run_scf(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs)
+        run_scf(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs)
 
         # Wait for calcs to finish
         all_aims_outs = [os.path.join(f"{i}", "aims.out") for i in calcs.keys()]
@@ -158,14 +164,14 @@ if __name__ == "__main__":
     if ri:
 
         # Remove RI restart dirs if they are present
-        # for calc_i in calcs.keys():
-        #     try:
-        #         shutil.rmtree(f"{calc_i}/ri/")
-        #     except FileNotFoundError:
-        #         continue
+        for calc_i in calcs.keys():
+            try:
+                shutil.rmtree(f"{calc_i}/ri/")
+            except FileNotFoundError:
+                continue
 
         # Run RI fitting
-        # run_ri(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs, use_restart=True)
+        run_ri(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs, use_restart=True)
 
         # Wait for calcs to finish
         all_aims_outs = [os.path.join(f"{i}", "ri", "aims.out") for i in calcs.keys()]

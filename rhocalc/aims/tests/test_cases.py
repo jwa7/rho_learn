@@ -2,6 +2,7 @@ import ase.io
 
 # Define parameters that are different for each run
 calcs = {
+    # ===== WATER =====
     0: {
         "name": "H2O, cluster, serial",
         "atoms": ase.io.read("systems/water_cluster.xyz"),
@@ -62,6 +63,23 @@ calcs = {
         "aims_kwargs": {"k_grid": [2, 2, 1]},
         "sbatch_kwargs": {"ntasks-per-node": 1},
     },
+    10: {  
+        "name": "H2O larger cell, periodic, 1 kpt, parallel, n_tasks (20) > n_kpts (1)",
+        "atoms": ase.io.read("systems/water_periodic_larger_cell.xyz"),
+        "aims_kwargs": {"k_grid": [1, 1, 1]},
+        "sbatch_kwargs": {"ntasks-per-node": 20},
+    },
+    # ===== SILICON =====
+    11: {  
+        "name": "Si, periodic, 1 kpt, parallel, n_tasks (20) > n_kpts (2)",
+        "atoms": ase.io.read("systems/si_periodic.xyz"),
+        "aims_kwargs": {"k_grid": [1, 1, 2]},
+        "sbatch_kwargs": {"ntasks-per-node": 20},
+    },
+    # ===== GOLD =====
+    # 11: {
+
+    # },
     # ===== Old test cases =====
     # 4: {
     #     "name": "H2O, periodic, 4 kpt, serial",

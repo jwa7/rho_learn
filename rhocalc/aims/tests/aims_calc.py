@@ -131,15 +131,11 @@ def run_ri(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict, use_restart: boo
 
 def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
     """
-    Runs an RI rebuild calculation for the total electron density
+    Runs an RI rebuild calculation.
 
-    In each of the run directories, uses the previously calculted RI
-    coefficients (i.e. .../ri/ri_coeffs.in) are used to rebuild the density
-    
-    converged SCF (using func
-    `run_scf`) as the restart density matrix. Runs the RI calculation with no
-    SCF iterations from this denisty matrix in a subfolder "ri/" for each
-    system.
+    In each of the run directories, uses the previously calculated RI
+    coefficients (i.e. <...>/ri/ri_coeffs.out) are copied to the rebuild
+    directory as ri_coeffs.in and used to rebuild the density.
     """
 
     top_dir = os.getcwd()
@@ -155,8 +151,7 @@ def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
         # Settings for control.in
         aims_kwargs_calc = aims_kwargs.copy()
         aims_kwargs_calc.update(calc["aims_kwargs"])
-
-        # Copy restart density matrix
+        aims_kwargs_calc.pop("elsi_restart")
         aims_kwargs_calc.update(
             {
                 # ===== Force no SCF
@@ -167,16 +162,17 @@ def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
                 "ri_fit_rebuild_from_coeffs": True,
                 # ===== What to write as output
                 "ri_fit_write_rebuilt_field": True,
-                # "ri_fit_write_rebuilt_field_cube": True,
-                # "output": ["cube ri_fit"],  # needed for cube files
+                "ri_fit_write_rebuilt_field_cube": True,
+                "output": ["cube ri_fit"],  # needed for cube files
             }
         )
+        aims_kwargs_calc.update(aims_calc.get_aims_cube_slab_edges(calc["atoms"]))
+
         # Copy RI coeffs as the input coeffs to rebuild from
         shutil.copy(
             f"{calc_i}/ri/ri_coeffs.out",
             f"{calc_i}/rebuild/ri_coeffs.in"
         )
-
 
         # Settings for sbatch run script
         sbatch_kwargs_calc = sbatch_kwargs.copy()
@@ -555,15 +551,34 @@ def ri_coeffs_for_ksos_sum_to_total_density_from_densmat(calcs: dict):
 
 def overlap_is_symmetric(calcs: dict):
     """Tests the the RI basis overlap matrix is symmetric"""
-    raise NotImplementedError
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, calc in calcs.items():
+        ri_dir = f"{calc_i}/ri/"
 
-def rebuild_reordering_coeffs_in_equals_coeffs_out(calcs: dict):
+        # Load the density matrix constructed in AIMS
+        ri_ovlp = np.loadtxt(os.path.join(ri_dir, "ri_ovlp.out"))
+        dim = int(np.sqrt(ri_ovlp.shape[0]))
+        ri_ovlp = ri_ovlp.reshape((dim, dim))
+
+        # Check pass/fail
+        mae = np.abs(ri_ovlp - ri_ovlp.T).mean()
+        if np.allclose(mae, 0, **TOLERANCE):
+            print(f"    PASS - Calc {calc_i} - {calc['name']}")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}")
+            all_passed = False
+            failed_calcs[calc_i] = ri_ovlp
+    print("\n")
+    return failed_calcs
+
+def w_equals_Sc(calcs: dict):
     """
-    Tests that the input RI coeffs used in a RI rebuild calculation are the same
-    as those output. This tests that the internal oreding/reordering and
-    application/undoing of Condon-Shortley convention going from rho_learn
-    convention -to-> AIMS convention -back_to-> rho_learn convention is
-    consistent.
+    Tests that the relation w = S . c holds, i.e. that the RI projections (w)
+    are equal to the dot product of the RI overlap matrix (S) and the RI
+    coefficients (c).
     """
     print(f"Test: {inspect.stack()[0][3]}")
     # Iterate over calculations
@@ -571,22 +586,66 @@ def rebuild_reordering_coeffs_in_equals_coeffs_out(calcs: dict):
     failed_calcs = {}
     for calc_i, calc in calcs.items():
         ri_dir = f"{calc_i}/ri/"
-        rebuild_dir = f"{calc_i}/rebuild/"
 
-        # Load the density matrix constructed in AIMS
-        ri_coeffs_in = np.loadtxt(os.path.join(rebuild_dir, "ri_coeffs.in"))
-        ri_coeffs_out = np.loadtxt(os.path.join(rebuild_dir, "ri_coeffs.out"))
+        # Load the RI coefficients and projections
+        ri_coeffs = np.loadtxt(os.path.join(ri_dir, "ri_coeffs.out"))
+        ri_projs = np.loadtxt(os.path.join(ri_dir, "ri_projs.out"))
+        dim = int(ri_coeffs.shape[0])
 
-        # Check pass/fail
-        mae = np.abs(ri_coeffs_in - ri_coeffs_out).mean()
+        # Load the density matrix constructed in AIMS and reshape to square.
+        # Fortran vs C ordering for the reshape doesn't matter here as the
+        # matrix is symmetric.
+        ri_ovlp = np.loadtxt(os.path.join(ri_dir, "ri_ovlp.out"))
+        ri_ovlp = ri_ovlp.reshape((dim, dim))
+
+        # Check pass/fail - i.e. w - S . c = 0
+        mae = np.abs(ri_projs - ri_ovlp @ ri_coeffs).mean()
         if np.allclose(mae, 0, **TOLERANCE):
             print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae}")
         else:
             print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae}")
             all_passed = False
-            failed_calcs[calc_i] = (ri_coeffs_from_ksos, ri_coeffs)
+            failed_calcs[calc_i] = (ri_projs, ri_ovlp, ri_coeffs)
     print("\n")
     return failed_calcs
+
+
+
+
+# ===== NOTE: not used as in RI coefficients not re-written in current API.
+# ===== This test was only used for debugging, and requires modification of
+# ===== AIMS source code in subroutine `read_ri_coeffs_and_rebuild_field` to
+# ===== write the re-re-ordered coefficients to file.
+# def rebuild_reordering_coeffs_in_equals_coeffs_out(calcs: dict):
+#     """
+#     Tests that the input RI coeffs used in a RI rebuild calculation are the same
+#     as those output. This tests that the internal oreding/reordering and
+#     application/undoing of Condon-Shortley convention going from rho_learn
+#     convention -to-> AIMS convention -back_to-> rho_learn convention is
+#     consistent.
+#     """
+#     print(f"Test: {inspect.stack()[0][3]}")
+#     # Iterate over calculations
+#     all_passed = True
+#     failed_calcs = {}
+#     for calc_i, calc in calcs.items():
+#         ri_dir = f"{calc_i}/ri/"
+#         rebuild_dir = f"{calc_i}/rebuild/"
+
+#         # Load the density matrix constructed in AIMS
+#         ri_coeffs_in = np.loadtxt(os.path.join(rebuild_dir, "ri_coeffs.in"))
+#         ri_coeffs_out = np.loadtxt(os.path.join(rebuild_dir, "ri_coeffs.out"))
+
+#         # Check pass/fail
+#         mae = np.abs(ri_coeffs_in - ri_coeffs_out).mean()
+#         if np.allclose(mae, 0, **TOLERANCE):
+#             print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae}")
+#         else:
+#             print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae}")
+#             all_passed = False
+#             failed_calcs[calc_i] = (ri_coeffs_in, ri_coeffs_out)
+#     print("\n")
+#     return failed_calcs
 
 def rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs: dict):
     """
