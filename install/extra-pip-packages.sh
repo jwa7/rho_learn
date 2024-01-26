@@ -24,4 +24,4 @@ pip cache remove "rascaline*"
 # Has to be in this order, such that the recent changes in metatensor overrides
 # the older metatensor version installed by rascaline
 pip install --no-build-isolation git+https://github.com/luthaf/rascaline@e026b175f10f9a793394af02e9ef1369757fded1
-pip install --no-build-isolation git+https://github.com/lab-cosmo/metatensor@f48076e176e23215a380e2bda26d5c3463368486
+pip install --no-build-isolation git+https://github.com/lab-cosmo/metatensor@5db85ee9c016d35d97e9824a66e9ad7f6072d27e
