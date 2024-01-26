@@ -623,7 +623,8 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
         raise ValueError(
             f"the sample names of both blocks must be either "
             f"{convention.OVERLAP_MATRIX.sample_names}"
-            f" or {convention.OVERLAP_MATRIX.sample_names[1:]}"
+            f" or {convention.OVERLAP_MATRIX.sample_names[1:]},"
+            f" but got: {block1.samples.names} and {block2.samples.names}"
         )
     # Check the component names
     c_names = [c.names for c in convention.OVERLAP_MATRIX.block(0).components]
@@ -632,14 +633,19 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
             np.all(block.components[0].names == c_names[0])
             and np.all(block.components[1].names == c_names[1])
         ):
-            raise ValueError(f"the component names of both blocks must be {c_names}")
+            raise ValueError(
+                f"the component names of both blocks must be {c_names},"
+                f" but got: {block.components[0].names} and {block.components[1].names}"
+            )
     # Check the property names
     if not (
         np.all(block1.properties.names == convention.OVERLAP_MATRIX.property_names)
         and np.all(block2.properties.names == convention.OVERLAP_MATRIX.property_names)
     ):
         raise ValueError(
-            f"the property names of both blocks must be {convention.OVERLAP_MATRIX.property_names}"
+            f"the property names of both blocks must be "
+            f"{convention.OVERLAP_MATRIX.property_names}, but got:"
+            f" {block1.properties.names} and {block2.properties.names}"
         )
 
     # Create a samples filter for how the samples map to eachother between
@@ -763,7 +769,8 @@ def coeff_vector_tensormap_to_ndarray(
         raise ValueError(
             "the sample names of the input tensor must be either "
             f"{convention.COEFF_VECTOR.sample_names} or "
-            f"{convention.COEFF_VECTOR.sample_names[1:]}"
+            f"{convention.COEFF_VECTOR.sample_names[1:]}, but got:"
+            f" {tensor.sample_names}"
         )
 
     # Define some useful variables

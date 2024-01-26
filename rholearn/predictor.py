@@ -3,7 +3,7 @@ Module for user-defined functions.
 """
 import os
 import shutil
-from typing import List, Callable
+from typing import Callable, List, Optional
 
 import ase
 import numpy as np
@@ -44,8 +44,8 @@ def _template_target_builder(target: TensorMap, **kwargs):
 
 
 def descriptor_builder(
-    structure_idxs: List[int],
-    frames: List[ase.Atoms], 
+    frames: List[ase.Atoms],
+    structure_idxs: Optional[List[int]] = None,
     **kwargs,
 ) -> TensorMap:
     """
@@ -85,17 +85,47 @@ def descriptor_builder(
     if torch_settings is not None:
         lsoap = lsoap.to(arrays="torch", **torch_settings)
 
-    # Split into per-structure TensorMaps
+    # Split into per-structure TensorMaps. Currently, the TensorMaps have
+    # strutcure indices from 0 to len(frames) - 1
     lsoap = [
         metatensor.slice(
             lsoap,
             "samples",
             labels=Labels(names="structure", values=np.array([A]).reshape(-1, 1)),
         )
-        for A in idxs
+        for A in range(len(frames))
     ]
 
-    return lsoap
+    # If `structure_idxs` is passed and is not the contrinuous numeric range 0
+    # to len(frames) - 1, then re-index the TensorMaps.
+    if structure_idxs is None:
+        return lsoap
+
+    if np.all(structure_idxs == list(range(len(frames)))):
+        return lsoap
+
+    # Reindex the structure indices of each TensorMap
+    reindexed_lsoap = []
+    for A, descriptor in zip(structure_idxs, lsoap):
+        if (
+            metatensor.unique_metadata(
+                descriptor, "samples", "structure"
+            ).values.reshape(-1)[0] 
+        != A):
+            # Edit the metadata to match the structure index
+            descriptor = metatensor.remove_dimension(
+                descriptor, axis="samples", name="structure"
+            )
+            descriptor = metatensor.insert_dimension(
+                descriptor,
+                axis="samples",
+                name="structure",
+                values=np.array([A]),
+                index=0,
+            )
+        reindexed_lsoap.append(descriptor)
+
+    return reindexed_lsoap
 
 
 def target_builder(
