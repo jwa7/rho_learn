@@ -43,7 +43,11 @@ def _template_target_builder(target: TensorMap, **kwargs):
     return target
 
 
-def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
+def descriptor_builder(
+    structure_idxs: List[int],
+    frames: List[ase.Atoms], 
+    **kwargs,
+) -> TensorMap:
     """
     Function to build a descriptor for input into a ML model. This function
     generates a spherical expansion with rascaline, then perfroms a single
@@ -79,7 +83,17 @@ def descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
 
     # Convert to torch backend and return
     if torch_settings is not None:
-        lsoap = metatensor.to(lsoap, "torch", **torch_settings)
+        lsoap = lsoap.to(arrays="torch", **torch_settings)
+
+    # Split into per-structure TensorMaps
+    lsoap = [
+        metatensor.slice(
+            lsoap,
+            "samples",
+            labels=Labels(names="structure", values=np.array([A]).reshape(-1, 1)),
+        )
+        for A in idxs
+    ]
 
     return lsoap
 
