@@ -26,7 +26,7 @@ DATA_SETTINGS = {
     "all_frames": ase.io.read(os.path.join(DATA_DIR, "water_monomers_1k.xyz"), ":"),
     
     # Define a subset of frames
-    "n_frames": 10,
+    "n_frames": 5,
 
     # Define the index of the RI calculation
     "ri_restart_idx": 0,
@@ -79,14 +79,15 @@ RI_KWARGS = {
     "ri_fit_ovlp_cutoff_radius": 2.0,
     "ri_fit_assume_converged": True,
     "default_max_l_prodbas": 5,
+    # "default_max_n_prodbas": 6,  # currently doesn't work in FHI-aims
     # ===== What to write as output
     "ri_fit_write_coeffs": True,  # RI coeffs (the learning target)
     "ri_fit_write_ovlp": True,  # RI overlap (needed for loss evaluation)
     "ri_fit_write_ref_field": True,  # SCF converged scalar field on AIMS grid
     "ri_fit_write_rebuilt_field": True,  # RI-rebuilt scalar field on AIMS grid
-    "output": ["cube ri_fit"],  # Allows output of cube files
     "ri_fit_write_ref_field_cube": True,  # SCF converged scalar field on CUBE grid
     "ri_fit_write_rebuilt_field_cube": True,  # RI-rebuilt scalar field on CUBE grid
+    "output": ["cube ri_fit"],  # Allows output of cube files
 }
 
 # Settings for the RI rebuild procedure
@@ -102,8 +103,17 @@ REBUILD_KWARGS = {
     "default_max_l_prodbas": RI_KWARGS["default_max_l_prodbas"],
     # ===== What to write as output
     "ri_fit_write_rebuilt_field": True,
-    "ri_fit_write_rebuilt_field_cube": True,
-    "output": ["cube ri_fit"],  # needed for cube files
+    # "output": ["cube ri_fit"],  # IMPORTANT! Needed for cube files
+    # "ri_fit_write_rebuilt_field_cube": True,
+}
+# ILDOS_KWARGS = {
+#     "gaussian_width": 0.3,  # eV
+#     "biasing_voltage": 2.0,  # V
+#     "energy_grid_points": 1000,
+# }
+
+CUBE_KWARGS = {
+    "n_points": (101, 101, 101),  # number of cube edge points
 }
 
 # Settings for HPC job scheduler
@@ -112,7 +122,7 @@ SBATCH_KWARGS = {
     "nodes": 1,
     "time": "01:00:00",
     "mem-per-cpu": 2000,
-    "partition": "bigmem",
+    "partition": "standard",
     "ntasks-per-node": 10,
 }
 
@@ -123,7 +133,7 @@ SBATCH_KWARGS = {
 # Setting for torch backend
 TORCH_SETTINGS = {
     "dtype": torch.float64,  # important for model accuracy
-    "requires_grad": True,
+    # "requires_grad": True,
     "device": torch.device(type="cpu"),
 }
 
@@ -158,7 +168,7 @@ CG_SETTINGS = {
 CROSSVAL_SETTINGS = {
     # Settings for cross validation
     "n_groups": 3,  # num groups for data split (i.e. 3 for train-test-val)
-    "group_sizes": [0.7, 0.2, 0.1],  # the abs/rel group sizes for the data splits
+    "group_sizes": [0.6, 0.2, 0.2],  # the abs/rel group sizes for the data splits
     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
 }
 
@@ -173,13 +183,13 @@ ML_SETTINGS = {
     "model": {
 
         # Model architecture
-        "model_type": "nonlinear",  # linear or nonlinear
+        "model_type": "linear",  # linear or nonlinear
         "bias_invariants": False,
         "use_invariant_baseline": True,
         # Only if model_type == "nonlinear":
         "hidden_layer_widths": [64, 64, 64],
-        "activation_fn": torch.nn.SiLU(),
-        "bias_nn": True,
+        # "activation_fn": torch.nn.SiLU(),
+        # "bias_nn": True,
     },
     "loss_fn": {
         "algorithm": loss.L2Loss,
@@ -210,18 +220,24 @@ ML_SETTINGS = {
             # "num_workers": 0,  # number of workers for data loading
             # "prefetch_factor": None,  # number of batches to prefetch
         },
-        "keep_in_mem": True,  # whether to keep the train data in memory or I/O from disk
     },
     # Parameters for training procedure
     "training": {
-        "n_epochs": 5,  # number of total epochs to run
+        "n_epochs": 25,  # number of total epochs to run
         "save_interval": 5,  # save model and optimizer state every x intervals
         "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
         # "learn_on_rho_at_epoch": 0,  # epoch to start learning on rho instead of coeffs, or 0 to always use it, -1 to never use it.
     },
-    "calc_mae": {
-        "interval": 2,  # validate every x epochs against real-space SCF field
-        "which": ["test"],
-        "return_targets": False,  # whether to wait for AIMS calcs to finish
+    "evaluation": {
+        "interval": 5,  # validate every x epochs against real-space SCF field
+        "subset": "test",
+        "calculate_error": True,  # whether to wait for AIMS calcs to finish
+        "target_type": "ref",  # evaluate against QM ("ref") or RI ("ri") scalar field
     },
+    # "learning": {
+    #     # Define the number of training subsets to use and which one to run
+    #     # "n_train_subsets": 4,      # the number of training subsets to use (i.e. for learning exercise). 0 for no subsets.
+    #     # "i_train_subset": 0,       # the subset number to run, from 0 to n_train_subsets - 1, inclusive
+    #     "subset_sizes": [16, 32, 64, 128],
+    # }
 }
