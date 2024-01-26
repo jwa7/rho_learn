@@ -324,12 +324,13 @@ class RhoModel(torch.nn.Module):
         if invariant_baseline is None:
             self._invariant_baseline = None
         else:
-            self._invariant_baseline = metatensor.to(
-                invariant_baseline,
-                "torch",
+            invariant_baseline = invariant_baseline.to(arrays="torch")
+            invariant_baseline = invariant_baseline.to(
                 dtype=self._torch_settings.get("dtype"),
                 device=self._torch_settings.get("device"),
-                requires_grad=False,
+            )
+            self._invariant_baseline = metatensor.requires_grad(
+                invariant_baseline, False
             )
 
     @property
@@ -416,248 +417,263 @@ class RhoModel(torch.nn.Module):
         for m in self._models:
             yield from m.parameters()
 
-    def forward(self, input: TensorMap, check_args: bool = True) -> TensorMap:
+    def forward(
+        self, 
+        input: Union[TensorMap, List[TensorMap]], 
+        check_args: bool = True
+    ) -> Union[TensorMap, List[TensorMap]]:
         """
-        Makes a prediction on an `input` TensorMap.
+        Makes a prediction on an `input` TensorMap or list of TensorMap.
 
         If the model is trained on standardized outputs, i.e. where the mean
         baseline has been subtracted, this is automatically added back in.
         """
-        # Predict on the keys of the *input* TensorMap
-        keys = input.keys
+        if isinstance(input, TensorMap):
+            input = [input]
+            return_list = False
+        else:
+            assert isinstance(input, List) or isinstance(input, Tuple)
+            return_list = True
 
-        # Remove keys that aren't part of the model
-        key_mask = torch.tensor(
-            [key in self._in_metadata.keys for key in keys], dtype=torch.bool
-        )
-        if not torch.all(key_mask):
-            offending_keys = [key for key in keys if key not in self._in_metadata.keys]
-            warnings.warn(
-                f"one or more of input blocks at keys {offending_keys} is not"
-                " part of the keys of the model. The returned prediction will"
-                " not contain these blocks."
+        predictions = []
+        for inp in input:
+            # Predict on the keys of the *input* TensorMap
+            keys = inp.keys
+
+            # Remove keys that aren't part of the model
+            key_mask = torch.tensor(
+                [key in self._in_metadata.keys for key in keys], dtype=torch.bool
             )
-        keys = Labels(names=keys.names, values=keys.values[key_mask])
-
-        # Remove the keys for blocks that have no samples
-        key_mask = torch.tensor(
-            [input[key].values.shape[0] > 0 for key in keys], dtype=torch.bool
-        )
-        if not torch.all(key_mask):
-            offending_keys = [key for key in keys if input[key].values.shape[0] == 0]
-            warnings.warn(
-                f"one or more of input blocks at keys {offending_keys} has"
-                " zero samples. The returned prediction will not contain"
-                " these blocks."
-            )
-        keys = Labels(names=keys.names, values=keys.values[key_mask])
-
-        # Make predictions on each block and build the prediction TensorMap
-        pred_blocks = []
-        for key in keys:
-            if check_args:
-                assert key in self._in_metadata.keys
-                if not metatensor.equal_metadata_block(
-                    input[key],
-                    self._in_metadata[key],
-                    check=["components", "properties"],
-                ):
-                    raise ValueError(
-                        f"the metadata of the input block at key {key} does not"
-                        + " match that of the model"
-                    )
-
-            # Get the model
-            block_model = self._models[self._in_metadata.keys.position(key)]
-
-            # Make a prediction
-            if self._model_type == "linear":
-                pred_values = block_model(input[key].values, check_args=check_args)
-            else:
-                assert self._model_type == "nonlinear"
-                in_invariant = input.block(
-                    spherical_harmonics_l=0, species_center=key["species_center"]
+            if not torch.all(key_mask):
+                offending_keys = [key for key in keys if key not in self._in_metadata.keys]
+                warnings.warn(
+                    f"one or more of input blocks at keys {offending_keys} is not"
+                    " part of the keys of the model. The returned prediction will"
+                    " not contain these blocks."
                 )
+            keys = Labels(names=keys.names, values=keys.values[key_mask])
+
+            # Remove the keys for blocks that have no samples
+            key_mask = torch.tensor(
+                [inp[key].values.shape[0] > 0 for key in keys], dtype=torch.bool
+            )
+            if not torch.all(key_mask):
+                offending_keys = [key for key in keys if inp[key].values.shape[0] == 0]
+                warnings.warn(
+                    f"one or more of input blocks at keys {offending_keys} has"
+                    " zero samples. The returned prediction will not contain"
+                    " these blocks."
+                )
+            keys = Labels(names=keys.names, values=keys.values[key_mask])
+
+            # Make predictions on each block and build the prediction TensorMap
+            pred_blocks = []
+            for key in keys:
                 if check_args:
-                    assert metatensor.equal_metadata_block(
-                        in_invariant,
-                        self._in_metadata.block(
-                            spherical_harmonics_l=0,
-                            species_center=key["species_center"],
-                        ),
+                    assert key in self._in_metadata.keys
+                    if not metatensor.equal_metadata_block(
+                        inp[key],
+                        self._in_metadata[key],
                         check=["components", "properties"],
+                    ):
+                        raise ValueError(
+                            f"the metadata of the input block at key {key} does not"
+                            + " match that of the model"
+                        )
+
+                # Get the model
+                block_model = self._models[self._in_metadata.keys.position(key)]
+
+                # Make a prediction
+                if self._model_type == "linear":
+                    pred_values = block_model(inp[key].values, check_args=check_args)
+                else:
+                    assert self._model_type == "nonlinear"
+                    in_invariant = inp.block(
+                        spherical_harmonics_l=0, species_center=key["species_center"]
                     )
-                pred_values = block_model(
-                    input[key].values,
-                    in_invariant=in_invariant.values,
-                    check_args=check_args,
-                )
-
-            # Add baseline to invariant blocks if required
-            if (
-                self._invariant_baseline is not None
-                and key["spherical_harmonics_l"] == 0
-            ):
-                if not isinstance(self._invariant_baseline.block(0), torch.Tensor):
-                    self._invariant_baseline = metatensor.to(
-                        self._invariant_baseline,
-                        backend="torch",
-                        requires_grad=False,
-                        dtype=self._torch_settings["dtype"],
-                        device=self._torch_settings["device"],
+                    if check_args:
+                        assert metatensor.equal_metadata_block(
+                            in_invariant,
+                            self._in_metadata.block(
+                                spherical_harmonics_l=0,
+                                species_center=key["species_center"],
+                            ),
+                            check=["components", "properties"],
+                        )
+                    pred_values = block_model(
+                        inp[key].values,
+                        in_invariant=in_invariant.values,
+                        check_args=check_args,
                     )
-                inv_means = self._invariant_baseline.block(
-                    spherical_harmonics_l=0, species_center=key["species_center"]
-                )
-                inv_means_vals = torch.vstack(
-                    [inv_means.values for _ in range(pred_values.shape[0])]
-                )
-                pred_values += inv_means_vals
 
-            # Wrap prediction in a TensorBlock and store
-            pred_blocks.append(
-                TensorBlock(
-                    values=pred_values,
-                    samples=input[key].samples,
-                    components=self._out_metadata[key].components,
-                    properties=self._out_metadata[key].properties,
-                )
-            )
+                # Add baseline to invariant blocks if required
+                if (
+                    self._invariant_baseline is not None
+                    and key["spherical_harmonics_l"] == 0
+                ):
+                    if not isinstance(self._invariant_baseline.block(0), torch.Tensor):
+                        self._invariant_baseline = self._invariant_baseline.to(
+                            arrays="torch"
+                        )
+                        self._invariant_baseline = self._invariant_baseline.to(
+                            dtype=self._torch_settings["dtype"],
+                            device=self._torch_settings["device"],
+                        )
+                        self._invariant_baseline = metatensor.requires_grad(
+                            self._invariant_baseline, False
+                        )
+                    inv_means = self._invariant_baseline.block(
+                        spherical_harmonics_l=0, species_center=key["species_center"]
+                    )
+                    inv_means_vals = torch.vstack(
+                        [inv_means.values for _ in range(pred_values.shape[0])]
+                    )
+                    pred_values += inv_means_vals
 
-        return TensorMap(keys, pred_blocks)
+                # Wrap prediction in a TensorBlock and store
+                pred_blocks.append(
+                    TensorBlock(
+                        values=pred_values,
+                        samples=inp[key].samples,
+                        components=self._out_metadata[key].components,
+                        properties=self._out_metadata[key].properties,
+                    )
+                )
+
+            predictions.append(TensorMap(keys, pred_blocks))
+
+        if len(predictions) == 1 and not return_list:
+            return predictions[0]
+        return predictions
+
 
     def predict(
         self,
+        frames: List[ase.Atoms],
+        structure_idxs: Optional[List[int]] = None,
+        descriptors: Optional[List[TensorMap]] = None,
+        build_targets: bool = False,
+        return_targets: bool = False,
+        save_dir: Optional[Callable] = None,
+    ) -> Union[List[TensorMap], List[np.ndarray]]:
+        """
+        In evaluation mode, makes an end-to-end prediction on a list of ASE
+        frames or TensorMap descriptors.
+
+        In either case, the ASE `frames` must be specified.
+        """
+        self.eval()  # evaluation mode
+
+        # Use continuous structure index range if not specified
+        if structure_idxs is None:
+            structure_idxs = range(len(frames))
+        assert len(structure_idxs) == len(frames)
+
+        with torch.no_grad():
+            if descriptors is None:  # from ASE frames
+                predictions = self._predict_from_ase(
+                    structure_idxs=structure_idxs,
+                    frames=frames,
+                    build_targets=build_targets,
+                    return_targets=return_targets,
+                    save_dir=save_dir,
+                )
+
+            else:  # from TensorMap descriptors
+                assert len(descriptors) == len(frames)
+                predictions = self._predict_from_descriptor(
+                    frames=frames,
+                    structure_idxs=structure_idxs,
+                    descriptors=descriptors,
+                    build_targets=build_targets,
+                    return_targets=return_targets,
+                    save_dir=save_dir,
+                )
+
+        return predictions
+
+
+    def _predict_from_ase(
+        self,
         structure_idxs: List[int],
         frames: List[ase.Atoms],
-        descriptor: Optional[TensorMap] = None,
-        build_target: bool = False,
+        build_targets: bool = False,
+        return_targets: bool = False,
         save_dir: Optional[Callable] = None,
-        return_targets: bool = True,
-    ) -> TensorMap:
+    ) -> Union[List[TensorMap], List[np.ndarray]]:
         """
-        Performs inference with no gradient tracking to make a prediction on an
-        input TensorMap or list of ASE Atoms objects.
-
-        In the case of the former, the descriptor TensorMap is assumed to have
-        been generated with the same rascaline hypers as the data the model was
-        trained on. In the latter case, the store rascaline hypers are used to
-        generate a descriptor for which a prediction is made.
-
-        If `build_target` is false, a list of TensorMaps of predictions for each
-        structure in `frames` is returned. If true, a 2-element tuple containing
-        a list of prediction TensorMaps and a list of targets for each structure
-        in `frames` is returned.
-
-        :param build_target: bool. If true, uses the `predictor.target_builder`
-            function along with the `target_kwargs` attribute of the model to
-            transform the prediction TensorMap into the desired target. This
-            may, for instance, involve calling an external QChem code.
-        :param save_dir: callable that returns the directory to save each
-            prediction in, taking a single argument corresponding to the
-            structure index. Only required if `build_target` is true.
+        Makes a prediction on a list of ASE frames.
         """
-        # Check args
-        if build_target:
-            if self._target_kwargs is None:
-                raise ValueError(
-                    "if ``build_target`` is true, ``target_kwargs`` must be set"
-                    " for the model. Use the setter `set_target_kwargs` to do so."
-                )
-            if save_dir is None:
-                raise ValueError(
-                    "if ``build_target`` is true, ``save_dir`` must be specified"
-                )
-
-        # If the equivariant descriptor `input` is not specified, generate a
-        # descriptor from the ASE frames
-        if descriptor is None:
-            if self._descriptor_kwargs is None:
-                raise ValueError(
-                    "if making a prediction on ASE ``frames``,"
-                    " ``descriptor_kwargs`` must be passed so that a"
-                    " descriptor can be generated. Use the setter"
-                    " `_set_descriptor_kwargs` to set these and try again."
-                )
-
-            # Build the descriptor
-            descriptor = predictor.descriptor_builder(
-                frames,
-                torch_settings=self._torch_settings,
-                **self._descriptor_kwargs,
+        if self._descriptor_kwargs is None:
+            raise ValueError(
+                "if making a prediction on ASE ``frames``,"
+                " ``descriptor_kwargs`` must be passed so that"
+                " descriptors can be generated. Use the setter"
+                " `_set_descriptor_kwargs` to set these and try again."
             )
 
-            # The structure indices in the descriptor TensorMap will be 0, 1,
-            # ..., N_frames by default, according to the order of the structures
-            # passed in frames. These will need to be reindexed to match those
-            # in `structure_idxs` later.
-            actual_structure_idxs = np.arange(len(frames))
+        # Build the descriptors
+        descriptors = predictor.descriptor_builder(
+            structure_idxs=structure_idxs,
+            frames=frames,
+            torch_settings=self._torch_settings,
+            **self._descriptor_kwargs,
+        )
 
-        # Check the specified descriptor
-        else:
-            if not isinstance(descriptor, TensorMap):
-                raise TypeError("``descriptor`` must be a TensorMap")
+        # Build predictions from descriptors
+        predictions = self._predict_from_descriptor(
+            structure_idxs=structure_idxs,
+            frames=frames,
+            descriptors=descriptors,
+            build_targets=build_targets,
+            return_targets=return_targets,
+            save_dir=save_dir,
+        )
 
-            # Check the structure indices
-            tmp_stucture_idxs = metatensor.unique_metadata(
-                descriptor, "samples", "structure"
-            ).values.reshape(-1)
+        return predictions
 
-            err_msg = (
-                f"structure indices found in ``descriptor`` ({tmp_stucture_idxs})"
-                f" do not match those passed in ``structure_idxs`` ({structure_idxs})."
+
+    def _predict_from_descriptor(
+        self,
+        structure_idxs: List[int],
+        frames: List[ase.Atoms],
+        descriptors: List[TensorMap],
+        build_targets: bool = False,
+        return_targets: bool = False,
+        save_dir: Optional[Callable] = None,
+    ) -> Union[List[TensorMap], List[np.ndarray]]:
+        """
+        Makes a prediction on a list of TensorMap descriptors.
+        """
+        intermediate_predictions = self(  # predict
+            descriptors, check_args=True
+        )
+
+        if not build_targets:  # just return coefficients
+            return intermediate_predictions
+
+        # Build target
+        if self._target_kwargs is None:
+            raise ValueError(
+                "if ``build_targets`` is true, ``target_kwargs`` must be set"
+                " for the model. Use the setter `set_target_kwargs` to do so."
             )
-            if not np.all(np.sort(tmp_stucture_idxs) == np.sort(structure_idxs)):
-                raise ValueError(err_msg)
-
-            # The actual structure indices present in the descriptor are the
-            # correct ones so will not need modification
-            actual_structure_idxs = structure_idxs
-
-        # Make prediction with the model
-        with torch.no_grad():
-
-            prediction = self(descriptor, check_args=True)
-
-            # Split the prediction TensorMap by structure index
-            predictions = []
-            for A, actual_A in zip(structure_idxs, actual_structure_idxs):
-                # Split the TensorMap based on the actual structure index present
-                tmp_pred = metatensor.slice(
-                    prediction,
-                    axis="samples",
-                    labels=Labels(
-                        names=["structure"], 
-                        values=np.array([actual_A]).reshape(-1, 1)
-                    ),
-                )
-                if actual_A != A:  # reindex the structure
-                    tmp_pred = metatensor.remove_dimension(
-                        tmp_pred, axis="samples", name="structure"
-                    )
-                    tmp_pred = metatensor.insert_dimension(
-                        tmp_pred,
-                        axis="samples",
-                        name="structure",
-                        values=np.array([A]),
-                        index=0,
-                    )
-                predictions.append(tmp_pred)
-
-            if not build_target:  # just return the predicted TensorMap
-                return predictions
-
-            # Now build the target
-            targets = predictor.target_builder(
-                structure_idxs=structure_idxs,
-                frames=frames,
-                predictions=predictions,
-                save_dir=save_dir,
-                return_targets=return_targets,
-                **self._target_kwargs,
+        if save_dir is None:
+            raise ValueError(
+                "if ``build_targets`` is true, ``save_dir`` must be specified"
             )
 
-            return predictions, targets
+        predictions = predictor.target_builder(
+            structure_idxs=structure_idxs,
+            frames=frames,
+            predictions=intermediate_predictions,
+            save_dir=save_dir,
+            return_targets=return_targets,
+            **self._target_kwargs,
+        )
+
+        return predictions
 
 
 class _LinearModel(torch.nn.Module):
