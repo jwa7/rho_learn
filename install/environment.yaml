@@ -9,6 +9,7 @@ dependencies:
     - jupyter
     - jupyterlab
     - numpy
+    - pandas
     - sympy
     - wheel
     - wigners
