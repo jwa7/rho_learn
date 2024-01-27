@@ -505,52 +505,6 @@ def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
     return info
 
 
-def find_homo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
-    """
-    Returns the KSO indices that correspond to the HOMO states. These are all
-    the orbitals that have the same KS *state* index as the highest occupied KS
-    orbital.
-
-    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
-    4), the indices of all KS orbitals with KS state == 3 are returned.
-    """
-    if isinstance(ks_orbital_info, str):
-        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
-    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
-
-    # Find the HOMO orbital
-    homo_kso_idx = np.where(ks_orbital_info["occ"] > 0)[0][-1]
-    homo_state_idx = ks_orbital_info[homo_kso_idx]["state_i"]
-
-    # Find all states that correspond to the KS state
-    homo_kso_idxs = np.where(ks_orbital_info["state_i"] == homo_state_idx)[0]
-
-    return [ks_orbital_info[i]["kso_i"] for i in homo_kso_idxs]
-
-
-def find_lumo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
-    """
-    Returns the KSO indices that correspond to the LUMO states. These are all
-    the orbitals that have the same KS *state* index as the lowest unoccupied KS
-    orbital.
-
-    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
-    4), the indices of all KS orbitals with KS state == 3 are returned.
-    """
-    if isinstance(ks_orbital_info, str):
-        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
-    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
-
-    # Find the HOMO orbital
-    lumo_kso_idx = np.where(ks_orbital_info["occ"] == 0)[0][0]
-    lumo_state_idx = ks_orbital_info[lumo_kso_idx]["state_i"]
-
-    # Find all states that correspond to the KS state
-    lumo_kso_idxs = np.where(ks_orbital_info["state_i"] == lumo_state_idx)[0]
-
-    return [ks_orbital_info[i]["kso_i"] for i in lumo_kso_idxs]
-
-
 def get_percent_mae_between_fields(
     input: np.ndarray, target: np.ndarray, grid: np.ndarray
 ) -> float:
