@@ -6,7 +6,10 @@ import shutil
 
 import ase.io
 import numpy as np
-from rhocalc.aims import aims_calc
+import metatensor
+
+from rhocalc.aims import aims_calc, aims_parser
+from rholearn import rotations
 
 TOLERANCE = {"rtol": 1e-5, "atol": 1e-10}
 DF_ERROR_TOLERANCE = 0.3 # percent MAE tolerance for RI density fitting
@@ -166,7 +169,75 @@ def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
                 "output": ["cube ri_fit"],  # needed for cube files
             }
         )
-        aims_kwargs_calc.update(aims_calc.get_aims_cube_slab_edges(calc["atoms"]))
+        aims_kwargs_calc.update(aims_calc.get_aims_cube_edges(calc["atoms"]))
+
+        # Copy RI coeffs as the input coeffs to rebuild from
+        shutil.copy(
+            f"{calc_i}/ri/ri_coeffs.out",
+            f"{calc_i}/rebuild/ri_coeffs.in"
+        )
+
+        # Settings for sbatch run script
+        sbatch_kwargs_calc = sbatch_kwargs.copy()
+        sbatch_kwargs_calc.update(calc["sbatch_kwargs"])
+
+        # Write AIMS input files
+        aims_calc.write_input_files(
+            atoms=calc["atoms"], 
+            run_dir=run_dir, 
+            aims_kwargs=aims_kwargs_calc,
+        )
+
+        # Write sbatch run script
+        aims_calc.write_aims_sbatch(
+            fname=os.path.join(run_dir, "run-aims.sh"), 
+            aims=calc["aims_path"], 
+            load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            **sbatch_kwargs_calc
+        )
+
+        # Run aims
+        aims_calc.run_aims_in_dir(run_dir)
+
+    return
+
+def run_process(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
+    """
+    Processes the aims output files to convert raw arrays to metatensor format.
+
+    In each of the run directories, processes the calculated RI coefficients
+    (i.e. <...>/ri/ri_coeffs.out) and overlap matrix (<...>/ri/ri_ovlp.out).
+    """
+
+    top_dir = os.getcwd()
+    os.chdir(top_dir)
+
+    for calc_i, calc in calcs.items():
+
+        # Define run dir and AIMS path
+        run_dir = f"{calc_i}/rebuild/"
+        if not os.path.exists(run_dir):
+            os.makedirs(run_dir)
+
+        # Settings for control.in
+        aims_kwargs_calc = aims_kwargs.copy()
+        aims_kwargs_calc.update(calc["aims_kwargs"])
+        aims_kwargs_calc.pop("elsi_restart")
+        aims_kwargs_calc.update(
+            {
+                # ===== Force no SCF
+                "sc_iter_limit": 0,
+                "postprocess_anyway": True,
+                "ri_fit_assume_converged": True,
+                # ===== What we want to do
+                "ri_fit_rebuild_from_coeffs": True,
+                # ===== What to write as output
+                "ri_fit_write_rebuilt_field": True,
+                "ri_fit_write_rebuilt_field_cube": True,
+                "output": ["cube ri_fit"],  # needed for cube files
+            }
+        )
+        aims_kwargs_calc.update(aims_calc.get_aims_cube_edges(calc["atoms"]))
 
         # Copy RI coeffs as the input coeffs to rebuild from
         shutil.copy(
@@ -647,6 +718,7 @@ def w_equals_Sc(calcs: dict):
 #     print("\n")
 #     return failed_calcs
 
+
 def rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs: dict):
     """
     Tests that the total density rebuilt from RI coefficients within the RI
@@ -682,6 +754,62 @@ def rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs: dict):
     return failed_calcs
 
 
+def ri_coeffs_so3_equivariant(calcs: dict):
+    """
+    Tests that the RI decomposition of the target scalar field is equivariant to
+    O3 transformation. The test cases that test these have indices: [1,], with
+    their rotated equivalent test case being indexed by [-1,] respectively.
+    """
+    test_cases = {1: "water_cluster"}
+    print(f"Test: {inspect.stack()[0][3]}")
+    # Iterate over calculations
+    all_passed = True
+    failed_calcs = {}
+    for calc_i, fname in test_cases.items():
+        calc = calcs[calc_i]
+
+        # Read the frames and rotation angles
+        frame = ase.io.read(f"systems/{fname}.xyz")
+        frame_rot = ase.io.read(f"systems/{fname}_so3.xyz")
+        angles = frame_rot.info["angles"]
+        wigner_d = rotations.WignerDReal(lmax=8, angles=angles)
+
+        # Define the dirs
+        ri_dir = f"{calc_i}/ri/"
+        ri_dir_rot = f"{1000 + calc_i}/ri/"
+
+        # Load the basis set definition
+        lmax, nmax = aims_parser.extract_basis_set_info(frame, ri_dir)
+
+        # Load the coeff vectors
+        c = np.loadtxt(os.path.join(ri_dir, "ri_coeffs.out"))
+        c_rot = np.loadtxt(os.path.join(ri_dir_rot, "ri_coeffs.out"))
+        # c = metatensor.load(os.path.join(ri_dir, "processed", "ri_coeffs.npz"))
+        # c_rot = metatensor.load(os.path.join(ri_dir_rot, "processed", "ri_coeffs.npz"))
+
+        # Rotate the original coefficients
+        c_unrot_rot = wigner_d.rotate_coeff_vector(frame, c, lmax, nmax)
+        # c_unrot_rot = wigner_d.transform_tensormap_o3(c)
+
+        mae = np.abs(c_unrot_rot - c_rot).mean()
+        if mae < TOLERANCE["rtol"]:
+            print(f"    PASS - Calc {calc_i} - {calc['name']}. MAE: {mae}")
+        else:
+            print(f"    FAIL - Calc {calc_i} - {calc['name']}. MAE: {mae}")
+            all_passed = False
+            failed_calcs[calc_i] = (c_unrot_rot, c_rot)
+
+        # # Check for equivalence
+        # if metatensor.allclose(c_unrot_rot, c_rot, **TOLERANCE):
+        #     print(f"    PASS - Calc {calc_i} - {calc['name']}.")
+        # else:
+        #     print(f"    FAIL - Calc {calc_i} - {calc['name']}.")
+        #     all_passed = False
+        #     failed_calcs[calc_i] = (c_unrot_rot, c_rot)
+
+    print("\n")
+    return failed_calcs
+   
 
 # ==========================================
 # =========== Helper functions =============

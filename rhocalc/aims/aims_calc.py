@@ -253,7 +253,6 @@ def run_aims_array(
     Any calculation-specific settings stored in `calcs` are used to update the
     `aims_kwargs` and `sbatch_kwargs` before writing the control.in file.
 
-
     Assumes that all restart files needed to run the calculation are already
     present in `run_dir`, if necessary.
     """
@@ -361,7 +360,7 @@ def process_aims_results_sbatch_array(
     return
 
 
-def get_aims_cube_slab_edges(slab: ase.Atoms, n_points: tuple = (101, 101, 101)):
+def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100)):
     """
     Returns FHI-aims keywords for specifying the cube file edges in control.in.
     The x and y edges are taken to be the lattice vectors of the slab. As the
@@ -378,6 +377,17 @@ def get_aims_cube_slab_edges(slab: ase.Atoms, n_points: tuple = (101, 101, 101))
         ]}
     as required for writing a control.in using the ASE interface.
     """
+    if not np.all(slab.pbc):
+        raise ValueError("Slab must have periodic boundary conditions")
+
+    # assert square cell
+    for param in [
+        slab.cell[0, 1], slab.cell[0, 2], 
+        slab.cell[1, 0], slab.cell[1, 2],
+        slab.cell[2, 0], slab.cell[2, 1]
+    ]:
+        assert param == 0
+
     min_x = np.min(slab.positions[:, 0])
     max_x = np.max(slab.positions[:, 0])
     min_y = np.min(slab.positions[:, 1])
@@ -394,6 +404,58 @@ def get_aims_cube_slab_edges(slab: ase.Atoms, n_points: tuple = (101, 101, 101))
     # nuclear positions.
     max_lengths = [slab.cell[0, 0], slab.cell[1, 1], max_lengths[2] + 10]
     center = (min_coord + max_coord) / 2
+
+    return {
+        "cubes": f"cube origin {np.round(center[0], 3)} {np.round(center[1], 3)} {np.round(center[2], 3)}"
+        + "\n"
+        + f"cube edge {n_points[0]} {np.round(max_lengths[0] / (n_points[0] - 1), 3)} 0.0 0.0"
+        + "\n"
+        + f"cube edge {n_points[1]} 0.0 {np.round(max_lengths[1] / (n_points[1] - 1), 3)} 0.0"
+        + "\n"
+        + f"cube edge {n_points[2]} 0.0 0.0 {np.round(max_lengths[2] / (n_points[2] - 1), 3)}"
+        + "\n",
+    }
+
+
+def get_aims_cube_edges(frame: ase.Atoms, n_points: tuple = (100, 100, 100)):
+    """
+    Returns FHI-aims keywords for specifying the cube file edges in control.in.
+    The x, y, z edges are taken to be the lattice vectors of the frame.
+
+    Returned is a dict like:
+        {"cube": [
+            "origin 1.59 9.85 12.80",
+            "edge 101 0.15 0.0 1.0",
+            "edge 101 0.0 0.15 0.0",
+            "edge 101 0.0 0.0 0.15",
+        ]}
+    as required for writing a control.in using the ASE interface.
+    """
+    # Find the bounding box and center of the frame
+    min_x = np.min(frame.positions[:, 0])
+    max_x = np.max(frame.positions[:, 0])
+    min_y = np.min(frame.positions[:, 1])
+    max_y = np.max(frame.positions[:, 1])
+    min_z = np.min(frame.positions[:, 2])
+    max_z = np.max(frame.positions[:, 2])
+
+    min_coord = np.array([min_x, min_y, min_z])
+    max_coord = np.array([max_x, max_y, max_z])
+    center = (min_coord + max_coord) / 2
+
+    if np.all(frame.pbc):
+        # assert square cell
+        for param in [
+            frame.cell[0, 1], frame.cell[0, 2], 
+            frame.cell[1, 0], frame.cell[1, 2],
+            frame.cell[2, 0], frame.cell[2, 1]
+        ]:
+            assert param == 0
+        # take lattice vectors as cube edges
+        max_lengths = [frame.cell[0, 0], frame.cell[1, 1], frame.cell[2, 2]]
+    else:
+        # take bounding box as cube edges, plus 5 Angstrom
+        max_lengths = (max_coord - min_coord) + np.array([5, 5, 5])
 
     return {
         "cubes": f"cube origin {np.round(center[0], 3)} {np.round(center[1], 3)} {np.round(center[2], 3)}"

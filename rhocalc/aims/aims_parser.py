@@ -56,6 +56,7 @@ def parse_aims_out(aims_output_dir: str) -> dict:
         },
         "ks_states": {},
         "prodbas_acc": {},
+        "prodbas_radial_fn_radii_ang": {},
     }
     # Open aims.out file
     with open(os.path.join(aims_output_dir, "aims.out"), "r") as f:
@@ -209,7 +210,7 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                     "wall_clock(cpu1)": float(split[6]),
                 }
 
-            # Extratc the default prodbas accuracy
+            # Extract the default prodbas accuracy
             # Example:
             # "Species H: Using default value for prodbas_acc =   1.000000E-04."
             if split[2:8] == "Using default value for prodbas_acc =".split():
@@ -223,6 +224,33 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                 == "ri_fit: Found cutoff radius for calculating ovlp matrix:".split()
             ):
                 calc_info["ri_fit_cutoff_radius"] = float(split[8])
+
+            # Extract the charge radii of the product basis radial functions
+            if split[:2] == "Product basis:".split():
+                assert lines[line_i + 1].split()[:3] == "| charge radius:".split()
+                assert lines[line_i + 2].split()[:3] == "| field radius:".split()
+                assert lines[line_i + 3].split()[:9] == "| Species   l  charge radius    field radius  multipol momen".split()
+
+                tmp_line_i = line_i + 4
+                keep_reading = True
+                while keep_reading:
+                    tmp_split = lines[tmp_line_i].split()
+
+                    # Break if not valid lines
+                    if len(tmp_split) == 0:
+                        keep_reading = False
+                        break
+                    if tmp_split[-1] != "a.u.":
+                        keep_reading = False
+                        break
+                    
+                    # This is one of the charge radius lines we want to read from
+                    if calc_info["prodbas_radial_fn_radii_ang"].get(tmp_split[1]) is None:
+                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]] = [float(tmp_split[3])]
+                    else:
+                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]].append(float(tmp_split[3]))
+                    
+                    tmp_line_i += 1
 
             # Extract ri_fit info
             # Example:

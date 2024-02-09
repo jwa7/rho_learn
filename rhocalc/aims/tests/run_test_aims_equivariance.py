@@ -36,7 +36,9 @@ if molecule not in ["CO", "H2O"]:
 TOP_DIR = os.getcwd()
 
 # Where the generated data should be written
-DATA_DIR = os.path.join(TOP_DIR, f"{transf}_equivariance")
+DATA_DIR = os.path.join(TOP_DIR, f"equivariance_{transf}_{molecule}")
+
+log_path = os.path.join(DATA_DIR, "test.log")
 
 # Create data dir
 if not os.path.exists(DATA_DIR):
@@ -149,7 +151,8 @@ SBATCH_KWARGS = {
 # ===== Generate Structures =====
 # ===============================
 
-print("Top directory defined as: ", TOP_DIR)
+with open(log_path, "w") as f:
+    f.write(f"Top directory defined as: {TOP_DIR}")
 
 # bond_length = 0.74  # h2
 bond_length = 1.128  # co
@@ -365,11 +368,14 @@ else:
     ]
 
 # Parity plots
-print("MSE in rotated coefficients vs frame[0]")
+with open(log_path, "a") as f:
+    f.write("MSE in rotated coefficients vs frame[0]")
+
 fig, axes = plt.subplots(1, len(angles), figsize=(20, 10))
-for c_rot, c_unrot_rot, ax in zip(coeffs[1:], coeffs_unrot_rot, axes):
+for A, c_rot, c_unrot_rot, ax in zip(idxs, coeffs, coeffs_unrot_rot, axes):
     mse = np.mean(np.abs(c_rot - c_unrot_rot) ** 1)
-    print(f"   Structure {A}: {mse}")
+    with open(log_path, "a") as f:
+        f.write(f"   Structure {A}: {mse}")
     ax.scatter(c_rot, c_unrot_rot)
     ax.set_xlabel("c(RA)")
     ax.set_ylabel("D(R) c(A)")
@@ -422,7 +428,7 @@ all_finished = False
 while len(all_aims_outs) > 0:
     for aims_out in all_aims_outs:
         if os.path.exists(aims_out):
-            with open(aims_out, "r") as f:
+            with open(aims_out, "a") as f:
                 # Basic check to see if AIMS calc has finished
                 if "Leaving FHI-aims." in f.read():
                     all_aims_outs.remove(aims_out)
@@ -432,7 +438,8 @@ while len(all_aims_outs) > 0:
 # ===== Calculate error on rebuilt field =====
 # ============================================
 
-print("% MAE in rebuilt field vs frame[0]")
+with open(log_path, "a") as f:
+    f.write("% MAE in rebuilt field vs frame[0]")
 for A in idxs:
 
     # Load the fields and grid
@@ -457,7 +464,8 @@ for A in idxs:
         input=rho_rebuilt, target=rho_ri, grid=grid
     )
 
-    print(f"   Structure {A}")
-    print(f"      vs rho_ref: {percent_mae_ref}")
-    print(f"      vs rho_ri: {percent_mae_ri}")
+    with open(log_path, "a") as f:
+        f.write(f"   Structure {A}")
+        f.write(f"      vs rho_ref: {percent_mae_ref}")
+        f.write(f"      vs rho_ri: {percent_mae_ri}")
 
