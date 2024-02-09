@@ -3,7 +3,8 @@ Module containing functions to perform model training and evaluation steps.
 """
 import os
 import time
-from typing import Callable, Optional, Tuple, Union
+from functools import partial
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -20,6 +21,7 @@ def training_step(
     val_loader=None,
     scheduler=None,
     check_args=False,
+    use_aux: bool = True,
 ) -> Tuple[torch.Tensor]:
     """
     Perform a single training step using mini-batch gradient descent. Returns
@@ -37,6 +39,8 @@ def training_step(
         out_train_pred = model(  # forward pass
             in_train, check_args=check_args
         )
+        if not use_aux:  # don't use the overlap to train
+            aux_train = None
         train_loss_batch = loss_fn(  # train loss
             input=out_train_pred,
             target=out_train,
@@ -128,7 +132,7 @@ def evaluation_step(
     )
 
     if not calculate_error:
-        return
+        return np.nan
 
     assert reference_dir is not None
 
@@ -152,6 +156,7 @@ def evaluation_step(
 
 
 def training_loop(
+    epochs: List[int],
     model,
     loss_fn,
     optimizer,
@@ -159,6 +164,7 @@ def training_loop(
     val_loader,
     test_loader,
     scheduler,
+    use_aux: Union[int, None],
     ri_dir: Callable,
     ml_dir: str,
     ml_settings: dict,
@@ -181,11 +187,24 @@ def training_loop(
     def eval_dir(A, epoch):
         return os.path.join(ml_dir, "evaluation", f"epoch_{epoch}", f"{A}")
 
+    # Define whether or not to use overlaps in training at each epoch
+    if use_aux is None:
+        use_ovlps = [True] * len(epochs)
+    else:
+        if use_aux == -1:
+            use_ovlps = [False] * len(epochs)
+        elif use_aux == 0:
+            use_ovlps = [True] * len(epochs)
+        elif use_aux > 0:
+            assert use_aux < epochs[-1]
+            use_ovlps = [False] * use_aux
+            use_ovlps.extend([True] * (len(epochs) - use_aux))
+
     # Define a log file for writing losses at each epoch
-    io.log(log_path, "# epoch train_loss val_loss test_error time")
+    io.log(log_path, "# epoch train_loss val_loss test_error time lr")
 
     # Run training loop
-    for epoch in range(1, ml_settings["training"]["n_epochs"] + 1):
+    for epoch, use_ovlp in zip(epochs, use_ovlps):
 
         # ====== Training step ======
         t0 = time.time()
@@ -196,7 +215,8 @@ def training_loop(
             train_loader=train_loader,
             val_loader=val_loader,
             scheduler=scheduler,
-            check_args=epoch == 1  # Check metadata only on 1st epoch
+            check_args=epoch == 1,  # Check metadata only on 1st epoch
+            use_aux=use_ovlp,
         )
 
         # ====== Evaluation step ======
@@ -214,10 +234,13 @@ def training_loop(
                 )
 
         # ====== Log results ======
+        lr = np.nan
+        if scheduler is not None:
+            lr = scheduler._last_lr[0]
         dt = time.time() - t0
         io.log(
             log_path,
-            f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt}",
+            f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt} {lr}",
         )
 
         # ====== Save checkpoint ======
@@ -225,9 +248,9 @@ def training_loop(
             if not os.path.exists(chkpt_dir(epoch)):
                 os.makedirs(chkpt_dir(epoch))
             torch.save(model, os.path.join(chkpt_dir(epoch), f"model.pt"))
-            torch.save(optimizer.state_dict, os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
+            torch.save(optimizer.state_dict(), os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
             if scheduler is not None:
-                torch.save(scheduler.state_dict, os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
+                torch.save(scheduler.state_dict(), os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
 
     return
 
@@ -238,11 +261,12 @@ def run_training_sbatch(run_dir: str, **kwargs) -> None:
     `run_dir` must contain two files; "run_training.py" and "settings.py".
     """
     top_dir = os.getcwd()
-    os.chdir(top_dir)
+    os.chdir(run_dir)
 
     fname = "run-training.sh"
 
-    with open(os.path.join(run_dir, fname), "wt") as f:
+    with open(os.path.join(run_dir, fname), "w+") as f:
+
         # Make a dir for the slurm outputs
         if not os.path.exists(os.path.join(run_dir, "slurm_out")):
             os.mkdir(os.path.join(run_dir, "slurm_out"))
@@ -267,5 +291,6 @@ def run_training_sbatch(run_dir: str, **kwargs) -> None:
         f.write("python run_training.py\n\n")
 
     os.system(f"sbatch {fname}")
+    os.chdir(top_dir)
 
     return
