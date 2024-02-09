@@ -149,6 +149,19 @@ def target_builder(
         for A, frame in zip(structure_idxs, frames)
     }
 
+    # Add tailored cube edges for each structure if applicable
+    if kwargs["aims_kwargs"].get("output") == ["cube ri_fit"]:
+        if kwargs["cube"].get("slab") is True:
+            for A in structure_idxs:
+                calcs[A]["aims_kwargs"] = aims_calc.get_aims_cube_edges_slab(
+                    calcs[A]["atoms"], kwargs["cube"].get("n_points")
+                )
+        else:
+            for A in structure_idxs:
+                calcs[A]["aims_kwargs"] = aims_calc.get_aims_cube_edges(
+                    calcs[A]["atoms"], kwargs["cube"].get("n_points")
+                )
+
     # Convert to a list of numpy arrays
     for A, frame, pred in zip(structure_idxs, frames, predictions):
         pred_np = convert.coeff_vector_tensormap_to_ndarray(
