@@ -242,7 +242,7 @@ def evaluate_l2_loss_orthogonal_basis(
     """
     # Check metadata
     if check_args:
-        if isinstance(input, list):
+        if isinstance(input, list) or isinstance(input, tuple):
             for inp, tar in zip(input, target):
                 _check_forward_args(inp, tar)
         else:
@@ -257,8 +257,8 @@ def evaluate_l2_loss_orthogonal_basis(
         for in_block, tar_block in zip(input, target):
             loss += torch_mse(input=in_block.values, target=tar_block.values)
     else:
-        assert isinstance(input, list)
-        assert isinstance(target, list)
+        assert (isinstance(input, list) or isinstance(input, tuple))
+        assert (isinstance(target, list) or isinstance(target, tuple))
         for inp, tar in zip(input, target):
             for in_block, tar_block in zip(inp, tar):
                 loss += torch_mse(input=in_block.values, target=tar_block.values)
