@@ -125,7 +125,7 @@ def get_standard_deviation(
         stddev += loss_fn(
             input=[output_std], 
             target=[out_zeros], 
-            overlap=[overlap], 
+            overlap=[overlap] if overlap is not None else None, 
             structure_idxs=[idx],
         )
 
