@@ -22,7 +22,7 @@ def training_step(
     train_loader,
     val_loader=None,
     scheduler=None,
-    check_args=False,
+    check_metadata=False,
     use_aux: bool = True,
 ) -> Tuple[torch.Tensor]:
     """
@@ -44,7 +44,7 @@ def training_step(
         else:
             optimizer.zero_grad()  # zero grads
         out_train_pred = model(  # forward pass
-            in_train, check_args=check_args
+            in_train, check_metadata=check_metadata
         )
         if not use_aux:  # don't use the overlap to train
             aux_train = None
@@ -52,7 +52,7 @@ def training_step(
             input=out_train_pred,
             target=out_train,
             overlap=aux_train,
-            check_args=check_args,
+            check_metadata=check_metadata,
         )
         train_loss_batch.backward()  # backward pass
 
@@ -76,12 +76,12 @@ def training_step(
             n_val_epoch = 0
             for val_batch in val_loader:  # minibatches
                 idxs_val, frames_val, in_val, out_val, aux_val = val_batch
-                out_val_pred = model(in_val, check_args=check_args)  # prediction
+                out_val_pred = model(in_val, check_metadata=check_metadata)  # prediction
                 val_loss_batch = loss_fn(  # validation loss
                     input=out_val_pred,
                     target=out_val,
                     overlap=aux_val,
-                    check_args=check_args,
+                    check_metadata=check_metadata,
                 )
                 val_loss_epoch += val_loss_batch  # store loss
                 n_val_epoch += len(idxs_val)
@@ -263,7 +263,7 @@ def training_loop(
             train_loader=train_loader,
             val_loader=val_loader,
             scheduler=scheduler,
-            check_args=epoch == 1,  # Check metadata only on 1st epoch
+            # check_metadata=epoch == 1,  # Check metadata only on 1st epoch
             use_aux=use_ovlp,
         )
 
@@ -303,7 +303,7 @@ def training_loop(
             if epoch % ml_settings["log"]["interval"] == 0:
                 io.log(
                     log_path,
-                    f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt} {lr} {use_ovlp}",
+                    f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt} {lr} {int(use_ovlp)}",
                 )
                 if ml_settings["log"].get("block_losses") is True:
                     block_losses = get_block_losses(model, val_loader)
@@ -313,34 +313,42 @@ def training_loop(
                             f"    key {key} block_loss {block_loss}",
                         )
 
-
         # ====== Save checkpoint ======
         if epoch % ml_settings["training"]["save_interval"] == 0:
             if not os.path.exists(chkpt_dir(epoch)):
                 os.makedirs(chkpt_dir(epoch))
 
-            for key, block_model in zip(model._in_metadata.keys, model.models):
-                torch.save(
-                    block_model.state_dict(), 
-                    os.path.join(chkpt_dir(epoch), f"model_{tuple(key)}.pt")
-                )
-            if isinstance(optimizer, List):
-                for key, optim in zip(model._in_metadata.keys, optimizer):
-                    torch.save(
-                        optim.state_dict(),
-                        os.path.join(chkpt_dir(epoch), f"optimizer_{tuple(key)}.pt")
-                    )
-            else:
-                torch.save(optimizer.state_dict(), os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
+            torch.save(model, os.path.join(chkpt_dir(epoch), f"model.pt"))
+            torch.save(
+                model.state_dict(),
+                os.path.join(chkpt_dir(epoch), f"model_state_dict.pt"),
+            )
+            torch.save(optimizer.state_dict(), os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
             if scheduler is not None:
-                if isinstance(scheduler, List):
-                    for key, sched in zip(model._in_metadata.keys, scheduler):
-                        torch.save(
-                            sched.state_dict(),
-                            os.path.join(chkpt_dir(epoch), f"scheduler_{tuple(key)}.pt")
-                        )
-                else:
-                    torch.save(scheduler.state_dict(), os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
+                torch.save(scheduler.state_dict(), os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
+
+            # for key, block_model in zip(model._in_metadata.keys, model.models):
+            #     torch.save(
+            #         block_model.state_dict(),
+            #         os.path.join(chkpt_dir(epoch), f"model_{tuple(key)}.pt")
+            #     )
+            # if isinstance(optimizer, List):
+            #     for key, optim in zip(model._in_metadata.keys, optimizer):
+            #         torch.save(
+            #             optim.state_dict(),
+            #             os.path.join(chkpt_dir(epoch), f"optimizer_{tuple(key)}.pt")
+            #         )
+            # else:
+            #     torch.save(optimizer.state_dict(), os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
+            # if scheduler is not None:
+            #     if isinstance(scheduler, List):
+            #         for key, sched in zip(model._in_metadata.keys, scheduler):
+            #             torch.save(
+            #                 sched.state_dict(),
+            #                 os.path.join(chkpt_dir(epoch), f"scheduler_{tuple(key)}.pt")
+            #             )
+            #     else:
+            #         torch.save(scheduler.state_dict(), os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
 
     return
 

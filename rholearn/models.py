@@ -7,8 +7,12 @@ import ase
 import numpy as np
 import torch
 
-from metatensor import Labels, TensorMap
+import metatensor
+from metatensor import Labels, TensorBlock, TensorMap
 from metatensor.learn.nn import ModuleMap
+
+
+from rholearn import predictor
 
 
 class RhoModel(torch.nn.Module):
@@ -21,6 +25,8 @@ class RhoModel(torch.nn.Module):
     def __init__(
         self,
         model: ModuleMap,
+        input_tensor: TensorMap,
+        output_tensor: TensorMap,
         descriptor_kwargs: Optional[Dict[str, Any]] = None,
         target_kwargs: Optional[Dict[str, Any]] = None,
         **torch_settings,
@@ -28,12 +34,64 @@ class RhoModel(torch.nn.Module):
         super().__init__()
 
         self._model = model
+        self._torch_settings = torch_settings
+        self._set_metadata(input_tensor, output_tensor)
         self._descriptor_kwargs = descriptor_kwargs
         self._target_kwargs = target_kwargs
-        self._torch_settings = torch_settings
+        
+
+    @property
+    def out_metadata(self) -> TensorMap:
+        return self._out_metadata
+
+    def _set_metadata(self, input_tensor: TensorMap, output_tensor: TensorMap) -> None:
+        """
+        Sets the attributes "_in_metadata" and "_out_metadata" as minimal
+        TensorMaps storing the relevant metadata data of input and output.
+        These are only defined for the intersection between the input and output
+        keys.
+        """
+        keys = input_tensor.keys.intersection(output_tensor.keys)
+        in_blocks, out_blocks = [], []
+        for key in keys:
+            assert metatensor.equal_metadata_block(
+                input_tensor[key], output_tensor[key], check=["components"]
+            )
+            in_block = TensorBlock(
+                values=torch.zeros(
+                    (
+                        1,
+                        *[len(c) for c in input_tensor[key].components],
+                        len(input_tensor[key].properties),
+                    ),
+                    dtype=self._torch_settings.get("dtype"),
+                    device=self._torch_settings.get("device"),
+                ),
+                samples=Labels.single(),
+                components=input_tensor[key].components,
+                properties=input_tensor[key].properties,
+            )
+            out_block = TensorBlock(
+                values=torch.zeros(
+                    (
+                        1,
+                        *[len(c) for c in output_tensor[key].components],
+                        len(output_tensor[key].properties),
+                    ),
+                    dtype=self._torch_settings.get("dtype"),
+                    device=self._torch_settings.get("device"),
+                ),
+                samples=Labels.single(),
+                components=output_tensor[key].components,
+                properties=output_tensor[key].properties,
+            )
+            in_blocks.append(in_block)
+            out_blocks.append(out_block)
+        self._in_metadata = TensorMap(keys, in_blocks)
+        self._out_metadata = TensorMap(keys, out_blocks)
 
     def forward(
-        self, input: Union[TensorMap, List[TensorMap]]
+        self, input: Union[TensorMap, List[TensorMap]], check_metadata: bool = False
     ) -> Union[TensorMap, List[TensorMap]]:
         """
         Calls the forward method of the `model` passed to the constructor,
@@ -46,6 +104,11 @@ class RhoModel(torch.nn.Module):
             return_as_list = False
         assert (isinstance(input, list) or isinstance(input, tuple))
         assert all([isinstance(inp, TensorMap) for inp in input])
+        if check_metadata:
+            for inp in input:
+                assert metatensor.equal_metadata(
+                    inp, self._in_metadata, check=["components", "properties"]
+                )
 
         # Forward
         output = [self._model(inp) for inp in input]
@@ -149,9 +212,7 @@ class RhoModel(torch.nn.Module):
         """
         Makes a prediction on a list of TensorMap descriptors.
         """
-        intermediate_predictions = self(  # predict
-            descriptors, check_args=True
-        )
+        intermediate_predictions = self(descriptors, check_metadata=True)
 
         if not build_targets:  # just return coefficients
             return intermediate_predictions

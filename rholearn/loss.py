@@ -70,7 +70,7 @@ class L2Loss(torch.nn.Module):
         target: Union[TensorMap, List[TensorMap]],
         overlap: Optional[Union[TensorMap, List[TensorMap]]] = None,
         structure_idxs: Optional[List[int]] = None,
-        check_args: bool = True,
+        check_metadata: bool = True,
     ) -> torch.Tensor:
         """
         Calculate the L2Loss between input and target TensorMaps. If `overlap`
@@ -115,7 +115,7 @@ def evaluate_l2_loss_nonorthogonal_basis(
     target: List[TensorMap],
     overlap: List[TensorMap],
     structure_idxs: List[int],
-    check_args: bool = True,
+    check_metadata: bool = True,
 ) -> torch.Tensor:
     """
     Calculates the squared error loss between the input (ML) and target (QM)
@@ -175,7 +175,7 @@ def evaluate_l2_loss_nonorthogonal_basis(
     for inp, tar, ovl in zip(input, target, overlap):
 
         # Check metadata
-        if check_args:
+        if check_metadata:
             _check_forward_args(inp, tar, ovl)
 
         # Evaluate loss
@@ -242,7 +242,7 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
 def evaluate_l2_loss_orthogonal_basis(
     input: Union[TensorMap, List[TensorMap]], 
     target: Union[TensorMap, List[TensorMap]],
-    check_args: bool = True,
+    check_metadata: bool = True,
 ) -> torch.Tensor:
     """
     Calculates the squared error loss between the input (ML) and target (QM)
@@ -258,7 +258,7 @@ def evaluate_l2_loss_orthogonal_basis(
 
     """
     # Check metadata
-    if check_args:
+    if check_metadata:
         if isinstance(input, list) or isinstance(input, tuple):
             for inp, tar in zip(input, target):
                 _check_forward_args(inp, tar)
