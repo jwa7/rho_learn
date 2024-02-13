@@ -9,17 +9,19 @@ import rhocalc.aims
 SBATCH_KWARGS = {
     "job-name": "tests",
     "nodes": 1,
-    "time": "01:00:00",
+    "time": "02:00:00",
     "mem-per-cpu": 2000,
-    "partition": "standard",
+    "partition": "jobs",
 }
 
 # TODO: add path to local AIMS executable
-AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"
+# AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"  # jed
+AIMS_PATH = "/home/abbott/codes/FHIaims/build/aims.230905.scalapack.mpi.x"  # imxgesrv1
 
 AIMS_KWARGS = {
     # TODO: add path to AIMS species defaults
-    "species_dir": "/home/abbott/codes/new_aims/FHIaims/species_defaults/defaults_2020/tight",
+    # "species_dir": "/home/abbott/codes/new_aims/FHIaims/species_defaults/defaults_2020/tight",  # jed
+    "species_dir": "/home/abbott/rho/rho_learn/rhocalc/aims/aims_species/tight/default",  # imxgesrv1
     "xc": "pbe0",
     "spin": "none",
     "relativistic": "none",
@@ -69,6 +71,10 @@ AIMS_KWARGS = {
 #     "output": ["cube ri_fit"],  # needed for cube files
 # }
 
+# TODO: define HPC modules to load and the sbatch run command
+MODULES_TO_LOAD = ["intel", "intel-mpi", "intel-mkl"]
+RUN_COMMAND = "mpirun"  # or i.e. "srun"
+
 # TODO: uncomment tests to run
 def run_tests(calcs: dict, test_ksos: bool = False):
     """
@@ -78,36 +84,36 @@ def run_tests(calcs: dict, test_ksos: bool = False):
     """
     failed = []
 
-    # # ===== Tests for `generate_sanity_check_data_total_density`
+    # ===== Tests for `generate_sanity_check_data_total_density`
 
-    # # Get integration to the formal number of electrons
-    # failed.append(total_densities_integrate_to_n_electrons(calcs))
+    # Get integration to the formal number of electrons
+    failed.append(total_densities_integrate_to_n_electrons(calcs))
 
-    # # MAE of total density between a) that built from densmat and b) that imported from physics
-    # failed.append(density_from_densmat_equals_density_from_physics(calcs))
+    # MAE of total density between a) that built from densmat and b) that imported from physics
+    failed.append(density_from_densmat_equals_density_from_physics(calcs))
 
-    # # MAE of total density built from RI coefficients vs that built from NAO densmat
-    # failed.append(density_from_ri_equals_density_from_densmat(calcs))
+    # MAE of total density built from RI coefficients vs that built from NAO densmat
+    failed.append(density_from_ri_equals_density_from_densmat(calcs))
 
-    # # Test the the RI overlap matric is symmetric
-    # failed.append(overlap_is_symmetric(calcs))
+    # Test the the RI overlap matric is symmetric
+    failed.append(overlap_is_symmetric(calcs))
 
-    # # Test that w = Sc for the output RI projections, overlap, and coefficients
-    # # (respectively)
-    # failed.append(w_equals_Sc(calcs))
+    # Test that w = Sc for the output RI projections, overlap, and coefficients
+    # (respectively)
+    failed.append(w_equals_Sc(calcs))
 
-    # NOTE: test not runnable with current API as RI-coeffs not re-written to
-    # file. Kept here in case of debugging. 
-    # RI coeffs read in, convention changed, and changed back gives the same
-    # coeffs as read in
+    # # NOTE: test not runnable with current API as RI-coeffs not re-written to
+    # # file. Kept here in case of debugging. 
+    # # RI coeffs read in, convention changed, and changed back gives the same
+    # # coeffs as read in
     # failed.append(rebuild_reordering_coeffs_in_equals_coeffs_out(calcs))
 
-    # # MAE of total density rebuilt from RI coefficients within the RI
-    # # fitting procedure is exactly equivalent to those rebuilt in a separate
-    # # calculation from the same coefficients
-    # failed.append(rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs))
+    # MAE of total density rebuilt from RI coefficients within the RI
+    # fitting procedure is exactly equivalent to those rebuilt in a separate
+    # calculation from the same coefficients
+    failed.append(rebuilt_density_equal_between_ri_fit_and_ri_rebuild(calcs))
 
-    failed.append(ri_coeffs_so3_equivariant(calcs))
+    # failed.append(ri_coeffs_so3_equivariant(calcs))
 
     # ===== Tests for `generate_sanity_check_data_ksos`
     if test_ksos:
@@ -135,7 +141,7 @@ def run_tests(calcs: dict, test_ksos: bool = False):
 
 if __name__ == "__main__":
 
-    scf = True
+    scf = False
     ri = True
     rebuild = True
     process = True
@@ -149,7 +155,13 @@ if __name__ == "__main__":
     if scf:
         
         # Run SCF
-        run_scf(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs)
+        run_scf(
+            aims_kwargs=AIMS_KWARGS,
+            sbatch_kwargs=SBATCH_KWARGS,
+            calcs=calcs,
+            load_modules=MODULES_TO_LOAD,
+            run_command=RUN_COMMAND,
+        )
 
         # Wait for calcs to finish
         all_aims_outs = [os.path.join(f"{i}", "aims.out") for i in calcs.keys()]
@@ -175,7 +187,14 @@ if __name__ == "__main__":
                 continue
 
         # Run RI fitting
-        run_ri(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs, use_restart=True)
+        run_ri(
+            aims_kwargs=AIMS_KWARGS,
+            sbatch_kwargs=SBATCH_KWARGS, 
+            calcs=calcs,
+            use_restart=True,
+            load_modules=MODULES_TO_LOAD,
+            run_command=RUN_COMMAND,
+        )
 
         # Wait for calcs to finish
         all_aims_outs = [os.path.join(f"{i}", "ri", "aims.out") for i in calcs.keys()]
@@ -201,7 +220,13 @@ if __name__ == "__main__":
                 continue
 
         # Run RI fitting
-        run_rebuild(aims_kwargs=AIMS_KWARGS, sbatch_kwargs=SBATCH_KWARGS, calcs=calcs)
+        run_rebuild(
+            aims_kwargs=AIMS_KWARGS,
+            sbatch_kwargs=SBATCH_KWARGS, 
+            calcs=calcs,
+            load_modules=MODULES_TO_LOAD,
+            run_command=RUN_COMMAND,
+        )
 
         # Wait for calcs to finish
         all_aims_outs = [os.path.join(f"{i}", "rebuild", "aims.out") for i in calcs.keys()]
@@ -216,46 +241,46 @@ if __name__ == "__main__":
                             print(all_aims_outs)
 
 
-        # Run RI fitting on rotated structure
-        tmp_calcs = {1001: calcs[1001]}
-        # Remove RI rebuild dirs if they are present
-        for calc_i in tmp_calcs.keys():
-            try:
-                shutil.rmtree(f"{calc_i}/rebuild/")
-            except FileNotFoundError:
-                continue
+        # # Run RI fitting on rotated structure
+        # tmp_calcs = {1001: calcs[1001]}
+        # # Remove RI rebuild dirs if they are present
+        # for calc_i in tmp_calcs.keys():
+        #     try:
+        #         shutil.rmtree(f"{calc_i}/rebuild/")
+        #     except FileNotFoundError:
+        #         continue
 
-        shutil.copy(
-            "/home/abbott/rho/debug_model/ri_coeffs.out",
-            "/home/abbott/rho/debug_model/tmp_ri_coeffs.out",
-        )
-        shutil.copy(
-            "/home/abbott/rho/debug_model/ri_coeffs.out",
-            "/home/abbott/rho/rho_learn/rhocalc/aims/tests/1001/ri"
-        )
+        # shutil.copy(
+        #     "/home/abbott/rho/debug_model/ri_coeffs.out",
+        #     "/home/abbott/rho/debug_model/tmp_ri_coeffs.out",
+        # )
+        # shutil.copy(
+        #     "/home/abbott/rho/debug_model/ri_coeffs.out",
+        #     "/home/abbott/rho/rho_learn/rhocalc/aims/tests/1001/ri"
+        # )
 
-        run_rebuild(
-            aims_kwargs=AIMS_KWARGS, 
-            sbatch_kwargs=SBATCH_KWARGS, 
-            calcs=tmp_calcs
-        )
+        # run_rebuild(
+        #     aims_kwargs=AIMS_KWARGS, 
+        #     sbatch_kwargs=SBATCH_KWARGS, 
+        #     calcs=tmp_calcs
+        # )
 
-        # Wait for calcs to finish
-        all_aims_outs = [os.path.join(f"{1001}", "rebuild", "aims.out") for i in tmp_calcs.keys()]
-        print("Files not yet finished RI-rebuild:")
-        print(all_aims_outs)
-        while len(all_aims_outs) > 0:
-            for aims_out in all_aims_outs:
-                if os.path.exists(aims_out):
-                    with open(aims_out, "r") as f:
-                        if "Leaving FHI-aims." in f.read():
-                            all_aims_outs.remove(aims_out)
-                            print(all_aims_outs)
+        # # Wait for calcs to finish
+        # all_aims_outs = [os.path.join(f"{1001}", "rebuild", "aims.out") for i in tmp_calcs.keys()]
+        # print("Files not yet finished RI-rebuild:")
+        # print(all_aims_outs)
+        # while len(all_aims_outs) > 0:
+        #     for aims_out in all_aims_outs:
+        #         if os.path.exists(aims_out):
+        #             with open(aims_out, "r") as f:
+        #                 if "Leaving FHI-aims." in f.read():
+        #                     all_aims_outs.remove(aims_out)
+        #                     print(all_aims_outs)
 
-        shutil.copy(
-            "/home/abbott/rho/debug_model/tmp_ri_coeffs.out",
-            "/home/abbott/rho/debug_model/ri_coeffs.out",
-        )
+        # shutil.copy(
+        #     "/home/abbott/rho/debug_model/tmp_ri_coeffs.out",
+        #     "/home/abbott/rho/debug_model/ri_coeffs.out",
+        # )
 
     # ======= 4. Run RI rebuild
 

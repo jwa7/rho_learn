@@ -3,6 +3,7 @@ import inspect
 import glob
 import os
 import shutil
+from typing import List
 
 import ase.io
 import numpy as np
@@ -15,7 +16,13 @@ TOLERANCE = {"rtol": 1e-5, "atol": 1e-10}
 DF_ERROR_TOLERANCE = 0.3 # percent MAE tolerance for RI density fitting
 
 
-def run_scf(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
+def run_scf(
+    aims_kwargs: dict,
+    sbatch_kwargs: dict,
+    calcs: dict,
+    load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+    run_command: str = "srun",
+):
     """
     Runs an SCF calculation for each of the systems in `calcs`, in separate
     directories.
@@ -48,7 +55,8 @@ def run_scf(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
         aims_calc.write_aims_sbatch(
             fname=os.path.join(run_dir, "run-aims.sh"), 
             aims=calc["aims_path"], 
-            load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            load_modules=load_modules,
+            run_command=run_command,
             **sbatch_kwargs_calc
         )
 
@@ -59,7 +67,14 @@ def run_scf(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
 
 
 
-def run_ri(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict, use_restart: bool = False):
+def run_ri(
+    aims_kwargs: dict,
+    sbatch_kwargs: dict,
+    calcs: dict,
+    use_restart: bool = False,
+    load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+    run_command: str = "srun",
+):
     """
     Runs an RI calculation for the total electron density and each KS-orbital
     with full output, for each of the systems in `calcs`, in separate
@@ -123,7 +138,8 @@ def run_ri(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict, use_restart: boo
         aims_calc.write_aims_sbatch(
             fname=os.path.join(run_dir, "run-aims.sh"), 
             aims=calc["aims_path"], 
-            load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            load_modules=load_modules,
+            run_command=run_command,
             **sbatch_kwargs_calc
         )
 
@@ -132,7 +148,13 @@ def run_ri(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict, use_restart: boo
 
     return
 
-def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
+def run_rebuild(
+    aims_kwargs: dict,
+    sbatch_kwargs: dict,
+    calcs: dict,
+    load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+    run_command: str = "srun",
+):
     """
     Runs an RI rebuild calculation.
 
@@ -192,7 +214,8 @@ def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
         aims_calc.write_aims_sbatch(
             fname=os.path.join(run_dir, "run-aims.sh"), 
             aims=calc["aims_path"], 
-            load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            load_modules=load_modules,
+            run_command=run_command,
             **sbatch_kwargs_calc
         )
 
@@ -201,73 +224,73 @@ def run_rebuild(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
 
     return
 
-def run_process(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
-    """
-    Processes the aims output files to convert raw arrays to metatensor format.
+# def run_process(aims_kwargs: dict, sbatch_kwargs: dict, calcs: dict):
+#     """
+#     Processes the aims output files to convert raw arrays to metatensor format.
 
-    In each of the run directories, processes the calculated RI coefficients
-    (i.e. <...>/ri/ri_coeffs.out) and overlap matrix (<...>/ri/ri_ovlp.out).
-    """
+#     In each of the run directories, processes the calculated RI coefficients
+#     (i.e. <...>/ri/ri_coeffs.out) and overlap matrix (<...>/ri/ri_ovlp.out).
+#     """
 
-    top_dir = os.getcwd()
-    os.chdir(top_dir)
+#     top_dir = os.getcwd()
+#     os.chdir(top_dir)
 
-    for calc_i, calc in calcs.items():
+#     for calc_i, calc in calcs.items():
 
-        # Define run dir and AIMS path
-        run_dir = f"{calc_i}/rebuild/"
-        if not os.path.exists(run_dir):
-            os.makedirs(run_dir)
+#         # Define run dir and AIMS path
+#         run_dir = f"{calc_i}/rebuild/"
+#         if not os.path.exists(run_dir):
+#             os.makedirs(run_dir)
 
-        # Settings for control.in
-        aims_kwargs_calc = aims_kwargs.copy()
-        aims_kwargs_calc.update(calc["aims_kwargs"])
-        aims_kwargs_calc.pop("elsi_restart")
-        aims_kwargs_calc.update(
-            {
-                # ===== Force no SCF
-                "sc_iter_limit": 0,
-                "postprocess_anyway": True,
-                "ri_fit_assume_converged": True,
-                # ===== What we want to do
-                "ri_fit_rebuild_from_coeffs": True,
-                # ===== What to write as output
-                "ri_fit_write_rebuilt_field": True,
-                "ri_fit_write_rebuilt_field_cube": True,
-                "output": ["cube ri_fit"],  # needed for cube files
-            }
-        )
-        aims_kwargs_calc.update(aims_calc.get_aims_cube_edges(calc["atoms"]))
+#         # Settings for control.in
+#         aims_kwargs_calc = aims_kwargs.copy()
+#         aims_kwargs_calc.update(calc["aims_kwargs"])
+#         aims_kwargs_calc.pop("elsi_restart")
+#         aims_kwargs_calc.update(
+#             {
+#                 # ===== Force no SCF
+#                 "sc_iter_limit": 0,
+#                 "postprocess_anyway": True,
+#                 "ri_fit_assume_converged": True,
+#                 # ===== What we want to do
+#                 "ri_fit_rebuild_from_coeffs": True,
+#                 # ===== What to write as output
+#                 "ri_fit_write_rebuilt_field": True,
+#                 "ri_fit_write_rebuilt_field_cube": True,
+#                 "output": ["cube ri_fit"],  # needed for cube files
+#             }
+#         )
+#         aims_kwargs_calc.update(aims_calc.get_aims_cube_edges(calc["atoms"]))
 
-        # Copy RI coeffs as the input coeffs to rebuild from
-        shutil.copy(
-            f"{calc_i}/ri/ri_coeffs.out",
-            f"{calc_i}/rebuild/ri_coeffs.in"
-        )
+#         # Copy RI coeffs as the input coeffs to rebuild from
+#         shutil.copy(
+#             f"{calc_i}/ri/ri_coeffs.out",
+#             f"{calc_i}/rebuild/ri_coeffs.in"
+#         )
 
-        # Settings for sbatch run script
-        sbatch_kwargs_calc = sbatch_kwargs.copy()
-        sbatch_kwargs_calc.update(calc["sbatch_kwargs"])
+#         # Settings for sbatch run script
+#         sbatch_kwargs_calc = sbatch_kwargs.copy()
+#         sbatch_kwargs_calc.update(calc["sbatch_kwargs"])
 
-        # Write AIMS input files
-        aims_calc.write_input_files(
-            atoms=calc["atoms"], 
-            run_dir=run_dir, 
-            aims_kwargs=aims_kwargs_calc,
-        )
+#         # Write AIMS input files
+#         aims_calc.write_input_files(
+#             atoms=calc["atoms"], 
+#             run_dir=run_dir, 
+#             aims_kwargs=aims_kwargs_calc,
+#         )
 
-        # Write sbatch run script
-        aims_calc.write_aims_sbatch(
-            fname=os.path.join(run_dir, "run-aims.sh"), 
-            aims=calc["aims_path"], 
-            load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
-            **sbatch_kwargs_calc
-        )
+#         # Write sbatch run script
+#         aims_calc.write_aims_sbatch(
+#             fname=os.path.join(run_dir, "run-aims.sh"), 
+#             aims=calc["aims_path"], 
+#             load_modules=[],
+#             **sbatch_kwargs_calc
+#         )
 
-        # Run aims
-        aims_calc.run_aims_in_dir(run_dir)
+#         # Run aims
+#         aims_calc.run_aims_in_dir(run_dir)
 
-    return
+#     return
 
 # ======================================== 
 # ========= Test functions ===============

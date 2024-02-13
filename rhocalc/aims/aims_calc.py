@@ -5,6 +5,7 @@ import inspect
 import glob
 import os
 import shutil
+import warnings
 from typing import Callable, Optional, List
 
 import ase
@@ -34,7 +35,11 @@ def write_input_files(
 
 
 def write_aims_sbatch(
-    fname: str, aims: str, load_modules: Optional[list] = None, **kwargs
+    fname: str,
+    aims: str,
+    load_modules: Optional[list] = None,
+    run_command: str = "srun",
+    **kwargs
 ):
     """
     Writes a bash script to `fname` that allows running of FHI-AIMS with
@@ -65,7 +70,7 @@ def write_aims_sbatch(
         # Write the run AIMS command
         f.write("# Run AIMS\n")
         f.write(f"AIMS={aims}\n")
-        f.write("srun $AIMS < control.in > aims.out\n")
+        f.write(f"{run_command} $AIMS < control.in > aims.out\n")
 
     return
 
@@ -76,6 +81,7 @@ def write_aims_sbatch_array(
     structure_idxs: List[int],
     run_dir: Callable,
     load_modules: Optional[list] = None,
+    run_command: str = "srun",
     **kwargs,
 ):
     """
@@ -125,7 +131,7 @@ def write_aims_sbatch_array(
         # Write the run AIMS command
         f.write("# Run AIMS\n")
         f.write(f"AIMS={aims}\n")
-        f.write("srun $AIMS < control.in > aims.out\n")
+        f.write(f"{run_command} $AIMS < control.in > aims.out\n")
 
     return
 
@@ -159,6 +165,7 @@ def run_aims(
     sbatch_kwargs: dict,
     restart_idx: Optional[int] = None,
     copy_files: Optional[List[str]] = None,
+    run_command: str = "srun",
 ):
     """
     Runs an AIMS calculation for each of the calculations in `calcs`. `calcs`
@@ -221,6 +228,7 @@ def run_aims(
             fname=os.path.join(run_dir, "run-aims.sh"),
             aims=aims_path,
             load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            run_command=run_command,
             **sbatch_kwargs_calc,
         )
 
@@ -236,6 +244,8 @@ def run_aims_array(
     aims_kwargs: dict,
     sbatch_kwargs: dict,
     run_dir: Callable,
+    load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+    run_command: str = "srun",
 ):
     """
     Runs an AIMS calculation for each of the calculations in `calcs`. `calcs`
@@ -289,7 +299,8 @@ def run_aims_array(
         aims=aims_path,
         structure_idxs=list(calcs.keys()),
         run_dir=run_dir,
-        load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+        load_modules=load_modules,
+        run_command=run_command,
         **sbatch_kwargs_calc,
     )
 
@@ -380,13 +391,18 @@ def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100))
     if not np.all(slab.pbc):
         raise ValueError("Slab must have periodic boundary conditions")
 
-    # assert square cell
-    for param in [
-        slab.cell[0, 1], slab.cell[0, 2], 
-        slab.cell[1, 0], slab.cell[1, 2],
-        slab.cell[2, 0], slab.cell[2, 1]
-    ]:
-        assert param == 0
+    # check square cell
+    if not np.all(
+        [
+            param == 0 
+            for param in [
+                slab.cell[0, 1], slab.cell[0, 2], 
+                slab.cell[1, 0], slab.cell[1, 2],
+                slab.cell[2, 0], slab.cell[2, 1]
+            ]
+        ]
+    ):
+        warnings.warn(f"Cell not square: {frame.cell}")
 
     min_x = np.min(slab.positions[:, 0])
     max_x = np.max(slab.positions[:, 0])
@@ -444,13 +460,18 @@ def get_aims_cube_edges(frame: ase.Atoms, n_points: tuple = (100, 100, 100)):
     center = (min_coord + max_coord) / 2
 
     if np.all(frame.pbc):
-        # assert square cell
-        for param in [
-            frame.cell[0, 1], frame.cell[0, 2], 
-            frame.cell[1, 0], frame.cell[1, 2],
-            frame.cell[2, 0], frame.cell[2, 1]
-        ]:
-            assert param == 0
+        # check square cell
+        if not np.all(
+            [
+                param == 0 
+                for param in [
+                    frame.cell[0, 1], frame.cell[0, 2], 
+                    frame.cell[1, 0], frame.cell[1, 2],
+                    frame.cell[2, 0], frame.cell[2, 1]
+                ]
+            ]
+        ):
+            warnings.warn(f"Cell not square: {frame.cell}")
         # take lattice vectors as cube edges
         max_lengths = [frame.cell[0, 0], frame.cell[1, 1], frame.cell[2, 2]]
     else:
