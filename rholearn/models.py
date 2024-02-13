@@ -98,17 +98,18 @@ class RhoModel(torch.nn.Module):
         but allows for passing a list of inputs.
         """
         # Checks
-        return_as_list = True
-        if isinstance(input, TensorMap):
-            input = [input]
-            return_as_list = False
-        assert (isinstance(input, list) or isinstance(input, tuple))
-        assert all([isinstance(inp, TensorMap) for inp in input])
-        if check_metadata:
-            for inp in input:
-                assert metatensor.equal_metadata(
-                    inp, self._in_metadata, check=["components", "properties"]
-                )
+        with torch.no_grad():
+            return_as_list = True
+            if isinstance(input, TensorMap):
+                input = [input]
+                return_as_list = False
+            assert (isinstance(input, list) or isinstance(input, tuple))
+            assert all([isinstance(inp, TensorMap) for inp in input])
+            if check_metadata:
+                for inp in input:
+                    assert metatensor.equal_metadata(
+                        inp, self._in_metadata, check=["components", "properties"]
+                    )
 
         # Forward
         output = [self._model(inp) for inp in input]
