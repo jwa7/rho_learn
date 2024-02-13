@@ -17,32 +17,6 @@ from rhocalc import convert
 from rhocalc.aims import aims_calc, aims_parser
 
 
-def _template_descriptor_builder(frames: List[ase.Atoms], **kwargs) -> TensorMap:
-    """
-    Function to build a descriptor for input into a ML model. Must take as input
-    a list of ASE Atoms objects, and return a TensorMap. What happens within the
-    function body is completely customizable, but must be deterministic based on
-    the inputs.
-    """
-    descriptor = None
-
-    # Code here
-
-    return descriptor
-
-
-def _template_target_builder(target: TensorMap, **kwargs):
-    """
-    Function to transform the raw prediction of a metatensor/torch model into
-    the desired format. This may include converting the TensorMap prediction
-    into a format suitable for re-integration into a QC code and calculating a
-    derived quantity.
-    """
-    # Code here
-
-    return target
-
-
 def descriptor_builder(
     frames: List[ase.Atoms],
     structure_idxs: Optional[List[int]] = None,
@@ -190,6 +164,8 @@ def target_builder(
         aims_kwargs=kwargs["aims_kwargs"],
         sbatch_kwargs=kwargs["sbatch_kwargs"],
         run_dir=save_dir,  # must be a callable
+        load_modules=kwargs["hpc_kwargs"]["load_modules"],
+        run_command=kwargs["hpc_kwargs"]["run_command"],
     )
 
     if not return_targets:
@@ -210,7 +186,7 @@ def target_builder(
     for A in structure_idxs:
         target = np.loadtxt(
             os.path.join(save_dir(A), "rho_rebuilt.out"),
-            usecols=(0, 1, 2, 3),
+            usecols=(0, 1, 2, 3),  # grid x, grid y, grid z, value
         )
         targets.append(target)
 
