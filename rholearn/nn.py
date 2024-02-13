@@ -5,7 +5,7 @@ Module containing classes :class:`LayerNorm`, :class:`EquiLayerNorm`, and
 The :class:`RhoModel` class is a global model wrapper for with predict methods.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 import torch
 
@@ -17,6 +17,7 @@ class Linear(Linear):
 
     def __init__(
         self,
+        in_keys: Labels,
         in_features: int,
         out_features: int,
         bias: bool = True,
@@ -26,6 +27,7 @@ class Linear(Linear):
         out_properties: Optional[List[Labels]] = None,
     ):
         super().__init__(
+            in_keys=in_keys,
             in_features=in_features,
             out_features=out_features,
             bias=bias,
@@ -343,7 +345,7 @@ class EquiLayerNorm(ModuleMap):
         super().__init__(in_keys, modules, out_properties)
 
 
-class Sequential(torch.nn.Module):
+class Sequential(ModuleMap):
     """
     A sequential model that applies a list of ModuleMaps to the input in order.
 
@@ -362,179 +364,4 @@ class Sequential(torch.nn.Module):
             module = torch.nn.Sequential(*[arg[i] for arg in args])
             modules.append(module)
 
-        modules = torch.nn.ModuleList(modules)
-
         super().__init__(in_keys, modules, out_properties=args[-1].out_properties)
-
-
-# ===========================================================
-# ===== Global model wrapper for interfacing with aims ======
-# ===========================================================
-
-class RhoModel(ModuleMap):
-
-    def __init__(
-        self,
-        in_keys: Labels,
-        model: ModuleMap,
-        *,
-        descriptor_kwargs: Optional[Dict[str, Any]] = None,
-        target_kwargs: Optional[Dict[str, Any]] = None,
-        **torch_settings,
-    ) -> None:
-        super().__init__(in_keys, model)
-
-        self._model = model
-        self._descriptor_kwargs = descriptor_kwargs
-        self._target_kwargs = target_kwargs
-        self._torch_settings = torch_settings
-
-    def forward(
-        self, input: Union[TensorMap, List[TensorMap]]
-    ) -> Union[TensorMap, List[TensorMap]]:
-        """
-        Calls the forward method of the `model` passed to the constructor,
-        but allows for passing a list of inputs.
-        """
-        # Checks
-        if isinstance(input, TensorMap):
-            input = [input]
-            return_as_list = False
-        else:
-            return_as_list = True
-        assert isinstance(input, list)
-        assert all([isinstance(inp, TensorMap) for inp in input])
-
-        # Forward
-        output = []
-        for inp in input:
-            output.append(self.model(inp))
-
-        if return_as_list:
-            return output
-        return output[0]
-
-    def predict(
-        self,
-        frames: List[ase.Atoms],
-        structure_idxs: Optional[List[int]] = None,
-        descriptors: Optional[List[TensorMap]] = None,
-        build_targets: bool = False,
-        return_targets: bool = False,
-        save_dir: Optional[Callable] = None,
-    ) -> Union[List[TensorMap], List[np.ndarray]]:
-        """
-        In evaluation mode, makes an end-to-end prediction on a list of ASE
-        frames or TensorMap descriptors.
-
-        In either case, the ASE `frames` must be specified.
-        """
-        self.eval()  # evaluation mode
-
-        # Use continuous structure index range if not specified
-        if structure_idxs is None:
-            structure_idxs = range(len(frames))
-        assert len(structure_idxs) == len(frames)
-
-        with torch.no_grad():
-            if descriptors is None:  # from ASE frames
-                predictions = self._predict_from_ase(
-                    structure_idxs=structure_idxs,
-                    frames=frames,
-                    build_targets=build_targets,
-                    return_targets=return_targets,
-                    save_dir=save_dir,
-                )
-
-            else:  # from TensorMap descriptors
-                assert len(descriptors) == len(frames)
-                predictions = self._predict_from_descriptor(
-                    frames=frames,
-                    structure_idxs=structure_idxs,
-                    descriptors=descriptors,
-                    build_targets=build_targets,
-                    return_targets=return_targets,
-                    save_dir=save_dir,
-                )
-
-        return predictions
-
-    def _predict_from_ase(
-        self,
-        structure_idxs: List[int],
-        frames: List[ase.Atoms],
-        build_targets: bool = False,
-        return_targets: bool = False,
-        save_dir: Optional[Callable] = None,
-    ) -> Union[List[TensorMap], List[np.ndarray]]:
-        """
-        Makes a prediction on a list of ASE frames.
-        """
-        if self._descriptor_kwargs is None:
-            raise ValueError(
-                "if making a prediction on ASE ``frames``,"
-                " ``descriptor_kwargs`` must be passed so that"
-                " descriptors can be generated. Use the setter"
-                " `_set_descriptor_kwargs` to set these and try again."
-            )
-
-        # Build the descriptors
-        descriptors = predictor.descriptor_builder(
-            structure_idxs=structure_idxs,
-            frames=frames,
-            torch_settings=self._torch_settings,
-            **self._descriptor_kwargs,
-        )
-
-        # Build predictions from descriptors
-        predictions = self._predict_from_descriptor(
-            structure_idxs=structure_idxs,
-            frames=frames,
-            descriptors=descriptors,
-            build_targets=build_targets,
-            return_targets=return_targets,
-            save_dir=save_dir,
-        )
-
-        return predictions
-
-    def _predict_from_descriptor(
-        self,
-        structure_idxs: List[int],
-        frames: List[ase.Atoms],
-        descriptors: List[TensorMap],
-        build_targets: bool = False,
-        return_targets: bool = False,
-        save_dir: Optional[Callable] = None,
-    ) -> Union[List[TensorMap], List[np.ndarray]]:
-        """
-        Makes a prediction on a list of TensorMap descriptors.
-        """
-        intermediate_predictions = self(  # predict
-            descriptors, check_args=True
-        )
-
-        if not build_targets:  # just return coefficients
-            return intermediate_predictions
-
-        # Build target
-        if self._target_kwargs is None:
-            raise ValueError(
-                "if ``build_targets`` is true, ``target_kwargs`` must be set"
-                " for the model. Use the setter `set_target_kwargs` to do so."
-            )
-        if save_dir is None:
-            raise ValueError(
-                "if ``build_targets`` is true, ``save_dir`` must be specified"
-            )
-
-        predictions = predictor.target_builder(
-            structure_idxs=structure_idxs,
-            frames=frames,
-            predictions=intermediate_predictions,
-            save_dir=save_dir,
-            return_targets=return_targets,
-            **self._target_kwargs,
-        )
-
-        return predictions
