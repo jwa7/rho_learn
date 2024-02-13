@@ -9,6 +9,8 @@ from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
+import metatensor
+
 from rholearn import io
 from rhocalc.aims import aims_parser
 
@@ -35,7 +37,12 @@ def training_step(
     for train_batch in train_loader:  # minibatches
 
         idxs_train, frames_train, in_train, out_train, aux_train = train_batch
-        optimizer.zero_grad()  # zero grads
+
+        if isinstance(optimizer, List):
+            for optim in optimizer:
+                optim.zero_grad()
+        else:
+            optimizer.zero_grad()  # zero grads
         out_train_pred = model(  # forward pass
             in_train, check_args=check_args
         )
@@ -48,7 +55,13 @@ def training_step(
             check_args=check_args,
         )
         train_loss_batch.backward()  # backward pass
-        optimizer.step()  # update parameters
+
+        # Update parameters
+        if isinstance(optimizer, List):
+            for optim in optimizer:
+                optim.step()
+        else:
+            optimizer.step()
         train_loss_epoch += train_loss_batch # store loss
         n_train_epoch += len(idxs_train)
 
@@ -56,6 +69,7 @@ def training_step(
 
     # ====== Validation step ======
     val_loss_epoch = torch.nan
+    out_val_pred = None
     if val_loader is not None:
         with torch.no_grad():
             val_loss_epoch = 0
@@ -76,12 +90,19 @@ def training_step(
 
     # ====== Learning rate update ======
     if scheduler is not None:
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(val_loss_epoch)  # use validation loss
+        if isinstance(scheduler, List):
+            for sched in scheduler:
+                if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    sched.step(val_loss_epoch)  # use validation loss
+                else:
+                    sched.step()  # works on milestones
         else:
-            scheduler.step()  # works on milestones
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss_epoch)  # use validation loss
+            else:
+                scheduler.step()  # works on milestones
 
-    return train_loss_epoch, val_loss_epoch
+    return train_loss_epoch, val_loss_epoch, out_train_pred, out_val_pred
 
 
 def evaluation_step(
@@ -114,11 +135,11 @@ def evaluation_step(
     # Compile relevant data from all minibatches
     structure_idxs, frames, descriptors = [], [], []
     for batch in dataloader:
-        for idx in batch.sample_ids:
+        for idx in batch.sample_id:
             structure_idxs.append(idx)
-        for frame in batch.frames:
+        for frame in batch.frame:
             frames.append(frame)
-        for desc in batch.descriptors:
+        for desc in batch.descriptor:
             descriptors.append(desc)
 
     # Make predictions
@@ -153,6 +174,33 @@ def evaluation_step(
         percent_maes.append(percent_mae)
 
     return np.mean(percent_maes)
+
+
+def get_block_losses(model, dataloader):
+    """
+    For all structures in the dataloader, sums the squared errors on the
+    predictions from the model and returns the total SE for each block in a
+    dictionary.
+    """
+    model.eval()
+    # Get all the validation structures
+    descriptors = [desc for batch in dataloader for desc in batch.descriptor]
+    targets = [targ for batch in dataloader for targ in batch.target]
+    predictions = model(descriptors)
+
+    for pred, targ in zip(predictions, targets):
+        assert metatensor.equal_metadata(pred, targ)
+
+    block_losses = {}
+    for key in model._in_metadata.keys:
+        block_loss = 0
+        for pred, targ in zip(predictions, targets):
+            block_loss += torch.nn.MSELoss(reduction="sum")(
+                input=pred[key].values, target=targ[key].values
+            )
+        block_losses[tuple(key)] = block_loss
+
+    return block_losses
 
 
 def training_loop(
@@ -201,14 +249,14 @@ def training_loop(
             use_ovlps.extend([True] * (len(epochs) - use_aux))
 
     # Define a log file for writing losses at each epoch
-    io.log(log_path, "# epoch train_loss val_loss test_error time lr")
+    io.log(log_path, "# epoch train_loss val_loss test_error time lr use_ovlp")
 
     # Run training loop
     for epoch, use_ovlp in zip(epochs, use_ovlps):
 
         # ====== Training step ======
         t0 = time.time()
-        train_loss_epoch, val_loss_epoch = training_step(
+        train_loss_epoch, val_loss_epoch, out_train_pred, out_val_pred = training_step(
             model=model,
             loss_fn=loss_fn,
             optimizer=optimizer,
@@ -238,19 +286,61 @@ def training_loop(
         if scheduler is not None:
             lr = scheduler._last_lr[0]
         dt = time.time() - t0
-        io.log(
-            log_path,
-            f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt} {lr}",
-        )
+        if ml_settings["log"].get("interval") is None:
+            io.log(
+                log_path,
+                f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt} {lr} {use_ovlp}",
+            )
+            if ml_settings["log"].get("block_losses") is True:
+                block_losses = get_block_losses(model, val_loader)
+                for key, block_loss in block_losses.items():
+                    io.log(
+                        log_path,
+                        f"    key {key} block_loss {block_loss}",
+                    )
+
+        else:
+            if epoch % ml_settings["log"]["interval"] == 0:
+                io.log(
+                    log_path,
+                    f"{epoch} {train_loss_epoch} {val_loss_epoch} {test_error_epoch} {dt} {lr} {use_ovlp}",
+                )
+                if ml_settings["log"].get("block_losses") is True:
+                    block_losses = get_block_losses(model, val_loader)
+                    for key, block_loss in block_losses.items():
+                        io.log(
+                            log_path,
+                            f"    key {key} block_loss {block_loss}",
+                        )
+
 
         # ====== Save checkpoint ======
         if epoch % ml_settings["training"]["save_interval"] == 0:
             if not os.path.exists(chkpt_dir(epoch)):
                 os.makedirs(chkpt_dir(epoch))
-            torch.save(model, os.path.join(chkpt_dir(epoch), f"model.pt"))
-            torch.save(optimizer.state_dict(), os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
+
+            for key, block_model in zip(model._in_metadata.keys, model.models):
+                torch.save(
+                    block_model.state_dict(), 
+                    os.path.join(chkpt_dir(epoch), f"model_{tuple(key)}.pt")
+                )
+            if isinstance(optimizer, List):
+                for key, optim in zip(model._in_metadata.keys, optimizer):
+                    torch.save(
+                        optim.state_dict(),
+                        os.path.join(chkpt_dir(epoch), f"optimizer_{tuple(key)}.pt")
+                    )
+            else:
+                torch.save(optimizer.state_dict(), os.path.join(chkpt_dir(epoch), f"optimizer.pt"))
             if scheduler is not None:
-                torch.save(scheduler.state_dict(), os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
+                if isinstance(scheduler, List):
+                    for key, sched in zip(model._in_metadata.keys, scheduler):
+                        torch.save(
+                            sched.state_dict(),
+                            os.path.join(chkpt_dir(epoch), f"scheduler_{tuple(key)}.pt")
+                        )
+                else:
+                    torch.save(scheduler.state_dict(), os.path.join(chkpt_dir(epoch), f"scheduler.pt"))
 
     return
 
