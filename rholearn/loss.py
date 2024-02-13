@@ -86,13 +86,15 @@ class L2Loss(torch.nn.Module):
         In the latter case, the structure indices for which the loss should be
         evaluated can be passed.
         """
-        # ===== Orthogonal loss
+        # ===== Orthogonal basis set
 
         # Evaluate the L2 loss on the input and target as passed.
         # L = \sum_i (∆c_i)^2
         if overlap is None:
             return evaluate_l2_loss_orthogonal_basis(input=input, target=target)
 
+
+        # ===== Non-orthogonal basis set
 
         # By passing overlap-type matrices, we assume the quantities passed are
         # a scalar field expanded on a non-orthogonal basis set.
@@ -127,6 +129,11 @@ def evaluate_l2_loss_nonorthogonal_basis(
     # First slice the data so that we have one TensorMap per structure, if
     # necessary
     if isinstance(input, TensorMap):
+        if structure_idxs is None:
+            raise ValueError(
+                "If `input` is a single TensorMap, `structure_idxs` must be passed."
+                " If passing a TensorMap for a single structure, pass it in a list."
+            )
         input = [
             metatensor.slice(
                 input, 
@@ -136,6 +143,11 @@ def evaluate_l2_loss_nonorthogonal_basis(
             for A in structure_idxs
         ]
     if isinstance(target, TensorMap):
+        if structure_idxs is None:
+            raise ValueError(
+                "If `input` is a single TensorMap, `structure_idxs` must be passed."
+                " If passing a TensorMap for a single structure, pass it in a list."
+            )
         target = [
             metatensor.slice(
                 target, 
@@ -145,6 +157,11 @@ def evaluate_l2_loss_nonorthogonal_basis(
             for A in structure_idxs
         ]
     if isinstance(overlap, TensorMap):
+        if structure_idxs is None:
+            raise ValueError(
+                "If `input` is a single TensorMap, `structure_idxs` must be passed."
+                " If passing a TensorMap for a single structure, pass it in a list."
+            )
         overlap = [
             metatensor.slice(
                 overlap, 

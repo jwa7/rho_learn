@@ -90,6 +90,7 @@ class RhoModel(torch.nn.Module):
         input: TensorMap,
         output: TensorMap,
         bias_invariants: bool = False,
+        normalize_invariants: bool = False,
         invariant_baseline: Optional[TensorMap] = None,
         hidden_layer_widths: Optional[Union[List[List[int]], List[int]]] = None,
         activation_fn: Optional[torch.nn.Module] = None,
@@ -109,6 +110,7 @@ class RhoModel(torch.nn.Module):
         self._set_model_type(model_type)
         self._set_metadata(input, output)
         self._set_biases(bias_invariants)
+        self._set_normalize_invariants(normalize_invariants)
 
         # Set attributes specific to a nonlinear model
         if self._model_type == "nonlinear":
@@ -218,6 +220,25 @@ class RhoModel(torch.nn.Module):
         self._biases = biases
 
     @property
+    def normalize_invariants(self) -> torch.tensor:
+        return self._normalize_invariants
+
+    def _set_normalize_invariants(self, normalize_invariants: bool) -> None:
+        """
+        Sets the "_normalize_invariants" attribute of the model.
+
+        This is returned as a list, where each element corresponds to the key
+        index stored in self._in_metadata.keys
+        """
+        if normalize_invariants:
+            normalize_invariants = [
+                key["spherical_harmonics_l"] == 0 for key in self._in_metadata.keys
+            ]
+        else:
+            normalize_invariants = [False for key in self._in_metadata.keys]
+        self._normalize_invariants = normalize_invariants
+
+    @property
     def hidden_layer_widths(self) -> List:
         return self._hidden_layer_widths
 
@@ -289,6 +310,8 @@ class RhoModel(torch.nn.Module):
         tmp_models = []
         for key_i, key in enumerate(self._in_metadata.keys):
             if self._model_type == "linear":
+                if self._biases[key_i]:
+                    assert key["spherical_harmonics_l"] == 0
                 block_model = _LinearModel(
                     in_features=len(self._in_metadata[key].properties),
                     out_features=len(self._out_metadata[key].properties),
@@ -297,6 +320,8 @@ class RhoModel(torch.nn.Module):
 
             else:
                 assert self._model_type == "nonlinear"
+                if self._biases[key_i]:
+                    assert key["spherical_harmonics_l"] == 0
                 in_invariant_block = self._in_metadata.block(
                     spherical_harmonics_l=0, species_center=key["species_center"]
                 )
@@ -308,6 +333,13 @@ class RhoModel(torch.nn.Module):
                     hidden_layer_widths=self._hidden_layer_widths[key_i],
                     activation_fn=self._activation_fn,
                     bias_nn=self._bias_nn,
+                )
+            # Add a layer norm if requested
+            if self._normalize_invariants[key_i]:
+                assert key["spherical_harmonics_l"] == 0
+                block_model = _Sequential(
+                    _LayerNorm(len(self._in_metadata[key].properties)),
+                    block_model,
                 )
             tmp_models.append(block_model)
         self._models = torch.nn.ModuleList(tmp_models)
@@ -418,8 +450,8 @@ class RhoModel(torch.nn.Module):
             yield from m.parameters()
 
     def forward(
-        self, 
-        input: Union[TensorMap, List[TensorMap]], 
+        self,
+        input: Union[TensorMap, List[TensorMap]],
         check_args: bool = True
     ) -> Union[TensorMap, List[TensorMap]]:
         """
@@ -548,6 +580,7 @@ class RhoModel(torch.nn.Module):
         return predictions
 
 
+
     def predict(
         self,
         frames: List[ase.Atoms],
@@ -593,7 +626,6 @@ class RhoModel(torch.nn.Module):
 
         return predictions
 
-
     def _predict_from_ase(
         self,
         structure_idxs: List[int],
@@ -632,7 +664,6 @@ class RhoModel(torch.nn.Module):
         )
 
         return predictions
-
 
     def _predict_from_descriptor(
         self,
@@ -674,6 +705,31 @@ class RhoModel(torch.nn.Module):
         )
 
         return predictions
+
+class _Sequential(torch.nn.Module):
+    def __init__(self, *args):
+        super(_Sequential, self).__init__()
+        self.layers = torch.nn.ModuleList(args)
+
+    def forward(self, input: torch.Tensor, check_args: bool = True):
+        if check_args:
+            if not isinstance(input, torch.Tensor):
+                raise TypeError("``input`` must be a torch Tensor")
+        for layer in self.layers:
+            input = layer(input)
+        return input
+
+
+class _LayerNorm(torch.nn.Module):
+    def __init__(self, features: int):
+        super(_LayerNorm, self).__init__()
+        self.norm = torch.nn.LayerNorm(features)
+
+    def forward(self, input: torch.Tensor, check_args: bool = True):
+        if check_args:
+            if not isinstance(input, torch.Tensor):
+                raise TypeError("``input`` must be a torch Tensor")
+        return self.norm(input)
 
 
 class _LinearModel(torch.nn.Module):
