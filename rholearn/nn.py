@@ -9,22 +9,22 @@ from typing import List, Optional, Union
 
 import torch
 
-from metatensor import Labels
-from metatensor.learn.nn import ModuleMap, Linear
+import metatensor.torch as mts
+from metatensor.torch.learn.nn import ModuleMap, Linear
 
 
 class Linear(Linear):
 
     def __init__(
         self,
-        in_keys: Labels,
+        in_keys: mts.Labels,
         in_features: int,
         out_features: int,
         bias: bool = True,
         *,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
-        out_properties: Optional[List[Labels]] = None,
+        out_properties: Optional[List[mts.Labels]] = None,
     ):
         super().__init__(
             in_keys=in_keys,
@@ -78,12 +78,12 @@ class LayerNorm(ModuleMap):
         A list of labels that is used to determine the properties labels of the
         output.  Because a module could change the number of properties, the
         labels of the properties cannot be persevered. By default the output
-        properties are relabeled using Labels.range.
+        properties are relabeled using mts.Labels.range.
     """
 
     def __init__(
         self,
-        in_keys: Labels,
+        in_keys: mts.Labels,
         normalized_shape: Union[
             Union[int, List[int], torch.Size],
             Union[List[int], List[List[int]], List[torch.Size]],
@@ -94,7 +94,7 @@ class LayerNorm(ModuleMap):
         bias: Union[bool, List[bool]] = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
-        out_properties: Optional[List[Labels]] = None,
+        out_properties: Optional[List[mts.Labels]] = None,
     ):
         # Check `normalized_shape`
         if isinstance(normalized_shape, int) or isinstance(
@@ -228,12 +228,12 @@ class EquiLayerNorm(ModuleMap):
         A list of labels that is used to determine the properties labels of the
         output.  Because a module could change the number of properties, the
         labels of the properties cannot be persevered. By default the output
-        properties are relabeled using Labels.range.
+        properties are relabeled using mts.Labels.range.
     """
 
     def __init__(
         self,
-        in_keys: Labels,
+        in_keys: mts.Labels,
         invariant_key_idxs: List[int],
         normalized_shape: Union[
             Union[int, List[int], torch.Size],
@@ -245,7 +245,7 @@ class EquiLayerNorm(ModuleMap):
         bias: Union[bool, List[bool]] = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
-        out_properties: Optional[List[Labels]] = None,
+        out_properties: Optional[List[mts.Labels]] = None,
     ):
         # Check `normalized_shape`
         if isinstance(normalized_shape, int) or isinstance(
@@ -357,7 +357,7 @@ class Sequential(ModuleMap):
         the input tensor map in the :py:meth:`forward` function.
     """
 
-    def __init__(self, in_keys: Labels, *args: List[ModuleMap]):
+    def __init__(self, in_keys: mts.Labels, *args: List[ModuleMap]):
 
         modules = []
         for i in range(len(in_keys)):
