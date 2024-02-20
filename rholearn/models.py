@@ -1,7 +1,8 @@
 """
 Module containing the global nn class `RhoModel`.
 """
-from typing import Any, Callable, Dict, List, Optional, Union
+
+from typing import Dict, List, Optional, Union
 
 import ase
 import torch
@@ -9,8 +10,122 @@ import torch
 import metatensor.torch as mts
 from metatensor.torch.learn.nn import ModuleMap
 
+import rascaline.torch
+from rascaline.torch import SphericalExpansion
+from rascaline.torch.utils.clebsch_gordan import DensityCorrelations
 
-from rholearn import predictor
+
+torch.set_default_dtype(torch.float64)
+
+
+class LambdaSoapCalculator(torch.nn.Module):
+    """
+    Defines a torchscriptable lambda-SOAP descriptor calculator.
+
+    :param atom_types: List of atomic numbers for the atom types in the system.
+        These should match the global species indices for which the model is
+        defined, such that any
+    """
+
+    def __init__(
+        self,
+        atom_types: List[int],
+        spherical_expansion_hypers: dict,
+        density_correlations_hypers: dict,
+    ):
+        super(LambdaSoapCalculator, self).__init__()
+        self._atom_types = atom_types
+        self._sphex_calculator = SphericalExpansion(**spherical_expansion_hypers)
+        self._cg_calculator = DensityCorrelations(**density_correlations_hypers)
+
+    def forward(
+        self,
+        systems,
+        *,
+        structure_idxs: List[int] = None,
+        spherical_expansion_compute_args: Optional[Dict] = None,
+        density_correlations_compute_args: Optional[Dict] = None,
+    ) -> List:
+        """
+        Computes the lambda-SOAP descriptors for the given systems and returns
+        them as per-structure TensorMaps.
+
+            1. Build SphericalExpansion
+            2. Moves 'species_neighbor' to properties
+            3. Compute DensityCorrelations
+            4. Split into per-structure TensorMaps
+            5. Reindex the structure indices of each TensorMap if
+               `structure_idxs` is passed
+        """
+        if spherical_expansion_compute_args is None:
+            spherical_expansion_compute_args = {}
+        if density_correlations_compute_args is None:
+            density_correlations_compute_args = {}
+
+        density = self._sphex_calculator.compute(
+            systems, **spherical_expansion_compute_args
+        )
+        density = density.keys_to_properties(
+            keys_to_move=mts.Labels(
+                names=["species_neighbor"],
+                values=torch.tensor(self._atom_types).reshape(-1, 1),
+            )
+        )
+        lsoap = self._cg_calculator.compute(
+            density, **density_correlations_compute_args
+        )
+
+        # Split into per-structure TensorMaps. Currently, the TensorMaps have
+        # strutcure indices from 0 to len(systems) - 1
+        lsoap = [
+            mts.slice(
+                lsoap,
+                "samples",
+                labels=mts.Labels(
+                    names="structure", values=torch.tensor([A]).reshape(-1, 1)
+                ),
+            )
+            for A in range(len(systems))
+        ]
+
+        # If `structure_idxs` is passed and is not the contrinuous numeric range 0
+        # to len(systems) - 1, then re-index the TensorMaps.
+        if structure_idxs is None:
+            return lsoap
+
+        # Reindex the structure indices of each TensorMap
+        reindexed_lsoap = []
+        for A, desc in zip(structure_idxs, lsoap):
+            # Edit the metadata to match the structure index
+            desc = mts.remove_dimension(desc, axis="samples", name="structure")
+            new_desc = []
+            for key, block in desc.items():
+                new_desc.append(
+                    mts.TensorBlock(
+                        values=block.values,
+                        samples=block.samples.insert(
+                            index=0,
+                            name="structure",
+                            values=torch.tensor(
+                                [A] * len(block.samples), dtype=torch.int32
+                            ),
+                        ),
+                        components=block.components,
+                        properties=block.properties,
+                    )
+                )
+            new_desc = mts.TensorMap(desc.keys, new_desc)
+            # TODO: when metatensor PR #519 is merged
+            # new_desc = mts.insert_dimension(
+            #     descriptor,
+            #     axis="samples",
+            #     name="structure",
+            #     values=torch.tensor([A]),
+            #     index=0,
+            # )
+            reindexed_lsoap.append(new_desc)
+
+        return reindexed_lsoap
 
 
 class RhoModel(torch.nn.Module):
@@ -23,59 +138,79 @@ class RhoModel(torch.nn.Module):
 
     def __init__(
         self,
-        nn: ModuleMap,
-        keys: mts.mts.Labels,
+        in_keys: mts.Labels,
         in_properties: List[mts.Labels],
         out_properties: List[mts.Labels],
+        nn: ModuleMap,
         descriptor_calculator: Optional[torch.nn.Module] = None,
-        target_kwargs: Optional[Dict[str, Any]] = None,
+        target_kwargs: Optional[Dict] = None,
         **torch_settings,
     ) -> None:
 
         super().__init__()
-
         self._nn = nn
-        self._torch_settings = torch_settings
-        self._set_metadata(input_tensor, output_tensor)
-        self._descriptor_kwargs = descriptor_kwargs
+        if torch_settings is None:
+            self._torch_settings = {"device": "cpu", "dtype": torch.float64}
+        else:
+            self._torch_settings = torch_settings
+        self._in_keys = in_keys
+        self._in_properties = in_properties
+        self._out_properties = out_properties
+        self._descriptor_calculator = descriptor_calculator
         self._target_kwargs = target_kwargs
 
     def forward(
-        self, 
-        systems=None,
-        descriptors: List[torch.ScriptObject] = None,
-        structure_idxs: Optional[List[int]] = None,
+        self,
+        system=None,
+        descriptor: List[torch.ScriptObject] = None,
+        structure_id: Optional[List[int]] = None,
         check_metadata: bool = False,
     ) -> List:
         """
-        Takes as input either a metatensor
-        Calls the forward method of the `self._nn` passed to the constructor,
-        but allows for passing a list of inputs.
+        Calls the forward method of the `self._nn` passed to the constructor.
         """
+        # with torch.no_grad():
+
+        if system is not None and descriptor is not None:
+            raise ValueError
+        if system is None and descriptor is None:
+            raise ValueError
+
+        # Check or generate descriptors
+        if system is not None:  # generate list of descriptors
+            assert descriptor is None
+            descriptor = self._descriptor_calculator(system, structure_id)
+        else:
+            if isinstance(descriptor, tuple):
+                descriptor = list(descriptor)
+        if not isinstance(descriptor, list):
+            raise ValueError(
+                f"Expected `descriptor` to be list or tuple, got {type(descriptor)}"
+            )
+
+        # Check the properties metadata
+        if check_metadata:
+            for desc in descriptor:
+                for key, in_props in zip(self._in_keys, self._in_properties):
+                    assert desc[key].properties == in_props
+
+        return [self._nn(desc) for desc in descriptor]
+
+    def predict(
+        self, structure: List[ase.Atoms] = None, system=None, structure_id: List = None
+    ) -> List:
+        """
+        Makes a prediction on a list of ASE atoms or a rascaline.Systems object.
+        """
+        self.eval()
         with torch.no_grad():
 
-            if systems is not None and descriptors is not None:
-                raise ValueError
-            if systems is None and descriptors is None:
+            if frame is not None and system is not None:
                 raise ValueError
 
-            # Check or generate descriptors
-            if systems is not None:  # generate list of descriptors
-                assert descriptors is None
-                descriptors = self._descriptor_calculator(systems, structure_idxs)
-            else:
-                if isinstance(descriptors, tuple):
-                    descriptors = list(descriptors)
-            assert isinstance(descriptors, list)
-
-            # Check the properties metadata
-            if check_metadata:
-                for desc in descriptors:
-                    for key, in_props in zip(self._in_keys, self._in_properties):
-                        assert desc[key].properties == in_props
-
-        # Forward
-        return [self.__nn(desc) for desc in descriptors]
+            if frame is not None:
+                system = rascaline.torch.systems_from_torch(frame)
+            return self(system=system, structure_id=structure_id, check_metadata=True)
 
     # def predict(
     #     self,

@@ -237,9 +237,10 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
 # ====== Orthogonal loss ======
 # =============================
 
+
 def evaluate_l2_loss_orthogonal_basis(
-    input: Union[mts.TensorMap, List[mts.TensorMap]], 
-    target: Union[mts.TensorMap, List[mts.TensorMap]],
+    input: Union[torch.ScriptObject, List[torch.ScriptObject]],
+    target: Union[torch.ScriptObject, List[torch.ScriptObject]],
     check_metadata: bool = True,
 ) -> torch.Tensor:
     """
@@ -267,8 +268,8 @@ def evaluate_l2_loss_orthogonal_basis(
     torch_mse = torch.nn.MSELoss(reduction="sum")
     loss = 0
 
-    if isinstance(input, mts.TensorMap):
-        assert isinstance(target, mts.TensorMap)
+    if isinstance(input, torch.ScriptObject):
+        assert isinstance(target, torch.ScriptObject)
         for in_block, tar_block in zip(input, target):
             loss += torch_mse(input=in_block.values, target=tar_block.values)
     else:
@@ -282,11 +283,11 @@ def evaluate_l2_loss_orthogonal_basis(
 
 
 def _check_forward_args(
-        input: mts.TensorMap, target: mts.TensorMap, overlap: Optional[mts.TensorMap] = None
-    ) -> None:
-    """
-    Checks metadata of arguments to forward are valid.
-    """
+    input: torch.ScriptObject,
+    target: torch.ScriptObject,
+    overlap: Optional[torch.ScriptObject] = None,
+) -> None:
+    """Checks metadata of arguments to forward are valid."""
     # Check metadata of input and target
     if not mts.equal_metadata(input, target):
         raise ValueError(
