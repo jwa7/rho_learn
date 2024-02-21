@@ -11,6 +11,7 @@ For real-space scalar fields expanded on a non-orthogonal basis set, the L2 loss
 must be evaluated using an overlap-type matrix which accounts for spatial
 correlations between basis functions.
 """
+
 from typing import List, Optional, Union
 
 import torch
@@ -59,6 +60,7 @@ class L2Loss(torch.nn.Module):
     this evaluation, such that the returned loss is given by a sum over all
     separable loss components.
     """
+
     def __init__(self) -> None:
         super(L2Loss, self).__init__()
 
@@ -91,7 +93,6 @@ class L2Loss(torch.nn.Module):
         if overlap is None:
             return evaluate_l2_loss_orthogonal_basis(input=input, target=target)
 
-
         # ===== Non-orthogonal basis set
 
         # By passing overlap-type matrices, we assume the quantities passed are
@@ -102,16 +103,18 @@ class L2Loss(torch.nn.Module):
             target=target,
             overlap=overlap,
             structure_idxs=structure_idxs,
-        )        
+        )
+
 
 # =================================
 # ====== Non-orthogonal loss ======
 # =================================
 
+
 def evaluate_l2_loss_nonorthogonal_basis(
-    input: List[mts.TensorMap],
-    target: List[mts.TensorMap],
-    overlap: List[mts.TensorMap],
+    input: List[torch.ScriptObject],
+    target: List[torch.ScriptObject],
+    overlap: List[torch.ScriptObject],
     structure_idxs: List[int],
     check_metadata: bool = True,
 ) -> torch.Tensor:
@@ -126,7 +129,7 @@ def evaluate_l2_loss_nonorthogonal_basis(
     """
     # First slice the data so that we have one mts.TensorMap per structure, if
     # necessary
-    if isinstance(input, mts.TensorMap):
+    if isinstance(input, torch.ScriptObject):
         if structure_idxs is None:
             raise ValueError(
                 "If `input` is a single mts.TensorMap, `structure_idxs` must be passed."
@@ -134,13 +137,15 @@ def evaluate_l2_loss_nonorthogonal_basis(
             )
         input = [
             mts.slice(
-                input, 
-                "samples", 
-                mts.Labels(names=["structure"], values=np.array([A]).reshape(-1, 1))
-            ) 
+                input,
+                "samples",
+                mts.Labels(
+                    names=["structure"], values=torch.tensor([A]).reshape(-1, 1)
+                ),
+            )
             for A in structure_idxs
         ]
-    if isinstance(target, mts.TensorMap):
+    if isinstance(target, torch.ScriptObject):
         if structure_idxs is None:
             raise ValueError(
                 "If `input` is a single mts.TensorMap, `structure_idxs` must be passed."
@@ -148,13 +153,15 @@ def evaluate_l2_loss_nonorthogonal_basis(
             )
         target = [
             mts.slice(
-                target, 
-                "samples", 
-                mts.Labels(names=["structure"], values=np.array([A]).reshape(-1, 1))
-            ) 
+                target,
+                "samples",
+                mts.Labels(
+                    names=["structure"], values=torch.tensor([A]).reshape(-1, 1)
+                ),
+            )
             for A in structure_idxs
         ]
-    if isinstance(overlap, mts.TensorMap):
+    if isinstance(overlap, torch.ScriptObject):
         if structure_idxs is None:
             raise ValueError(
                 "If `input` is a single mts.TensorMap, `structure_idxs` must be passed."
@@ -162,12 +169,18 @@ def evaluate_l2_loss_nonorthogonal_basis(
             )
         overlap = [
             mts.slice(
-                overlap, 
-                "samples", 
-                mts.Labels(names=["structure"], values=np.array([A]).reshape(-1, 1))
-            ) 
+                overlap,
+                "samples",
+                mts.Labels(
+                    names=["structure"], values=torch.tensor([A]).reshape(-1, 1)
+                ),
+            )
             for A in structure_idxs
-        ]   
+        ]
+
+    assert isinstance(input, list) or isinstance(input, tuple)
+    assert isinstance(target, list) or isinstance(target, tuple)
+    assert isinstance(overlap, list) or isinstance(overlap, tuple)
 
     loss = 0
     for inp, tar, ovl in zip(input, target, overlap):
@@ -185,9 +198,9 @@ def evaluate_l2_loss_nonorthogonal_basis(
 
 
 def evaluate_l2_loss_nonorthogonal_basis_one_structure(
-    input: mts.TensorMap,
-    target: mts.TensorMap,
-    overlap: mts.TensorMap,
+    input: torch.ScriptObject,
+    target: torch.ScriptObject,
+    overlap: torch.ScriptObject,
 ) -> torch.Tensor:
     """
     Evaluates the L2 loss between the non-orthorthogonal basis set coefficients
@@ -198,6 +211,11 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
     # Calculate the delta coefficient tensor
     delta_coeffs = mts.subtract(input, target)
 
+    l1: int
+    l2: int
+    a1: int
+    a2: int
+
     # Calculate the loss for each overlap matrix block in turn
     loss = 0
     for key, ovlp_block in overlap.items():
@@ -205,12 +223,10 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
         # Unpack key values and retrieve the coeff blocks
         l1, l2, a1, a2 = key.values
         c1 = delta_coeffs.block(
-            spherical_harmonics_l=l1,
-            species_center=a1,
+            {"spherical_harmonics_l": int(l1), "species_center": int(a1)},
         ).values
         c2 = delta_coeffs.block(
-            spherical_harmonics_l=l2,
-            species_center=a2,
+            {"spherical_harmonics_l": int(l2), "species_center": int(a2)},
         ).values
 
         # Reshape the overlap block
@@ -220,9 +236,7 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
         o_vals = o_vals.permute(0, 2, 4, 1, 3, 5)
 
         # Calculate the block loss by dot product
-        block_loss = torch.tensordot(
-            torch.tensordot(c1, o_vals, dims=3), c2, dims=3
-        )
+        block_loss = torch.tensordot(torch.tensordot(c1, o_vals, dims=3), c2, dims=3)
 
         # Count the off-diagonal blocks twice as we only work with the
         # upper-triangle of the overlap matrix
@@ -232,6 +246,7 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
             loss += 2 * block_loss
 
     return loss
+
 
 # =============================
 # ====== Orthogonal loss ======
@@ -273,8 +288,8 @@ def evaluate_l2_loss_orthogonal_basis(
         for in_block, tar_block in zip(input, target):
             loss += torch_mse(input=in_block.values, target=tar_block.values)
     else:
-        assert (isinstance(input, list) or isinstance(input, tuple))
-        assert (isinstance(target, list) or isinstance(target, tuple))
+        assert isinstance(input, list) or isinstance(input, tuple)
+        assert isinstance(target, list) or isinstance(target, tuple)
         for inp, tar in zip(input, target):
             for in_block, tar_block in zip(inp, tar):
                 loss += torch_mse(input=in_block.values, target=tar_block.values)
@@ -290,9 +305,7 @@ def _check_forward_args(
     """Checks metadata of arguments to forward are valid."""
     # Check metadata of input and target
     if not mts.equal_metadata(input, target):
-        raise ValueError(
-            "`input` and `target` TensorMaps must have equal metadata."
-        )
+        raise ValueError("`input` and `target` TensorMaps must have equal metadata.")
 
     if overlap is not None:
         # Check metadata structure of the overlap matrix
