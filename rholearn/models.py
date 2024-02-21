@@ -35,8 +35,8 @@ class LambdaSoapCalculator(torch.nn.Module):
     ):
         super(LambdaSoapCalculator, self).__init__()
         self._atom_types = atom_types
-        self._sphex_calculator = SphericalExpansion(**spherical_expansion_hypers)
-        self._cg_calculator = DensityCorrelations(**density_correlations_hypers)
+        self._spherical_expansion_calculator = SphericalExpansion(**spherical_expansion_hypers)
+        self._density_correlations_calculator = DensityCorrelations(**density_correlations_hypers)
 
     def forward(
         self,
