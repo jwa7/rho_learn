@@ -1,4 +1,5 @@
 import ctypes
+import datetime
 import gc
 import os
 from typing import List, Union, Optional
@@ -8,6 +9,11 @@ import torch
 
 import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
+
+
+def timestamp() -> str:
+    """Return a timestamp string in format YYYYMMDDHHMMSS."""
+    return datetime.datetime.today().strftime('%Y%m%d%H%M%S')
 
 
 def labels_where(labels: Labels, selection: Labels):
