@@ -62,7 +62,7 @@ class LambdaSoapCalculator(torch.nn.Module):
         if density_correlations_compute_args is None:
             density_correlations_compute_args = {}
 
-        density = self._sphex_calculator.compute(
+        density = self._spherical_expansion_calculator.compute(
             systems, **spherical_expansion_compute_args
         )
         density = density.keys_to_properties(
@@ -71,7 +71,7 @@ class LambdaSoapCalculator(torch.nn.Module):
                 values=torch.tensor(self._atom_types).reshape(-1, 1),
             )
         )
-        lsoap = self._cg_calculator.compute(
+        lsoap = self._density_correlations_calculator.compute(
             density, **density_correlations_compute_args
         )
 
