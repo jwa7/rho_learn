@@ -40,9 +40,9 @@ class LambdaSoapCalculator(torch.nn.Module):
 
     def forward(
         self,
-        systems,
+        system,
         *,
-        structure_idxs: List[int] = None,
+        structure_id: List[int] = None,
         spherical_expansion_compute_args: Optional[Dict] = None,
         density_correlations_compute_args: Optional[Dict] = None,
     ) -> List:
@@ -55,7 +55,7 @@ class LambdaSoapCalculator(torch.nn.Module):
             3. Compute DensityCorrelations
             4. Split into per-structure TensorMaps
             5. Reindex the structure indices of each TensorMap if
-               `structure_idxs` is passed
+               `structure_id` is passed
         """
         if spherical_expansion_compute_args is None:
             spherical_expansion_compute_args = {}
@@ -63,7 +63,7 @@ class LambdaSoapCalculator(torch.nn.Module):
             density_correlations_compute_args = {}
 
         density = self._spherical_expansion_calculator.compute(
-            systems, **spherical_expansion_compute_args
+            system, **spherical_expansion_compute_args
         )
         density = density.keys_to_properties(
             keys_to_move=mts.Labels(
@@ -78,10 +78,10 @@ class LambdaSoapCalculator(torch.nn.Module):
         # Find the strutcure indices present in the systems. As `selected_samples` can
         # be passed to the `SphericalExpansion.compute()` method, the structure indices
         # may not be continuous from 0 to len(systems) - 1.
-        _idxs = mts.unique_metadata(lsoap, "samples", "structure").values.flatten()
+        _ids = mts.unique_metadata(lsoap, "samples", "structure").values.flatten()
 
         # Split into per-structure TensorMaps. Currently, the TensorMaps have
-        # strutcure indices from 0 to len(systems) - 1
+        # structure indices from 0 to len(system) - 1
         lsoap = [
             mts.slice(
                 lsoap,
@@ -90,21 +90,21 @@ class LambdaSoapCalculator(torch.nn.Module):
                     names="structure", values=torch.tensor([A]).reshape(-1, 1)
                 ),
             )
-            for A in _idxs
+            for A in _ids
         ]
 
-        # If `structure_idxs` is not passed, do not reindex the descriptors.
-        if structure_idxs is None:
+        # If `structure_id` is not passed, do not reindex the descriptors.
+        if structure_id is None:
             return lsoap
 
-        # If `structure_idxs` is passed and is equivalent to the unique structure
+        # If `structure_id` is passed and is equivalent to the unique structure
         # indices found with `unique_metadata`, return the descriptors as is
-        if torch.all(torch.tensor(structure_idxs) == _idxs):
+        if torch.all(torch.tensor(structure_id) == _ids):
             return lsoap
 
         # Otherwise, reindex the structure indices of each TensorMap
         reindexed_lsoap = []
-        for A, desc in zip(structure_idxs, lsoap):
+        for A, desc in zip(structure_id, lsoap):
             # Edit the metadata to match the structure index
             desc = mts.remove_dimension(desc, axis="samples", name="structure")
             new_desc = []
@@ -188,7 +188,7 @@ class RhoModel(torch.nn.Module):
         # Check or generate descriptors
         if system is not None:  # generate list of descriptors
             assert descriptor is None
-            descriptor = self._descriptor_calculator(system, structure_id)
+            descriptor = self._descriptor_calculator(system=system, structure_id=structure_id)
         else:
             if isinstance(descriptor, tuple):
                 descriptor = list(descriptor)
@@ -214,11 +214,11 @@ class RhoModel(torch.nn.Module):
         self.eval()
         with torch.no_grad():
 
-            if frame is not None and system is not None:
+            if structure is not None and system is not None:
                 raise ValueError
 
-            if frame is not None:
-                system = rascaline.torch.systems_from_torch(frame)
+            if structure is not None:
+                system = rascaline.torch.systems_to_torch(structure)
             return self(system=system, structure_id=structure_id, check_metadata=True)
 
     # def predict(
