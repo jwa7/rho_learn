@@ -75,6 +75,11 @@ class LambdaSoapCalculator(torch.nn.Module):
             density, **density_correlations_compute_args
         )
 
+        # Find the strutcure indices present in the systems. As `selected_samples` can
+        # be passed to the `SphericalExpansion.compute()` method, the structure indices
+        # may not be continuous from 0 to len(systems) - 1.
+        _idxs = mts.unique_metadata(lsoap, "samples", "structure").values.flatten()
+
         # Split into per-structure TensorMaps. Currently, the TensorMaps have
         # strutcure indices from 0 to len(systems) - 1
         lsoap = [
@@ -85,15 +90,19 @@ class LambdaSoapCalculator(torch.nn.Module):
                     names="structure", values=torch.tensor([A]).reshape(-1, 1)
                 ),
             )
-            for A in range(len(systems))
+            for A in _idxs
         ]
 
-        # If `structure_idxs` is passed and is not the contrinuous numeric range 0
-        # to len(systems) - 1, then re-index the TensorMaps.
+        # If `structure_idxs` is not passed, do not reindex the descriptors.
         if structure_idxs is None:
             return lsoap
 
-        # Reindex the structure indices of each TensorMap
+        # If `structure_idxs` is passed and is equivalent to the unique structure
+        # indices found with `unique_metadata`, return the descriptors as is
+        if torch.all(torch.tensor(structure_idxs) == _idxs):
+            return lsoap
+
+        # Otherwise, reindex the structure indices of each TensorMap
         reindexed_lsoap = []
         for A, desc in zip(structure_idxs, lsoap):
             # Edit the metadata to match the structure index
