@@ -16,6 +16,28 @@ def timestamp() -> str:
     return datetime.datetime.today().strftime('%Y%m%d%H%M%S')
 
 
+def mts_tensormap_torch_to_core(tensor: torch.ScriptObject) -> metatensor.TensorMap:
+
+    return metatensor.TensorMap(
+        keys=mts_labels_torch_to_core(tensor.keys),
+        blocks=[
+            mts_tensorblock_torch_to_core(block)
+            for block in tensor
+        ]
+    )
+
+def mts_tensorblock_torch_to_core(block: torch.ScriptObject) -> metatensor.TensorBlock:
+    return metatensor.TensorBlock(
+        values=np.array(block.values),
+        samples=mts_labels_torch_to_core(block.samples),
+        components=[mts_labels_torch_to_core(c) for c in block.components],
+        properties=mts_labels_torch_to_core(block.properties),
+    )
+
+def mts_labels_torch_to_core(labels: torch.ScriptObject) -> metatensor.Labels:
+    return metatensor.Labels(labels.names, values=np.array(labels.values))
+
+
 def labels_where(labels: Labels, selection: Labels):
     """
     Returns the `labels` object sliced to only contain entries that match the

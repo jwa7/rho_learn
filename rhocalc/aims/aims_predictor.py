@@ -9,18 +9,19 @@ from typing import Callable, List
 import ase
 import numpy as np
 
-import metatensor as mts
+import metatensor
+from metatensor import TensorMap
 
 from rhocalc import convert
 from rhocalc.aims import aims_calc
 
 
-def target_builder(
+def field_builder(
     structure_id: List[int],
     structure: List[ase.Atoms],
-    prediction: List[mts.TensorMap],
+    predicted_coeffs: List[TensorMap],
     save_dir: Callable,
-    return_targets: bool = True,
+    return_field: bool = True,
     **kwargs
 ):
     """
@@ -28,9 +29,14 @@ def target_builder(
     numpy format, reorders the array according to the AIMS convention, then rebuilds the
     scalar field by calling AIMS.
 
-    if `return_targets` is True, then this function waits for the AIMS calculations to
+    if `return_field` is True, then this function waits for the AIMS calculations to
     finish then returns rebuilt scalar fields.
     """
+    assert isinstance(structure_id, list)
+    assert isinstance(structure, list)
+    assert isinstance(predicted_coeffs, list)
+    assert callable(save_dir)
+    assert isinstance(predicted_coeffs[0], TensorMap)
     calcs = {
         A: {"atoms": struct, "run_dir": save_dir(A)}
         for A, struct in zip(structure_id, structure)
@@ -50,10 +56,10 @@ def target_builder(
                 )
 
     # Convert to a list of numpy arrays
-    for A, struct, pred in zip(structure_id, structure, prediction):
+    for A, struct, pred_coeff in zip(structure_id, structure, predicted_coeffs):
         pred_np = convert.coeff_vector_tensormap_to_ndarray(
-            struct=struct,
-            tensor=pred,
+            frame=struct,
+            tensor=pred_coeff,
             lmax=kwargs["basis_set"]["lmax"],
             nmax=kwargs["basis_set"]["nmax"],
         )
@@ -81,7 +87,7 @@ def target_builder(
         run_command=kwargs["hpc_kwargs"]["run_command"],
     )
 
-    if not return_targets:
+    if not return_field:
         return
 
     # Wait until all AIMS calcs have finished, then read in and return the
@@ -104,3 +110,4 @@ def target_builder(
         targets.append(target)
 
     return targets
+

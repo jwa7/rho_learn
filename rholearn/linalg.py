@@ -11,9 +11,7 @@ from metatensor import Labels, TensorBlock, TensorMap
 def linalg_fit(
     keys: Labels, X: TensorMap, Y: TensorMap, bias_invariants: bool = True, components_in: str = "samples",
 ) -> dict:
-    """
-    Overfit the linear model to the training data
-    """
+    """Fit a ``sklearn.linear_model.LinearRegression model`` on ``X`` and ``Y``."""
     models = []
     for key in keys:
         if bias_invariants:
