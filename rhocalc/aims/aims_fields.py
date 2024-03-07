@@ -2,9 +2,12 @@
 Module containing helper functions for constructing scalar fields derived from
 Kohn-Sham orbitals.
 """
+
 import os
 from typing import Union
+import matplotlib.pyplot as plt
 import numpy as np
+from scipy.special import erf
 
 from rhocalc.aims import aims_parser
 
@@ -28,7 +31,7 @@ def get_kso_weight_vector_for_named_field(
       details.
     """
     allowed_names = ["homo", "lumo", "edensity", "ldos", "ildos"]
-        
+
     if field_name == "homo":
         weights = get_kso_weight_vector_homo(kso_info_path)
     elif field_name == "lumo":
@@ -51,106 +54,83 @@ def get_kso_weight_vector_for_named_field(
 # ===== HOMO / LUMO =====
 # =======================
 
+
 def get_kso_weight_vector_homo(kso_info_path: str) -> np.ndarray:
     """
-    Returns the KS-orbital weight vector for constructing the HOMO. This
-    identifies the highest-occupied KS orbital, then gives all KS orbital of the
-    corresponding KS *state* a weight of 1 multiplied by their k-weights. All
-    other KS orbitals get a weight of zero. 
-    
-    Therefore if KSOs exist for multiple k-points, the weight vector will be
-    non-zero for all k-points corresponding to the given highest occupied KSO.
+    Returns the KS-orbital weight vector for constructing the HOMO. This identifies the
+    highest-occupied KS orbital, and assigns it its k-weight. All other KS orbitals get
+    a weight of zero.
     """
     kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
 
     # Find the indices of the HOMO states
-    homo_kso_idxs = find_homo_kso_idxs(kso_info)
+    homo_kso_idx = get_homo_kso_idx(kso_info, max_occ=2)
 
     # Fill in weights
     weights = np.zeros(ks_info.shape[0])
-    for kso_idx in homo_kso_idxs:  # these are 1-indexed
-        weights[kso_idx - 1] = kso_info[kso_idx - 1]["k_weight"]
+    homo_kso =  kso_info[homo_kso_idx - 1]
+    assert homo_kso["kso_i"] == homo_kso_idx
+    weights[homo_kso_idx - 1] = homo_kso["k_weight"]
 
     return weights
+
 
 def get_kso_weight_vector_lumo(kso_info_path: str) -> np.ndarray:
     """
-    Returns the KS-orbital weight vector for constructing the LUMO. This
-    identifies the lowest-unoccupied KS orbital, then gives all KS orbital of
-    the corresponding KS *state* a weight of 1 multiplied by their k-weights.
-    All other KS orbitals get a weight of zero. 
-    
-    Therefore if KSOs exist for multiple k-points, the weight vector will be
-    non-zero for all k-points corresponding to the given lowest unoccupied KSO.
+    Returns the KS-orbital weight vector for constructing the LUMO. This identifies the
+    lowest-unoccupied KS orbital, and assigns it its k-weight. All other KS orbitals get
+    a weight of zero.
     """
     kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
 
-    # Find the indices of the HOMO states
-    lumo_kso_idxs = find_lumo_kso_idxs(kso_info)
+    # Find the indices of the LUMO states
+    lumo_kso_idx = get_lumo_kso_idx(kso_info, max_occ=2)
 
     # Fill in weights
     weights = np.zeros(ks_info.shape[0])
-    for kso_idx in lumo_kso_idxs:  # these are 1-indexed
-        weights[kso_idx - 1] = kso_info[kso_idx - 1]["k_weight"]
+    lumo_kso =  kso_info[lumo_kso_idx - 1]
+    assert lumo_kso["kso_i"] == lumo_kso_idx
+    weights[lumo_kso_idx - 1] = lumo_kso["k_weight"]
 
     return weights
 
 
-def find_homo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
+def get_homo_kso_idx(kso_info: Union[str, np.ndarray], max_occ: int = 2) -> np.ndarray:
     """
-    Returns the KSO indices that correspond to the HOMO states. These are all
-    the orbitals that have the same KS *state* index as the highest occupied KS
-    orbital. 
-    
-    Note that the returned indices are 1-indexed for consistency with the
-    labelling in FHI-aims.
+    Returns the KSO index that corresponds to the HOMO state. This is defined as the
+    highest energy state with an occupation greater than `max_occ` / 2.
 
-    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
-    4), the indices of all KS orbitals with KS state == 3 are returned.
+    Note that the returned index correpsonds to the FHI-aims KSO index, which is
+    1-indexed.
     """
-    if isinstance(ks_orbital_info, str):
-        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
-    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
+    if isinstance(kso_info, str):
+        kso_info = get_ks_orbital_info(kso_info, as_array=True)
+    kso_info = np.sort(kso_info, order="energy_eV")
 
-    # Find the HOMO orbital
-    homo_kso_idx = np.where(ks_orbital_info["occ"] > 0)[0][-1]
-    homo_state_idx = ks_orbital_info[homo_kso_idx]["state_i"]
-
-    # Find all states that correspond to the KS state
-    homo_kso_idxs = np.where(ks_orbital_info["state_i"] == homo_state_idx)[0]
-
-    return [ks_orbital_info[i]["kso_i"] for i in homo_kso_idxs]
+    occ_states = kso_info[np.where(kso_info["occ"] > (max_occ / 2))[0]]
+    return np.sort(occ_states, order="energy_eV")[-1]["kso_i"]
 
 
-def find_lumo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
+def get_lumo_kso_idx(kso_info: Union[str, np.ndarray], max_occ: int = 2) -> np.ndarray:
     """
-    Returns the KSO indices that correspond to the LUMO states. These are all
-    the orbitals that have the same KS *state* index as the lowest unoccupied KS
-    orbital. 
-    
-    Note that the returned indices are 1-indexed for consistency with the
-    labelling in FHI-aims.
+    Returns the KSO index that corresponds to the LUMO state. This is defined as the
+    lowest energy state with an occupation less than `max_occ` / 2.
 
-    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
-    4), the indices of all KS orbitals with KS state == 3 are returned.
+    Note that the returned index correpsonds to the FHI-aims KSO index, which is
+    1-indexed.
     """
-    if isinstance(ks_orbital_info, str):
-        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
-    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
+    if isinstance(kso_info, str):
+        kso_info = get_ks_orbital_info(kso_info, as_array=True)
+    kso_info = np.sort(kso_info, order="energy_eV")
 
-    # Find the HOMO orbital
-    lumo_kso_idx = np.where(ks_orbital_info["occ"] == 0)[0][0]
-    lumo_state_idx = ks_orbital_info[lumo_kso_idx]["state_i"]
-
-    # Find all states that correspond to the KS state
-    lumo_kso_idxs = np.where(ks_orbital_info["state_i"] == lumo_state_idx)[0]
-
-    return [ks_orbital_info[i]["kso_i"] for i in lumo_kso_idxs]
+    unocc_states = kso_info[np.where(kso_info["occ"] < (max_occ / 2))[0]]
+    return np.sort(unocc_states, order="energy_eV")[0]["kso_i"]
 
 
 # =========================================
 # ===== Electron density, LDOS, ILDOS =====
 # =========================================
+
 
 def get_kso_weight_vector_e_density(kso_info_path: str) -> np.ndarray:
     """
@@ -165,7 +145,7 @@ def get_kso_weight_vector_e_density(kso_info_path: str) -> np.ndarray:
 
 
 def get_kso_weight_vector_ldos(
-    kso_info_path: str, gaussian_width: float, target_energy: float = None
+    kso_info_path: str, gaussian_width: float, target_energy: float
 ) -> np.ndarray:
     """
     Returns the KS-orbital weight vector for constructing the Local Density of States
@@ -181,28 +161,23 @@ def get_kso_weight_vector_ldos(
     `gaussian_width`, and `target_energy`  must be passed in units of eV.
     """
     kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
+    W_vect = []
+    for kso in kso_info:
+        W_a = kso["k_weight"] * evaluate_gaussian(
+            target=target_energy, center=kso["energy_eV"], width=gaussian_width
+        )
+        W_vect.append(W_a)
 
-    if target_energy is None:  # Find the energy of the HOMO
-        homo_idx = find_homo_kso_idxs(kso_info)[0]
-        target_energy = kso_info[homo_idx - 1]["energy_eV"]  # 1-indexing!
-
-    return np.array(
-        [
-            kso["k_weight"]
-            * evaluate_gaussian(
-                target=target_energy, center=kso["energy_eV"], width=gaussian_width
-            )
-            for kso in kso_info
-        ]
-    )
+    return np.array(W_vect)
 
 
 def get_kso_weight_vector_ildos(
     kso_info_path: str,
     gaussian_width: float,
     biasing_voltage: float,
-    energy_grid_points: int = 100,
-    target_energy: float = None,
+    target_energy: float,
+    energy_grid_points: int = 1000,
+    method: str = "gaussian_analytical",
 ) -> np.ndarray:
     """
     Returns the KS-orbital weight vector for constructing the Local Density of States
@@ -217,6 +192,91 @@ def get_kso_weight_vector_ildos(
 
     `biasing_voltage`, `gaussian_width`, and `target_energy`  must be passed in units of
     eV.
+
+    `method` is the method of computing the integral, either assuming a Gaussian
+    integrated analytically (``method="gaussian_analytical"``) or numerically
+    (``method="gaussian_numerical"``), or a delta function (``method="delta"``) centered
+    on each eigenvalue.
+    """
+    if method == "gaussian_analytical":
+        return _get_kso_weight_vector_ildos_analytical(
+            kso_info_path=kso_info_path,
+            gaussian_width=gaussian_width,
+            biasing_voltage=biasing_voltage,
+            target_energy=target_energy,
+        )
+    elif method == "gaussian_numerical":
+        return _get_kso_weight_vector_ildos_numerical(
+            kso_info_path=kso_info_path,
+            gaussian_width=gaussian_width,
+            biasing_voltage=biasing_voltage,
+            target_energy=target_energy,
+        )
+    elif method == "delta_analytical":
+        return _get_kso_weight_vector_ildos_delta(
+            kso_info_path=kso_info_path,
+            biasing_voltage=biasing_voltage,
+            target_energy=target_energy,
+        )
+    else:
+        raise ValueError(
+            "Invalid option for `method`. must be one of ['gaussian_analytical',"
+            " 'gaussian_numerical', 'delta_analytical']"
+        )
+
+
+def _get_kso_weight_vector_ildos_analytical(
+    kso_info_path: str,
+    gaussian_width: float,
+    biasing_voltage: float,
+    target_energy: float,
+) -> np.ndarray:
+    """
+    For each KS-orbital, the weight is given by the numerical integral of a Gaussian
+    centered on the energy eigenvalue, evaluated at the `target_energy`:
+
+    W(a) = 0.5 * k_weight(a) * (
+        erf( (\epsilon_a - \epsilon) / (\sigma * \sqrt(2)) )
+        - erf( (\epsilon_a - \epsilon - V) / (\sigma * \sqrt(2))
+    )
+
+    where V is the biasing voltage, n is the number of energy grid points, g is the
+    Gaussian function of width \sigma, k_weight(a) is the weight of the k-point that
+    accounts for symmetry in the Brillouin zone.
+    """
+    kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
+
+    W_vect = []
+    for kso in kso_info:
+        W_a = 0.5 * (
+            erf((kso["energy_eV"] - target_energy) / (np.sqrt(2) * gaussian_width))
+            - erf(
+                (kso["energy_eV"] - target_energy - biasing_voltage)
+                / (np.sqrt(2) * gaussian_width)
+            )
+        )
+        W_vect.append(W_a * kso["k_weight"])
+
+    return np.array(W_vect)
+
+
+def _get_kso_weight_vector_ildos_numerical(
+    kso_info_path: str,
+    gaussian_width: float,
+    biasing_voltage: float,
+    target_energy: float,
+    energy_grid_points: int = 100,
+) -> np.ndarray:
+    """
+    For each KS-orbital, the weight is given by the numerical integral of a Gaussian
+    centered on the energy eigenvalue \epsilon_a, evaluated at the `target_energy`:
+
+    W(a) = (V / n) * k_weight(a)
+        * \sum_{\epsilon'=\epsilon}^{\epsilon + V} g(\epsilon' - \epsilon_a, \sigma)
+
+    where \epsilon is the target energy, V is the biasing voltage, n is the number of
+    energy grid points, g is the Gaussian function of width \sigma, k_weight(a) is the
+    weight of the k-point that accounts for symmetry in the Brillouin zone.
     """
     kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
 
@@ -224,24 +284,51 @@ def get_kso_weight_vector_ildos(
         homo_idx = find_homo_kso_idxs(kso_info)[0]
         target_energy = kso_info[homo_idx - 1]["energy_eV"]  # 1-indexing!
 
-    return np.array(
-        [
-            np.mean(
-                [
-                    kso["k_weight"]
-                    * evaluate_gaussian(
-                        target=tmp_target_energy,
-                        center=kso["energy_eV"],
-                        width=gaussian_width,
-                    )
-                    for tmp_target_energy in np.linspace(
-                        target_energy, biasing_voltage, energy_grid_points
-                    )
-                ]
-            )
-            for kso in kso_info
-        ]
-    )
+    W_vect = []
+    for kso in kso_info:
+        W_a = (biasing_voltage / energy_grid_points) * np.sum(
+            [
+                evaluate_gaussian(
+                    target=tmp_target_energy,
+                    center=kso["energy_eV"],
+                    width=gaussian_width,
+                )
+                for tmp_target_energy in np.linspace(
+                    target_energy, target_energy + biasing_voltage, energy_grid_points
+                )
+            ]
+        )
+        W_vect.append(W_a * kso["k_weight"])
+
+    return np.array(W_vect)
+
+
+def _get_kso_weight_vector_ildos_delta(
+    kso_info_path: str,
+    biasing_voltage: float,
+    target_energy: float,
+) -> np.ndarray:
+    """
+    For each KS-orbital, the weight is given by the numerical integral of a Gaussian
+    centered on the energy eigenvalue, evaluated at the `target_energy`:
+
+    W(a) = 0.5 * (
+        erf( (\epsilon_a - \epsilon) / (\sigma * \sqrt(2)) )
+        - erf( (\epsilon_a - \epsilon - V) / (\sigma * \sqrt(2))
+    )  * k_weight(a)
+
+    where V is the biasing voltage, n is the number of energy grid points, and g is the
+    Gaussian function of width \sigma.
+    """
+    kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
+    W_vect = []
+    for kso in kso_info:
+        if target_energy <= kso["energy_eV"] <= target_energy + biasing_voltage:
+            W_vect.append(kso["k_weight"])
+        else:
+            W_vect.append(0)
+
+    return np.array(W_vect)
 
 
 def evaluate_gaussian(target: float, center: float, width: float) -> float:
@@ -253,29 +340,54 @@ def evaluate_gaussian(target: float, center: float, width: float) -> float:
     )
 
 
-# def plot_dos(kso_info_path: str, gaussian_width: float):
-#     """
-#     Centers a Gaussian of width `gaussian_width` on each energy eigenvalue read
-#     from file "ks_orbital_info.out" at path `kso_info_path` and plots the sum of
-#     these as the Density of States (DOS).
-#     """
-# import matplotlib.pyplot as plt
-# from rholearn import utils
+def calc_dos(kso_info_path: str, gaussian_width: float, e_grid: np.ndarray = None):
+    """
+    Centers a Gaussian of width `gaussian_width` on each energy eigenvalue read from
+    file "kso_info.out" at path `kso_info_path` and plots the sum of these as the
+    Density of States (DOS).
+    """
+    kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
+    if e_grid is None:
+        e_grid = np.linspace(
+            np.min(kso_info["energy_eV"]) - 20,
+            np.max(kso_info["energy_eV"]) + 20,
+            10000,
+        )
 
-# width = 0.3
-# # e_grid = np.linspace(np.min(kso_info["energy_eV"]) - 20, np.max(kso_info["energy_eV"]) + 20, 10000)
-# e_grid = np.linspace(-20, 5, 1000)
+    dos = np.zeros(len(e_grid))
+    for e_center in kso_info["energy_eV"]:
+        dos += evaluate_gaussian(target=e_grid, center=e_center, width=gaussian_width)
 
-# fig, ax = plt.subplots()
+    return e_grid, dos
 
-# dos = np.zeros(len(e_grid))
-# kso_weights = []
-# for e_center in kso_info["energy_eV"]:
-#     gauss = utils.evaluate_gaussian(target=e_grid, center=e_center, width=width)
-#     kso_weights.append(utils.evaluate_gaussian(target=e_target, center=e_center, width=width))
-#     dos += gauss
-#     ax.plot(gauss, e_grid)
-# ax.plot(dos + 5, e_grid, color='k')
-# ax.axline((0, e_target), (10, e_target))
-# ax.set_ylabel("Energy (eV)")
-# # ax.set_xlim([-150, 10])
+
+def sort_field_by_grid_points(field: Union[str, np.ndarray]) -> np.ndarray:
+    """
+    Loads the scalar field from file and returns a 2D array sorted by the norm of the
+    grid points.
+
+    Assumes the file at `field_path` has four columns, corresponding to the x, y, z,
+    coordinates of the grid points and the scalar field value at that grid point.
+    """
+    if isinstance(field, str):  # load from file
+        field = np.loadtxt(
+            field,
+            dtype=[
+                ("x", np.float64),
+                ("y", np.float64),
+                ("z", np.float64),
+                ("w", np.float64),
+            ],
+        )
+    else:  # create a structured array
+        field = field.ravel().view(
+            dtype=[
+                ("x", np.float64),
+                ("y", np.float64),
+                ("z", np.float64),
+                ("w", np.float64),
+            ]
+        )
+    field = np.sort(field, order=["x", "y", "z"])
+
+    return np.array([[x, y, z, w] for x, y, z, w in field], dtype=np.float64)
