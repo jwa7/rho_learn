@@ -285,13 +285,17 @@ def evaluate_l2_loss_orthogonal_basis(
 
     if isinstance(input, torch.ScriptObject):
         assert isinstance(target, torch.ScriptObject)
-        for in_block, tar_block in zip(input, target):
+        for key in input.keys:
+            in_block = input.block(key)
+            tar_block = target.block(key)
             loss += torch_mse(input=in_block.values, target=tar_block.values)
     else:
         assert isinstance(input, list) or isinstance(input, tuple)
         assert isinstance(target, list) or isinstance(target, tuple)
         for inp, tar in zip(input, target):
-            for in_block, tar_block in zip(inp, tar):
+            for key in inp.keys:
+                in_block = inp.block(key)
+                tar_block = tar.block(key)
                 loss += torch_mse(input=in_block.values, target=tar_block.values)
 
     return loss

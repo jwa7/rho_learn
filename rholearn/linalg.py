@@ -8,8 +8,15 @@ import metatensor
 import metatensor.torch
 from metatensor import Labels, TensorBlock, TensorMap
 
+
 def linalg_fit(
-    keys: Labels, X: TensorMap, Y: TensorMap, bias_invariants: bool = True, components_in: str = "samples",
+    keys: Labels,
+    X: TensorMap,
+    Y: TensorMap,
+    bias_invariants: bool = True,
+    components_in: str = "samples",
+    model_type: str = "linear",
+    **kwargs,
 ) -> dict:
     """Fit a ``sklearn.linear_model.LinearRegression model`` on ``X`` and ``Y``."""
     models = []
@@ -41,7 +48,15 @@ def linalg_fit(
             raise
 
         # model = linear_model.Ridge(alpha=1e-20, fit_intercept=fit_intercept)
-        model = linear_model.LinearRegression(fit_intercept=fit_intercept)
+        if model_type == "linear":
+            model = linear_model.LinearRegression(fit_intercept=fit_intercept)
+        elif model_type == "ridge":
+            model = linear_model.Ridge(
+                alpha=kwargs.get("alpha"), fit_intercept=fit_intercept
+            )
+        else:
+            raise ValueError("invalid `model_type`")
+
         model.fit(X_vals, Y_vals)
         models.append(model)
 
