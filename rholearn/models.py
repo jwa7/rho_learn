@@ -35,6 +35,8 @@ class LambdaSoapCalculator(torch.nn.Module):
     ):
         super(LambdaSoapCalculator, self).__init__()
         self._atom_types = atom_types
+        self._spherical_expansion_hypers = spherical_expansion_hypers
+        self._density_correlations_hypers = density_correlations_hypers
         self._spherical_expansion_calculator = SphericalExpansion(**spherical_expansion_hypers)
         self._density_correlations_calculator = DensityCorrelations(**density_correlations_hypers)
 
@@ -200,7 +202,11 @@ class RhoModel(torch.nn.Module):
         if check_metadata:
             for desc in descriptor:
                 for key, in_props in zip(self._in_keys, self._in_properties):
-                    assert desc[key].properties == in_props
+                    if not desc[key].properties == in_props:
+                        raise ValueError(
+                            "properties not consistent between model and"
+                            f" descriptor at key {key}:\n"
+                        )
 
         return [self._nn(desc) for desc in descriptor]
 
@@ -220,125 +226,3 @@ class RhoModel(torch.nn.Module):
                 system = rascaline.torch.systems_to_torch(structure)
             return self(system=system, structure_id=structure_id, check_metadata=True)
 
-    # def predict(
-    #     self,
-    #     frames: List[ase.Atoms],
-    #     structure_idxs: Optional[List[int]] = None,
-    #     descriptors: Optional[List[mts.TensorMap]] = None,
-    #     build_targets: bool = False,
-    #     return_targets: bool = False,
-    #     save_dir: Optional[Callable] = None,
-    # ) -> Union[List[mts.TensorMap], List[np.ndarray]]:
-    #     """
-    #     In evaluation mode, makes an end-to-end prediction on a list of ASE
-    #     frames or mts.TensorMap descriptors.
-
-    #     In either case, the ASE `frames` must be specified.
-    #     """
-    #     self.eval()  # evaluation mode
-
-    #     # Use continuous structure index range if not specified
-    #     if structure_idxs is None:
-    #         structure_idxs = range(len(frames))
-    #     assert len(structure_idxs) == len(frames)
-
-    #     with torch.no_grad():
-    #         if descriptors is None:  # from ASE frames
-    #             predictions = self._predict_from_ase(
-    #                 structure_idxs=structure_idxs,
-    #                 frames=frames,
-    #                 build_targets=build_targets,
-    #                 return_targets=return_targets,
-    #                 save_dir=save_dir,
-    #             )
-
-    #         else:  # from mts.TensorMap descriptors
-    #             assert len(descriptors) == len(frames)
-    #             predictions = self._predict_from_descriptor(
-    #                 frames=frames,
-    #                 structure_idxs=structure_idxs,
-    #                 descriptors=descriptors,
-    #                 build_targets=build_targets,
-    #                 return_targets=return_targets,
-    #                 save_dir=save_dir,
-    #             )
-
-    #     return predictions
-
-    # def _predict_from_ase(
-    #     self,
-    #     structure_idxs: List[int],
-    #     frames: List[ase.Atoms],
-    #     build_targets: bool = False,
-    #     return_targets: bool = False,
-    #     save_dir: Optional[Callable] = None,
-    # ) -> Union[List[mts.TensorMap], List[np.ndarray]]:
-    #     """
-    #     Makes a prediction on a list of ASE frames.
-    #     """
-    #     if self._descriptor_kwargs is None:
-    #         raise ValueError(
-    #             "if making a prediction on ASE ``frames``,"
-    #             " ``descriptor_kwargs`` must be passed so that"
-    #             " descriptors can be generated. Use the setter"
-    #             " `_set_descriptor_kwargs` to set these and try again."
-    #         )
-
-    #     # Build the descriptors
-    #     descriptors = predictor.descriptor_builder(
-    #         structure_idxs=structure_idxs,
-    #         frames=frames,
-    #         torch_settings=self._torch_settings,
-    #         **self._descriptor_kwargs,
-    #     )
-
-    #     # Build predictions from descriptors
-    #     predictions = self._predict_from_descriptor(
-    #         structure_idxs=structure_idxs,
-    #         frames=frames,
-    #         descriptors=descriptors,
-    #         build_targets=build_targets,
-    #         return_targets=return_targets,
-    #         save_dir=save_dir,
-    #     )
-
-    #     return predictions
-
-    # def _predict_from_descriptor(
-    #     self,
-    #     structure_idxs: List[int],
-    #     frames: List[ase.Atoms],
-    #     descriptors: List[mts.TensorMap],
-    #     build_targets: bool = False,
-    #     return_targets: bool = False,
-    #     save_dir: Optional[Callable] = None,
-    # ) -> Union[List[mts.TensorMap], List[np.ndarray]]:
-    #     """
-    #     Makes a prediction on a list of mts.TensorMap descriptors.
-    #     """
-    #     intermediate_predictions = self(descriptors, check_metadata=True)
-
-    #     if not build_targets:  # just return coefficients
-    #         return intermediate_predictions
-
-    #     # Build target
-    #     if self._target_kwargs is None:
-    #         raise ValueError(
-    #             "if ``build_targets`` is true, ``target_kwargs`` must be set"
-    #             " for the nn. Use the setter `set_target_kwargs` to do so."
-    #         )
-    #     if save_dir is None:
-    #         raise ValueError(
-    #             "if ``build_targets`` is true, ``save_dir`` must be specified"
-    #         )
-
-    #     predictions = predictor.target_builder(
-    #         structure_idxs=structure_idxs,
-    #         frames=frames,
-    #         predictions=intermediate_predictions,
-    #         save_dir=save_dir,
-    #         return_targets=return_targets,
-    #         **self._target_kwargs,
-    #     )
-
-    #     return predictions
