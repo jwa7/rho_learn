@@ -178,7 +178,6 @@ class RhoModel(torch.nn.Module):
         """
         Calls the forward method of the `self._nn` passed to the constructor.
         """
-        # with torch.no_grad():
 
         if system is not None and descriptor is not None:
             raise ValueError

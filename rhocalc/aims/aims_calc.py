@@ -18,6 +18,7 @@ def write_input_files(
     atoms: ase.Atoms,
     run_dir: str,
     aims_kwargs: dict,
+    write_geom: bool = True,
 ):
     """
     Writes input files geometry.in, control.in, and run-aims.sh to `aims_dir`
@@ -26,7 +27,8 @@ def write_input_files(
         os.mkdir(run_dir)
 
     # Write inputs
-    aims_io.write_aims(os.path.join(run_dir, "geometry.in"), atoms=atoms)
+    if write_geom:
+        aims_io.write_aims(os.path.join(run_dir, "geometry.in"), atoms=atoms)
     aims_io.write_control(
         os.path.join(run_dir, "control.in"), atoms=atoms, parameters=aims_kwargs
     )
@@ -166,23 +168,26 @@ def run_aims(
     restart_idx: Optional[int] = None,
     copy_files: Optional[List[str]] = None,
     run_command: str = "srun",
+    write_geom: bool = True,
 ):
     """
-    Runs an AIMS calculation for each of the calculations in `calcs`. `calcs`
-    must be dict with keys corresponding to the structure index, and values a
-    dict containing "atoms" (i.e. an ase.Atoms object), and optionally
-    "aims_kwargs" and "sbatch_kwargs".
+    Runs an AIMS calculation for each of the calculations in `calcs`. `calcs` must be
+    dict with keys corresponding to the structure index, and values a dict containing
+    "atoms" (i.e. an ase.Atoms object), and optionally "aims_kwargs" and
+    "sbatch_kwargs".
 
-    The `aims_kwargs` are used to write control.in files. The `sbatch_kwargs`
-    are used to run the calulation, for instance on a HPC cluster.
+    The `aims_kwargs` are used to write control.in files. The `sbatch_kwargs` are used
+    to run the calulation, for instance on a HPC cluster.
 
     Any calculation-specific settings stored in `calcs` are used to update the
     `aims_kwargs` and `sbatch_kwargs` before writing the control.in file.
 
-    If `restart_idx` is not None, then the density matrices from the structure
-    directory at relative path f"{structure_idx}/" are copied into a
-    subdirectory f"{structure_idx}/{restart_idx}/" and the calculation is run
-    from there.
+    If `restart_idx` is not None, then the density matrices from the structure directory
+    at relative path f"{structure_idx}/" are copied into a subdirectory
+    f"{structure_idx}/{restart_idx}/" and the calculation is run from there.
+
+    If `write_geom` is True, a new "geometry.in" file is written. Setting this false can
+    be useful if a geometry restart file is to be read in, i.e. in a continued GeomOpt.
     """
     top_dir = os.getcwd()
     os.chdir(top_dir)
@@ -221,6 +226,7 @@ def run_aims(
             atoms=calc["atoms"],
             run_dir=run_dir,
             aims_kwargs=aims_kwargs_calc,
+            write_geom=write_geom,
         )
 
         # Write sbatch run script
@@ -246,6 +252,7 @@ def run_aims_array(
     run_dir: Callable,
     load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
     run_command: str = "srun",
+    write_geom: bool = True,
 ):
     """
     Runs an AIMS calculation for each of the calculations in `calcs`. `calcs`
@@ -289,6 +296,7 @@ def run_aims_array(
             atoms=calc["atoms"],
             run_dir=run_dir(calc_i),
             aims_kwargs=aims_kwargs_calc,
+            write_geom=write_geom,
         )
 
     # Write sbatch run script in the top level directory, as this will run a
@@ -402,7 +410,7 @@ def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100))
             ]
         ]
     ):
-        warnings.warn(f"Cell not square: {frame.cell}")
+        warnings.warn(f"Cell not square: {slab.cell}")
 
     min_x = np.min(slab.positions[:, 0])
     max_x = np.max(slab.positions[:, 0])
