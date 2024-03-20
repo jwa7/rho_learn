@@ -56,6 +56,7 @@ def parse_aims_out(aims_output_dir: str) -> dict:
         },
         "ks_states": {},
         "prodbas_acc": {},
+        "prodbas_radial_fn_radii_ang": {},
     }
     # Open aims.out file
     with open(os.path.join(aims_output_dir, "aims.out"), "r") as f:
@@ -209,7 +210,7 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                     "wall_clock(cpu1)": float(split[6]),
                 }
 
-            # Extratc the default prodbas accuracy
+            # Extract the default prodbas accuracy
             # Example:
             # "Species H: Using default value for prodbas_acc =   1.000000E-04."
             if split[2:8] == "Using default value for prodbas_acc =".split():
@@ -223,6 +224,33 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                 == "ri_fit: Found cutoff radius for calculating ovlp matrix:".split()
             ):
                 calc_info["ri_fit_cutoff_radius"] = float(split[8])
+
+            # Extract the charge radii of the product basis radial functions
+            if split[:2] == "Product basis:".split():
+                assert lines[line_i + 1].split()[:3] == "| charge radius:".split()
+                assert lines[line_i + 2].split()[:3] == "| field radius:".split()
+                assert lines[line_i + 3].split()[:9] == "| Species   l  charge radius    field radius  multipol momen".split()
+
+                tmp_line_i = line_i + 4
+                keep_reading = True
+                while keep_reading:
+                    tmp_split = lines[tmp_line_i].split()
+
+                    # Break if not valid lines
+                    if len(tmp_split) == 0:
+                        keep_reading = False
+                        break
+                    if tmp_split[-1] != "a.u.":
+                        keep_reading = False
+                        break
+                    
+                    # This is one of the charge radius lines we want to read from
+                    if calc_info["prodbas_radial_fn_radii_ang"].get(tmp_split[1]) is None:
+                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]] = [float(tmp_split[3])]
+                    else:
+                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]].append(float(tmp_split[3]))
+                    
+                    tmp_line_i += 1
 
             # Extract ri_fit info
             # Example:
@@ -433,44 +461,6 @@ def process_aux_basis_func_data(
         ovlp = ovlp.reshape(ovlp_dim, ovlp_dim)
         assert np.allclose(ovlp, ovlp.T)
 
-    # Load the auxiliary basis function (ABF) information. This is 2D array where
-    # columns correspond to, respectively, the auxiliary basis function index, atom
-    # index, angular momentum l value, radial channel index, and the angular
-    # momentum component m value.
-    abf_info = np.loadtxt(
-        os.path.join(aims_output_dir, "product_basis_idxs.out"),
-        dtype=int,
-    )
-    # Convert to zero indexing for the columns that correspond to numeric indices.
-    # The l and m values need not be modified here.
-    abf_info[:, 0] -= 1  # ABF index
-    abf_info[:, 1] -= 1  # atom index
-    abf_info[:, 3] -= 1  # radial channel index
-
-    # Apply the Condon-Shortley convention to the coefficients, projections, and
-    # overlap, for basis functions that correspond to m odd and positive.
-    for abf in abf_info:
-        abf_idx = abf[0]
-        abf_m_value = abf[4]
-        if abf_m_value % 2 == 1 and abf_m_value > 0:
-            if "coeffs" in process_what:
-                coeffs[abf_idx] *= -1
-            if "projs" in process_what:
-                projs[abf_idx] *= -1
-            if "ovlp" in process_what:
-                ovlp[abf_idx, :] *= -1
-                ovlp[:, abf_idx] *= -1
-
-    # Broadcast the coefficients, projections, and ovlp such that they are
-    # ordered according to the ABF indices: 0, 1, 2, ...
-    if "coeffs" in process_what:
-        coeffs = coeffs[abf_info[:, 0]]
-    if "projs" in process_what:
-        projs = projs[abf_info[:, 0]]
-    if "ovlp" in process_what:
-        ovlp = ovlp[abf_info[:, 0], :]
-        ovlp = ovlp[:, abf_info[:, 0]]
-
     return coeffs, projs, ovlp
 
 
@@ -541,52 +531,6 @@ def get_ks_orbital_info(ks_orb_info: str, as_array: bool = True) -> dict:
             if with_weights:
                 info[i_kso].update({"kso_weight": weight})
     return info
-
-
-def find_homo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
-    """
-    Returns the KSO indices that correspond to the HOMO states. These are all
-    the orbitals that have the same KS *state* index as the highest occupied KS
-    orbital.
-
-    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
-    4), the indices of all KS orbitals with KS state == 3 are returned.
-    """
-    if isinstance(ks_orbital_info, str):
-        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
-    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
-
-    # Find the HOMO orbital
-    homo_kso_idx = np.where(ks_orbital_info["occ"] > 0)[0][-1]
-    homo_state_idx = ks_orbital_info[homo_kso_idx]["state_i"]
-
-    # Find all states that correspond to the KS state
-    homo_kso_idxs = np.where(ks_orbital_info["state_i"] == homo_state_idx)[0]
-
-    return [ks_orbital_info[i]["kso_i"] for i in homo_kso_idxs]
-
-
-def find_lumo_kso_idxs(ks_orbital_info: Union[str, np.ndarray]) -> np.ndarray:
-    """
-    Returns the KSO indices that correspond to the LUMO states. These are all
-    the orbitals that have the same KS *state* index as the lowest unoccupied KS
-    orbital.
-
-    For instance, if the KS orbital with (state, spin, kpt) indices as (3, 1,
-    4), the indices of all KS orbitals with KS state == 3 are returned.
-    """
-    if isinstance(ks_orbital_info, str):
-        ks_orbital_info = get_ks_orbital_info(ks_orbital_info, as_array=True)
-    ks_orbital_info = np.sort(ks_orbital_info, order="energy_eV")
-
-    # Find the HOMO orbital
-    lumo_kso_idx = np.where(ks_orbital_info["occ"] == 0)[0][0]
-    lumo_state_idx = ks_orbital_info[lumo_kso_idx]["state_i"]
-
-    # Find all states that correspond to the KS state
-    lumo_kso_idxs = np.where(ks_orbital_info["state_i"] == lumo_state_idx)[0]
-
-    return [ks_orbital_info[i]["kso_i"] for i in lumo_kso_idxs]
 
 
 def get_percent_mae_between_fields(
@@ -678,19 +622,20 @@ def process_aims_ri_results(
 
     # Parse basis set info
     lmax, nmax = extract_basis_set_info(frame, aims_output_dir)
+    aims_out.update({"basis_set": {"lmax": lmax, "nmax": nmax}})
 
-    # Parse basis set idx ordering
-    idx_ordering = np.loadtxt(
-        os.path.join(aims_output_dir, "product_basis_idxs.out"), dtype=int
-    )
-    aims_out.update(
-        {
-            "basis_set": {
-                "def": {"lmax": lmax, "nmax": nmax},
-                "idxs": idx_ordering,
-            }
-        }
-    )
+    # # Parse basis set idx ordering
+    # idx_ordering = np.loadtxt(
+    #     os.path.join(aims_output_dir, "product_basis_idxs.out"), dtype=int
+    # )
+    # aims_out.update(
+    #     {
+    #         "basis_set": {
+    #             "def": {"lmax": lmax, "nmax": nmax},
+    #             "idxs": idx_ordering,
+    #         }
+    #     }
+    # )
 
     # Parse KS orbital information
     if os.path.exists(os.path.join(aims_output_dir, "ks_orbital_info.out")):
@@ -807,68 +752,3 @@ def process_aims_ri_results(
     io.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), aims_out)
 
     return
-
-
-# ===== Convert numpy to AIMS format =====
-
-
-def coeff_vector_ndarray_to_aims_coeffs(
-    coeffs: np.ndarray, basis_set_idxs: np.ndarray, save_dir: Optional[str] = None
-) -> np.ndarray:
-    """
-    Takes a vector of RI coefficients in the standard order convention and
-    converts it to the AIMS format.
-
-    This involves reversing the order of the basis functions contained in
-    product_basis_idxs.out, and undoing the application of the Condon-Shortley
-    convention. Essentially, this performs the reverse conversion of the
-    :py:func:`process_aux_basis_func_data` function in this
-    :py:mod:`aims_parser` module, but only applied to the coefficients vector.
-
-    ``basis_set_idxs`` must be passed as a 2D numpy array containing the
-    information read directly from file "product_basis_idxs.out". Columns
-    correspond to, respectively: the auxiliary basis function index, atom index,
-    angular momentum l value, radial channel index, and the angular momentum
-    component m value.
-
-    If `save_dir` is passed, the converted coefficients are saved to this
-    directory under the filename "ri_coeffs.in", in the AIMS output file format
-    for this data type - i.e. one value per line. The coefficients saved under
-    this filename allow the RI fitting procedure to be restarted from them using
-    the AIMS keyword "ri_fit_rebuild_from_coeffs".
-
-    :param coeffs: np.ndarray, vector of RI coefficients in the standard order
-        convention.
-    :param basis_set_idxs: a 2D numpy array containing the basis set indices are
-        their ordering, as read driectly from the file "product_basis_idxs.out"
-        file output by AIMS using the "ri_fit_*" keywords.
-    :param save_dir: optional str, the absolute path to the directory to save
-        the coefficients to. If specified, they are saved as one coefficient per
-        line under the filename "ri_coeffs.in".
-
-    :return np.ndarray: vector of RI coefficients in the AIMS format.
-    """
-    abf_info = basis_set_idxs.copy()
-    abf_idxs = abf_info[:, 0]
-    abf_idxs -= 1  # Convert to zero indexing
-
-    # First, re-broadcast the coefficients back to the original AIMS ordering
-    reverse_abf_idxs = [np.where(abf_idxs == i)[0][0] for i in range(len(abf_idxs))]
-    aims_coeffs = coeffs[reverse_abf_idxs]
-
-    # Second, undo the Condon-Shortley convention for the coefficients of ABFs
-    # where m is odd and positive
-    for abf in abf_info:
-        abf_idx = abf[0]
-        abf_m_value = abf[4]
-        if abf_m_value % 2 == 1 and abf_m_value > 0:
-            aims_coeffs[abf_idx] *= -1
-
-    # Save the coefficient to file "ri_restart_coeffs.out" if `save_dir`
-    # specified.
-    if save_dir is not None:
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-        np.savetxt(os.path.join(save_dir, "ri_coeffs.in"), aims_coeffs)
-
-    return aims_coeffs

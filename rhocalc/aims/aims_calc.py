@@ -5,17 +5,20 @@ import inspect
 import glob
 import os
 import shutil
+import warnings
 from typing import Callable, Optional, List
 
 import ase
 import ase.io
 import ase.io.aims as aims_io
+import numpy as np
 
 
 def write_input_files(
     atoms: ase.Atoms,
     run_dir: str,
     aims_kwargs: dict,
+    write_geom: bool = True,
 ):
     """
     Writes input files geometry.in, control.in, and run-aims.sh to `aims_dir`
@@ -24,7 +27,8 @@ def write_input_files(
         os.mkdir(run_dir)
 
     # Write inputs
-    aims_io.write_aims(os.path.join(run_dir, "geometry.in"), atoms=atoms)
+    if write_geom:
+        aims_io.write_aims(os.path.join(run_dir, "geometry.in"), atoms=atoms)
     aims_io.write_control(
         os.path.join(run_dir, "control.in"), atoms=atoms, parameters=aims_kwargs
     )
@@ -33,7 +37,11 @@ def write_input_files(
 
 
 def write_aims_sbatch(
-    fname: str, aims: str, load_modules: Optional[list] = None, **kwargs
+    fname: str,
+    aims: str,
+    load_modules: Optional[list] = None,
+    run_command: str = "srun",
+    **kwargs
 ):
     """
     Writes a bash script to `fname` that allows running of FHI-AIMS with
@@ -64,7 +72,7 @@ def write_aims_sbatch(
         # Write the run AIMS command
         f.write("# Run AIMS\n")
         f.write(f"AIMS={aims}\n")
-        f.write("srun $AIMS < control.in > aims.out\n")
+        f.write(f"{run_command} $AIMS < control.in > aims.out\n")
 
     return
 
@@ -75,6 +83,7 @@ def write_aims_sbatch_array(
     structure_idxs: List[int],
     run_dir: Callable,
     load_modules: Optional[list] = None,
+    run_command: str = "srun",
     **kwargs,
 ):
     """
@@ -82,7 +91,6 @@ def write_aims_sbatch_array(
     specification of sbatch parameters via `kwargs`.
     """
     with open(fname, "wt") as f:
-
         # Make a dir for the slurm outputs
         if not os.path.exists("slurm_out"):
             os.mkdir("slurm_out")
@@ -93,10 +101,10 @@ def write_aims_sbatch_array(
         # Write the sbatch parameters
         for tag, val in kwargs.items():
             f.write(f"#SBATCH --{tag}={val}\n")
-        
+
         # Write the array of structure indices
         f.write(f"#SBATCH --array={','.join(map(str, structure_idxs))}\n")
-        f.write("#SBATCH --output=slurm_out/%a_slurm.out")
+        # f.write("#SBATCH --output=slurm_out/%a_slurm.out")
         f.write("\n\n")
 
         # Load modules
@@ -125,7 +133,7 @@ def write_aims_sbatch_array(
         # Write the run AIMS command
         f.write("# Run AIMS\n")
         f.write(f"AIMS={aims}\n")
-        f.write("srun $AIMS < control.in > aims.out\n")
+        f.write(f"{run_command} $AIMS < control.in > aims.out\n")
 
     return
 
@@ -159,23 +167,27 @@ def run_aims(
     sbatch_kwargs: dict,
     restart_idx: Optional[int] = None,
     copy_files: Optional[List[str]] = None,
+    run_command: str = "srun",
+    write_geom: bool = True,
 ):
     """
-    Runs an AIMS calculation for each of the calculations in `calcs`. `calcs`
-    must be dict with keys corresponding to the structure index, and values a
-    dict containing "atoms" (i.e. an ase.Atoms object), and optionally
-    "aims_kwargs" and "sbatch_kwargs".
+    Runs an AIMS calculation for each of the calculations in `calcs`. `calcs` must be
+    dict with keys corresponding to the structure index, and values a dict containing
+    "atoms" (i.e. an ase.Atoms object), and optionally "aims_kwargs" and
+    "sbatch_kwargs".
 
-    The `aims_kwargs` are used to write control.in files. The `sbatch_kwargs`
-    are used to run the calulation, for instance on a HPC cluster.
+    The `aims_kwargs` are used to write control.in files. The `sbatch_kwargs` are used
+    to run the calulation, for instance on a HPC cluster.
 
     Any calculation-specific settings stored in `calcs` are used to update the
     `aims_kwargs` and `sbatch_kwargs` before writing the control.in file.
 
-    If `restart_idx` is not None, then the density matrices from the structure
-    directory at relative path f"{structure_idx}/" are copied into a
-    subdirectory f"{structure_idx}/{restart_idx}/" and the calculation is run
-    from there.
+    If `restart_idx` is not None, then the density matrices from the structure directory
+    at relative path f"{structure_idx}/" are copied into a subdirectory
+    f"{structure_idx}/{restart_idx}/" and the calculation is run from there.
+
+    If `write_geom` is True, a new "geometry.in" file is written. Setting this false can
+    be useful if a geometry restart file is to be read in, i.e. in a continued GeomOpt.
     """
     top_dir = os.getcwd()
     os.chdir(top_dir)
@@ -214,6 +226,7 @@ def run_aims(
             atoms=calc["atoms"],
             run_dir=run_dir,
             aims_kwargs=aims_kwargs_calc,
+            write_geom=write_geom,
         )
 
         # Write sbatch run script
@@ -221,6 +234,7 @@ def run_aims(
             fname=os.path.join(run_dir, "run-aims.sh"),
             aims=aims_path,
             load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            run_command=run_command,
             **sbatch_kwargs_calc,
         )
 
@@ -236,8 +250,9 @@ def run_aims_array(
     aims_kwargs: dict,
     sbatch_kwargs: dict,
     run_dir: Callable,
-    restart_idx: Optional[int] = None,
-    copy_files: Optional[List[str]] = None,
+    load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+    run_command: str = "srun",
+    write_geom: bool = True,
 ):
     """
     Runs an AIMS calculation for each of the calculations in `calcs`. `calcs`
@@ -255,24 +270,15 @@ def run_aims_array(
     Any calculation-specific settings stored in `calcs` are used to update the
     `aims_kwargs` and `sbatch_kwargs` before writing the control.in file.
 
-    If `restart_idx` is not None, then the density matrices from the structure
-    directory at relative path f"{structure_idx}/" are copied into a
-    subdirectory f"{structure_idx}/{restart_idx}/" and the calculation is run
-    from there.
+    Assumes that all restart files needed to run the calculation are already
+    present in `run_dir`, if necessary.
     """
     top_dir = os.getcwd()
     os.chdir(top_dir)
 
-    # Define new run dir
-    if restart_idx is None:
-        new_run_dir = lambda calc_i: os.path.join(run_dir(calc_i))
-    else:
-        new_run_dir = lambda calc_i: os.path.join(run_dir(calc_i), f"{restart_idx}/")
-
     for calc_i, calc in calcs.items():
-
-        if not os.path.exists(new_run_dir(calc_i)):
-            os.makedirs(new_run_dir(calc_i))
+        if not os.path.exists(run_dir(calc_i)):
+            os.makedirs(run_dir(calc_i))
 
         # Update control.in settings if there are some specific to the
         # calculation
@@ -285,20 +291,12 @@ def run_aims_array(
         if calc.get("sbatch_kwargs") is not None:
             sbatch_kwargs_calc.update(calc["sbatch_kwargs"])
 
-        # Copy density matrices if using restart
-        if restart_idx is not None:
-            for density_matrix in glob.glob(os.path.join(run_dir(calc_i), "D*.csc")):
-                shutil.copy(density_matrix, new_run_dir(calc_i))
-
-        if copy_files is not None:
-            for fname in copy_files:
-                shutil.copy(os.path.join(run_dir(calc_i), fname), new_run_dir(calc_i))
-
         # Write AIMS input files
         write_input_files(
             atoms=calc["atoms"],
-            run_dir=new_run_dir(calc_i),
+            run_dir=run_dir(calc_i),
             aims_kwargs=aims_kwargs_calc,
+            write_geom=write_geom,
         )
 
     # Write sbatch run script in the top level directory, as this will run a
@@ -308,8 +306,9 @@ def run_aims_array(
         fname=os.path.join(top_dir, "run-aims.sh"),
         aims=aims_path,
         structure_idxs=list(calcs.keys()),
-        run_dir=new_run_dir,
-        load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+        run_dir=run_dir,
+        load_modules=load_modules,
+        run_command=run_command,
         **sbatch_kwargs_calc,
     )
 
@@ -334,7 +333,6 @@ def process_aims_results_sbatch_array(
     os.chdir(top_dir)
 
     with open(fname, "wt") as f:
-
         # Make a dir for the slurm outputs
         if not os.path.exists("slurm_out"):
             os.mkdir("slurm_out")
@@ -345,7 +343,7 @@ def process_aims_results_sbatch_array(
         # Write the sbatch parameters
         for tag, val in kwargs.items():
             f.write(f"#SBATCH --{tag}={val}\n")
-        
+
         # Write the array of structure indices
         f.write(f"#SBATCH --array={','.join(map(str, structure_idxs))}\n")
         f.write("#SBATCH --output=slurm_out/%a_slurm.out\n")
@@ -381,3 +379,120 @@ def process_aims_results_sbatch_array(
     return
 
 
+def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100)):
+    """
+    Returns FHI-aims keywords for specifying the cube file edges in control.in.
+    The x and y edges are taken to be the lattice vectors of the slab. As the
+    slab is likely to have a large vacuum region, the z-edge is calculated from
+    the bounding length of the nuclear positions in the z-direction, plus 10
+    Angstrom.
+
+    Returned is a dict like:
+        {"cube": [
+            "origin 1.59 9.85 12.80",
+            "edge 101 0.15 0.0 1.0",
+            "edge 101 0.0 0.15 0.0",
+            "edge 101 0.0 0.0 0.15",
+        ]}
+    as required for writing a control.in using the ASE interface.
+    """
+    if not np.all(slab.pbc):
+        raise ValueError("Slab must have periodic boundary conditions")
+
+    # check square cell
+    if not np.all(
+        [
+            param == 0 
+            for param in [
+                slab.cell[0, 1], slab.cell[0, 2], 
+                slab.cell[1, 0], slab.cell[1, 2],
+                slab.cell[2, 0], slab.cell[2, 1]
+            ]
+        ]
+    ):
+        warnings.warn(f"Cell not square: {slab.cell}")
+
+    min_x = np.min(slab.positions[:, 0])
+    max_x = np.max(slab.positions[:, 0])
+    min_y = np.min(slab.positions[:, 1])
+    max_y = np.max(slab.positions[:, 1])
+    min_z = np.min(slab.positions[:, 2])
+    max_z = np.max(slab.positions[:, 2])
+
+    min_coord = np.array([min_x, min_y, min_z])
+    max_coord = np.array([max_x, max_y, max_z])
+    max_lengths = max_coord - min_coord
+
+    # Take the x and y lattice vectors to be the length of the cube in these
+    # directions. For the z-direction, take the bounding box (plus some) of
+    # nuclear positions.
+    max_lengths = [slab.cell[0, 0], slab.cell[1, 1], max_lengths[2] + 10]
+    center = (min_coord + max_coord) / 2
+
+    return {
+        "cubes": f"cube origin {np.round(center[0], 3)} {np.round(center[1], 3)} {np.round(center[2], 3)}"
+        + "\n"
+        + f"cube edge {n_points[0]} {np.round(max_lengths[0] / (n_points[0] - 1), 3)} 0.0 0.0"
+        + "\n"
+        + f"cube edge {n_points[1]} 0.0 {np.round(max_lengths[1] / (n_points[1] - 1), 3)} 0.0"
+        + "\n"
+        + f"cube edge {n_points[2]} 0.0 0.0 {np.round(max_lengths[2] / (n_points[2] - 1), 3)}"
+        + "\n",
+    }
+
+
+def get_aims_cube_edges(frame: ase.Atoms, n_points: tuple = (100, 100, 100)):
+    """
+    Returns FHI-aims keywords for specifying the cube file edges in control.in.
+    The x, y, z edges are taken to be the lattice vectors of the frame.
+
+    Returned is a dict like:
+        {"cube": [
+            "origin 1.59 9.85 12.80",
+            "edge 101 0.15 0.0 1.0",
+            "edge 101 0.0 0.15 0.0",
+            "edge 101 0.0 0.0 0.15",
+        ]}
+    as required for writing a control.in using the ASE interface.
+    """
+    # Find the bounding box and center of the frame
+    min_x = np.min(frame.positions[:, 0])
+    max_x = np.max(frame.positions[:, 0])
+    min_y = np.min(frame.positions[:, 1])
+    max_y = np.max(frame.positions[:, 1])
+    min_z = np.min(frame.positions[:, 2])
+    max_z = np.max(frame.positions[:, 2])
+
+    min_coord = np.array([min_x, min_y, min_z])
+    max_coord = np.array([max_x, max_y, max_z])
+    center = (min_coord + max_coord) / 2
+
+    if np.all(frame.pbc):
+        # check square cell
+        if not np.all(
+            [
+                param == 0 
+                for param in [
+                    frame.cell[0, 1], frame.cell[0, 2], 
+                    frame.cell[1, 0], frame.cell[1, 2],
+                    frame.cell[2, 0], frame.cell[2, 1]
+                ]
+            ]
+        ):
+            warnings.warn(f"Cell not square: {frame.cell}")
+        # take lattice vectors as cube edges
+        max_lengths = [frame.cell[0, 0], frame.cell[1, 1], frame.cell[2, 2]]
+    else:
+        # take bounding box as cube edges, plus 5 Angstrom
+        max_lengths = (max_coord - min_coord) + np.array([5, 5, 5])
+
+    return {
+        "cubes": f"cube origin {np.round(center[0], 3)} {np.round(center[1], 3)} {np.round(center[2], 3)}"
+        + "\n"
+        + f"cube edge {n_points[0]} {np.round(max_lengths[0] / (n_points[0] - 1), 3)} 0.0 0.0"
+        + "\n"
+        + f"cube edge {n_points[1]} 0.0 {np.round(max_lengths[1] / (n_points[1] - 1), 3)} 0.0"
+        + "\n"
+        + f"cube edge {n_points[2]} 0.0 0.0 {np.round(max_lengths[2] / (n_points[2] - 1), 3)}"
+        + "\n",
+    }

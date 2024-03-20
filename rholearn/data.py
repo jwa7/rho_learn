@@ -1,407 +1,136 @@
 """
-Module for creating metatensor/torch datasets and dataloaders.
+Utility functions for cross-validation and computing
+means and standard deviations of `metatensor-learn` `Dataset` and
+`IndexedDataset` objects.
 """
-import gc
-import os
-from typing import List, Optional, Tuple, Union, List, Callable
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
-from torch.utils.data.sampler import SubsetRandomSampler
 
 import metatensor
-from metatensor import Labels, TensorBlock, TensorMap
+import metatensor.learn.data
+from metatensor import Labels, TensorMap
 
 from rholearn import loss
 
 
-class RhoData(torch.utils.data.Dataset):
+def get_dataset_invariant_means(
+    dataset: metatensor.learn.data.dataset._BaseDataset,
+    field: str, 
+    torch_kwargs: dict
+) -> TensorMap:
     """
-    Custom torch Dataset class for loading input/descriptors and output/targets
-    data (in TensorMap format) from disk. Auxiliary/supporting data, for
-    instance those required for loss evaluation, can also be loaded.
+    Joins all samples from `dataset` for the specified data `field`, extracts
+    the invariant blocks (i.e. where key "spherical_harmonics_l" = 0) and
+    returns a TensorMap containing the means these invariant features.
 
-    `calc_out_train_inv_means` passed as True will calculate the mean baseline
-    of the invariant blocks of the output training data.
-
-    `calc_out_train_std_dev` passed as True will calculate the standard
-    deviation of the training data, i.e. the L2 loss of the output training
-    *density* relative to the baseline training density.
-
-    :param idxs: List[int], List of indices that define the complete dataset.
-    :param in_path: Callable, a lambda function whose argument is an int
-        structure index and returned is a str of the absolute path to the
-        input/descriptor TensorMap for that structure.
-    :param out_path: Callable, a lambda function whose argument is an int
-        structure index and and returned is a str of the absolute path to the
-        output/target TensorMap for that structure.
-    :param aux_path: Callable, a lambda function whose argument is an int
-        structure index and returned is a str of the absolute path to the
-        auxiliary/supporting TensorMap for that structure.
-    :param keep_in_mem: bool, whether to keep the data in memory. If true, all
-        data is lazily loaded upon initialization and stored in a dict indexed
-        by `idxs`. When __getitem__ is called, the dict is just accessed from
-        memory. If false, data is loaded from disk upon each call to
-        __getitem__.
-    **torch_kwargs: dict of kwargs for loading TensorMaps to torch backend.
-        `dtype`, `device`, and `requires_grad` are required.
+    As typically these invariant means are used for non-learnable biases in an
+    model, the torch tensors are set with requires_grad to false.
     """
+    # Join all the data into a single TensorMap
+    tensor = metatensor.join(
+        [getattr(dataset[idx], field) for idx in dataset._indices],
+        axis="samples",
+        different_keys="union",
+        remove_tensor_name=True,
+    )
+    # Convert to numpy
+    tensor = metatensor.detach(tensor).to(arrays="numpy")
 
-    def __init__(
-        self,
-        idxs: List[int],
-        in_path: Callable,
-        out_path: Callable,
-        aux_path: Optional[Callable] = None,
-        keep_in_mem: bool = True,
-        **torch_kwargs,
-    ):
-        super(RhoData, self).__init__()
+    # Get invariant means
+    inv_means = get_invariant_means(tensor)
 
-        # Check input args
-        RhoData._check_input_args(idxs, in_path, out_path, aux_path)
-
-        # Assign attributes
-        self._all_idxs = idxs
-        self._in_path = in_path
-        self._out_path = out_path
-        self._aux_path = aux_path
-        self._torch_kwargs = torch_kwargs
-
-        # Lazily load data upon initialization if requested
-        if keep_in_mem:
-            self._load_data()
-            self._data_in_mem = True
-        else:
-            self._data_in_mem = False
-
-        gc.collect()
-
-    @staticmethod
-    def _check_input_args(
-        idxs: List[int],
-        in_path: Callable,
-        out_path: Callable,
-        aux_path: Callable,
-    ):
-        """Checks args to the constructor."""
-        for idx in idxs:
-            if not os.path.exists(in_path(idx)):
-                raise FileNotFoundError(
-                    f"Input/descriptor TensorMap at {in_path(idx)} does not exist."
-                )
-            if not os.path.exists(out_path(idx)):
-                raise FileNotFoundError(
-                    f"Output/target TensorMap at {out_path(idx)} does not exist."
-                )
-            if aux_path is not None:
-                if not os.path.exists(aux_path(idx)):
-                    raise FileNotFoundError(
-                        f"Auxiliary/supporting TensorMap at {aux_path(idx)} does not exist."
-                    )
-
-    def __loaditem__(self, idx: int) -> Tuple:
-        """
-        Loads a data item for the corresponding `idx` from disk and return it in
-        a tuple. Returns the idx, and input and output TensorMaps, as well as
-        the auxiliary TensorMap if applicable.
-        """
-        input = metatensor.io.load_custom_array(
-            self._in_path(idx),
-            create_array=metatensor.io.create_torch_array,
-        )
-        output = metatensor.io.load_custom_array(
-            self._out_path(idx),
-            create_array=metatensor.io.create_torch_array,
-        )
-        input = metatensor.to(input, "torch", **self._torch_kwargs)
-        output = metatensor.to(output, "torch", **self._torch_kwargs)
-
-        # Return input/output pair if no overlap matrix required
-        if self._aux_path is None:
-            return idx, input, output
-
-        # Return overlap matrix if applicable
-        overlap = metatensor.io.load_custom_array(
-            self._aux_path(idx),
-            create_array=metatensor.io.create_torch_array,
-        )
-        overlap = metatensor.to(overlap, "torch", **self._torch_kwargs)
-        return idx, input, output, overlap
-
-    def __len__(self) -> int:
-        """Returns the length of the dataset."""
-        return len(self._all_idxs)
-
-    def __getitem__(self, idx: int) -> Tuple:
-        """
-        Loads and returns the input/output data pair for the corresponding
-        `idx`. Input, output, and overlap matrices (if applicable) are
-        loaded with a torch backend.
-
-        Each item can be accessed with `self[idx]`.
-        """
-        if self._data_in_mem:
-            return self._loaded_data[idx]
-        return self.__loaditem__(idx)
-
-    def _load_data(self) -> None:
-        """
-        Lazily loads the data for all items corresponding to `idxs` upon class
-        initialization. Stores it in a dict indexed by these indices
-
-        Each item correpsonds to a tuple of the idx, and TensorMaps for the
-        input, output, and (if applicable) overlap matrices.
-        """
-        self._loaded_data = {}
-        for idx in self._all_idxs:
-            self._loaded_data[idx] = self.__loaditem__(idx)
-
-    def get_invariant_means(
-        self, idxs: List[int], which_data: str = "output"
-    ) -> TensorMap:
-        """
-        For the data indexed by `idxs`, returns a TensorMap containing the mean
-        invariant features. This is performed by performing a mean over samples
-        for the invariant blocks.
-
-        If "which_data" is "input", the mean invariant features of the input
-        data are calculated. If "which_data" is "output", the mean invariant
-        features of the output data are calculated.
-
-        As typically these invariant means are used for non-learnable biases in
-        an model, the torch arrays are set to not require gradients.
-        """
-        # First set the index for getting either input (1) or output (2) data
-        if which_data == "input":
-            which_idx = 1
-        elif which_data == "output":
-            which_idx = 2
-        else:
-            raise ValueError("`which_data` must be either 'input' or 'output'.")
-
-        # Join all the data into a single TensorMap
-        tensor = metatensor.join(
-            [self[A][which_idx] for A in idxs],
-            axis="samples",
-            different_keys="union",
-            remove_tensor_name=True,
-        )
-        tensor = metatensor.to(tensor, "numpy")
-
-        # Define the keys of the covariant blocks
-        keys_to_drop = Labels(
-            names=tensor.keys.names,
-            values=tensor.keys.values[tensor.keys.column("spherical_harmonics_l") != 0],
-        )
-
-        # Drop these blocks
-        inv_means = metatensor.drop_blocks(tensor, keys=keys_to_drop)
-
-        # Find the mean over sample for the invariant blocks
-        inv_means = metatensor.mean_over_samples(
-            inv_means, sample_names=inv_means.sample_names
-        )
-        return metatensor.to(
-            inv_means,
-            "torch",
-            requires_grad=False,
-            dtype=self._torch_kwargs["dtype"],
-            device=self._torch_kwargs["device"],
-        )
-
-    def get_standard_deviation(
-        self,
-        idxs: List[int],
-        which_data: str = "output",
-        invariant_baseline: Optional[TensorMap] = None,
-        use_overlaps: bool = False,
-    ) -> float:
-        """
-        Returns the standard deviation of the data indexed by `idxs` relative to
-        some baseline. If ``invariant_baseline`` is passed, this is used.
-        Otherwise, the mean invariant features are calculated.
-
-        If "which_data" is "input", the mean invariant features of the input
-        data are calculated. If "which_data" is "output", the mean invariant
-        features of the output data are calculated.
-
-        By default, the standard deviation is calculated as the square root of
-        the sum of square residuals between the data and the baseline:
-
-        .. math:
-
-            \sqrt{
-                \frac{1}{N - 1} \sum_A^N ( \Delta \bar{c}^2 )
-            }
-
-        where A is 1 of N training structures, and \Delta \bar{c_A} = c_A - c^0
-        is the data for structure minus the baseline (itself perhaps an average
-        over all structures).
-
-        If `which_data` is "output", then `use_overlaps` can be set to true. In
-        this case, the data is assumed to be non-orthogonal basis fxn
-        coefficients, where the overlaps as used to evaluate the loss on the
-        real space quantity they expand. In this case, the standard deviation is
-        calculated as:
-
-        .. math:
-
-            \sqrt{
-                \frac{1}{N - 1} \sum_A^N ( \Delta \bar{c_A} \hat{S_A} \Delta
-                \bar{c_A}
-            }
-
-        where \hat{S_A} is the overlap matrix for structure A.
-        """
-        # First set the index for getting either input (1) or output (2) data
-        if which_data == "input":
-            which_idx = 1
-            if use_overlaps:  # cannpt use overlaps for input data
-                raise ValueError(
-                    "`use_overlaps` cannot be true for evaluating stddev on input data"
-                )
-        elif which_data == "output":
-            which_idx = 2
-        else:
-            raise ValueError("`which_data` must be either 'input' or 'output'")
-
-        # Calculate the invariant baseline if not passed
-        if invariant_baseline is None:
-            invariant_baseline = self.get_invariant_means(idxs, which_data=which_data)
-
-        # We can use the RhoLoss function to evaluate the error in the
-        # output data relative to the mean baseline of the training data
-        loss_fn = loss.L2Loss()
-
-        # As this function is only ever called once for a given set of training
-        # indices, iterate over each training structure in turn to reduce memory
-        # overhead
-        stddev = 0
-        for idx in idxs:
-            # Load/retrieve the output training structure and overlap matrix
-            _, _, output, overlap = self[idx]
-
-            if use_overlaps:
-                if overlap is None:
-                    raise ValueError(
-                        "`use_overlaps` is true but no overlap matrix is stored in"
-                        " the dataset."
-                    )
-
-            # If the output data hasn't been standardized, do it
-            output_std = standardize_invariants(
-                output, invariant_baseline, add_baseline=False  # i.e. subtract
-            )
-
-            # Build a dummy TensorMap of zeros - this will be used for input
-            # into the RhoLoss loss function as the 'target'
-            out_zeros = metatensor.zeros_like(output_std)
-
-            # Accumulate the 'loss' on the training ouput relative to the
-            # spherical baseline
-            stddev += loss_fn(input=output_std, target=out_zeros, overlap=overlap)
-
-            # Clear memory
-            del output, overlap, out_zeros
-            gc.collect()
-
-        # Return the standard deviation
-        return torch.sqrt(stddev / (len(idxs) - 1))
+    # Convert back to torch and return
+    inv_means = inv_means.to(arrays="torch")
+    inv_means = inv_means.to(**torch_kwargs)
+    inv_means = metatensor.requires_grad(inv_means, False)
+    return inv_means
 
 
-class RhoLoader:
+def get_standard_deviation(
+    dataset: metatensor.learn.data.dataset._BaseDataset,
+    field: str,
+    torch_kwargs: dict,
+    invariant_baseline: Optional[TensorMap] = None,
+    overlap_field: Optional[str] = None,
+) -> float:
     """
-    Class for loading data from the RhoData dataset class.
+    Returns the standard deviation of the data indexed by `idxs` relative to
+    some baseline. If ``invariant_baseline`` is passed, this is used.
+    Otherwise, the mean invariant features are calculated.
+
+    If "which_data" is "input", the mean invariant features of the input
+    data are calculated. If "which_data" is "output", the mean invariant
+    features of the output data are calculated.
+
+    By default, the standard deviation is calculated as the square root of
+    the sum of square residuals between the data and the baseline:
+
+    .. math:
+
+        \sqrt{
+            \frac{1}{N - 1} \sum_A^N ( \Delta \bar{c}^2 )
+        }
+
+    where A is 1 of N training structures, and \Delta \bar{c_A} = c_A - c^0
+    is the data for structure minus the baseline (itself perhaps an average
+    over all structures).
+
+    If `which_data` is "output", then `use_overlaps` can be set to true. In
+    this case, the data is assumed to be non-orthogonal basis fxn
+    coefficients, where the overlaps as used to evaluate the loss on the
+    real space quantity they expand. In this case, the standard deviation is
+    calculated as:
+
+    .. math:
+
+        \sqrt{
+            \frac{1}{N - 1} \sum_A^N ( \Delta \bar{c_A} \hat{S_A} \Delta
+            \bar{c_A}
+        }
+
+    where \hat{S_A} is the overlap matrix for structure A.
     """
-
-    def __init__(
-        self,
-        dataset,
-        idxs: np.ndarray,
-        batch_size: Optional[int] = None,
-        get_aux_data: bool = False,
-        **kwargs,
-    ):
-        self._idxs = idxs
-        self._batch_size = batch_size if batch_size is not None else len(idxs)
-        self._get_aux_data = get_aux_data
-
-        self._dataloader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=self._batch_size,
-            collate_fn=self.collate_rho_data_batch,
-            sampler=SubsetRandomSampler(idxs),
-            **kwargs,
-        )
-        if get_aux_data:
-            if dataset._aux_path is None:
-                raise AttributeError(
-                    "`get_aux_data` set to true but dataset not initialized with `aux_path`"
-                )
-
-    def collate_rho_data_batch(self, batch):
-        """
-        Takes a list of lists where each element corresponding to the RhoData for a
-        single structure index, of the form:
-
-            List[
-                # structure_idx, input, output
-                List[int, TensorMap, TensorMap], # structure i
-                List[int, TensorMap, TensorMap], # structure j
-                ...
-            ]
-
-        or, if auxiliary data are included, of the form:
-
-            List[
-                # structure_idx, input, output, auxiliary
-                List[int, TensorMap, TensorMap, TensorMap], # structure i
-                List[int, TensorMap, TensorMap, TensorMap], # structure j
-                ...
-            ]
-
-        and returns a list of lists of the form:
-
-            List[
-                List[int, int, ...] # structure_idx_i, structure_idx_j, ...
-                TensorMap # joined input_i, input_j, ...
-                TensorMap # joined output_i, output_j, ...
-            ]
-
-        or, if auxiliary data are included:
-
-            List[
-                List[int, int, ...] # structure_idx_i, structure_idx_j, ...
-                TensorMap # joined input_i, input_j, ...
-                TensorMap # joined output_i, output_j, ...
-                TensorMap # joined aux_i, aux_j, ...
-            ]
-        """
-        # Zip the batch such that data is grouped by the data they represent
-        # rather than by idx
-        batch = list(zip(*batch))
-
-        # Return the idxs, input, output, and auxiliary data
-        if self._get_aux_data:
-            return (
-                batch[0],
-                metatensor.join(batch[1], axis="samples", different_keys="union", remove_tensor_name=True),
-                metatensor.join(batch[2], axis="samples", different_keys="union", remove_tensor_name=True),
-                metatensor.join(batch[3], axis="samples", different_keys="union", remove_tensor_name=True),
-            )
-        # Otherwise, just return the idxs and the input/output pair, with None
-        # in place of the auxiliary data
-        return (
-            batch[0],
-            metatensor.join(batch[1], axis="samples", different_keys="union", remove_tensor_name=True),
-            metatensor.join(batch[2], axis="samples", different_keys="union", remove_tensor_name=True),
-            None,
+    # Calculate the invariant baseline if not passed
+    if invariant_baseline is None:
+        invariant_baseline = get_dataset_invariant_means(
+            dataset, field, torch_kwargs
         )
 
-    def __iter__(self):
-        """Returns an iterable for the dataloader."""
-        return iter(self._dataloader)
+    # We can use the RhoLoss function to evaluate the error in the
+    # output data relative to the mean baseline of the training data
+    loss_fn = loss.L2Loss()
+
+    # As this function is only ever called once for a given set of training
+    # indices, iterate over each training structure in turn to reduce memory
+    # overhead
+    stddev = 0
+    for idx in dataset._indices:
+        # Load/retrieve the output training structure and overlap matrix
+        tensor = getattr(dataset[idx], field)
+        overlap = getattr(dataset[idx], overlap_field) if overlap_field else None
+
+        # If the data field hasn't been standardized, do it
+        output_std = standardize_invariants(
+            tensor, invariant_baseline, add_baseline=False  # i.e. subtract
+        )
+
+        # Build a dummy TensorMap of zeros - this will be used for input
+        # into the RhoLoss loss function as the 'target'
+        out_zeros = metatensor.zeros_like(output_std)
+
+        # Accumulate the 'loss' on the training ouput relative to the
+        # spherical baseline
+        stddev += loss_fn(
+            input=[output_std], 
+            target=[out_zeros], 
+            overlap=[overlap] if overlap is not None else None, 
+            structure_idxs=[idx],
+        )
+
+    # Return the standard deviation
+    return torch.sqrt(stddev / (len(dataset._indices) - 1))
 
 
 # ===== Fxns for creating groups of indices for train/test/validation splits

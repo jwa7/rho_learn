@@ -1,4 +1,5 @@
 import ctypes
+import datetime
 import gc
 import os
 from typing import List, Union, Optional
@@ -8,6 +9,58 @@ import torch
 
 import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
+
+
+def timestamp() -> str:
+    """Return a timestamp string in format YYYYMMDDHHMMSS."""
+    return datetime.datetime.today().strftime('%Y%m%d%H%M%S')
+
+
+def mts_tensormap_torch_to_core(tensor: torch.ScriptObject) -> metatensor.TensorMap:
+
+    return metatensor.TensorMap(
+        keys=mts_labels_torch_to_core(tensor.keys),
+        blocks=[
+            mts_tensorblock_torch_to_core(block)
+            for block in tensor
+        ]
+    )
+
+def mts_tensorblock_torch_to_core(block: torch.ScriptObject) -> metatensor.TensorBlock:
+    return metatensor.TensorBlock(
+        values=np.array(block.values),
+        samples=mts_labels_torch_to_core(block.samples),
+        components=[mts_labels_torch_to_core(c) for c in block.components],
+        properties=mts_labels_torch_to_core(block.properties),
+    )
+
+def mts_labels_torch_to_core(labels: torch.ScriptObject) -> metatensor.Labels:
+    return metatensor.Labels(labels.names, values=np.array(labels.values))
+
+
+def labels_where(labels: Labels, selection: Labels):
+    """
+    Returns the `labels` object sliced to only contain entries that match the
+    `selection`.
+    """
+    # Extract the relevant columns from `selection` that the selection will
+    # be performed on
+    keys_out_vals = [[k[name] for name in selection.names] for k in labels]
+
+    # First check that all of the selected keys exist in the output keys
+    for slct in selection.values:
+        if not np.any([np.all(slct == k) for k in keys_out_vals]):
+            raise ValueError(
+                f"selected key {selection.names} = {slct} not found"
+                " in the output keys. Check the `selection` argument."
+            )
+
+    # Build a mask of the selected keys
+    mask = [np.any([np.all(i == j) for j in selection.values]) for i in keys_out_vals]
+
+    labels = Labels(names=labels.names, values=labels.values[mask])
+
+    return labels
 
 
 def make_contiguous_numpy(tensor: TensorMap) -> TensorMap:
@@ -99,16 +152,6 @@ def num_elements_tensormap(tensor: TensorMap) -> int:
             n_elems += torch.prod(torch.tensor(block.values.shape))
 
     return int(n_elems)
-
-
-def evaluate_gaussian(target, center, width):
-    """
-    Evaluates a Gaussian function with the specified parameters at the target
-    value
-    """
-    return (1.0 / (width * np.sqrt(2 * np.pi))) * np.exp(
-        -0.5 * ((target - center) / width) ** 2
-    )
 
 
 def trim_memory() -> int:

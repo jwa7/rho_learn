@@ -2,6 +2,7 @@ import ase.io
 
 # Define parameters that are different for each run
 calcs = {
+    # ===== WATER =====
     0: {
         "name": "H2O, cluster, serial",
         "atoms": ase.io.read("systems/water_cluster.xyz"),
@@ -14,6 +15,12 @@ calcs = {
         "aims_kwargs": {},
         "sbatch_kwargs": {"ntasks-per-node": 5},
     },
+    # 1001: {  # O3 transformed verison of calc 1
+    #     "name": "H2O, cluster, parallel, n_tasks = 5",
+    #     "atoms": ase.io.read("systems/water_cluster_so3.xyz"),
+    #     "aims_kwargs": {},
+    #     "sbatch_kwargs": {"ntasks-per-node": 5},
+    # },
     2: {
         "name": "H2O, periodic, 1 kpt, serial",
         "atoms": ase.io.read("systems/water_periodic.xyz"),
@@ -55,7 +62,31 @@ calcs = {
         "atoms": ase.io.read("systems/water_periodic.xyz"),
         "aims_kwargs": {"k_grid": [2, 2, 1], "collect_eigenvectors": True},
         "sbatch_kwargs": {"ntasks-per-node": 10},
-    }
+    },
+    9: {  
+        "name": "H2O, periodic, 4 kpt, serial, n_tasks (1) < n_kpts",
+        "atoms": ase.io.read("systems/water_periodic.xyz"),
+        "aims_kwargs": {"k_grid": [2, 2, 1]},
+        "sbatch_kwargs": {"ntasks-per-node": 1},
+    },
+    10: {  
+        "name": "H2O larger cell, periodic, 1 kpt, parallel, n_tasks (20) > n_kpts (1)",
+        "atoms": ase.io.read("systems/water_periodic_larger_cell.xyz"),
+        "aims_kwargs": {"k_grid": [1, 1, 1]},
+        "sbatch_kwargs": {"ntasks-per-node": 20},
+    },
+    # ===== SILICON =====
+    11: {  
+        "name": "Si, periodic, 1 kpt, parallel, n_tasks (20) > n_kpts (2)",
+        "atoms": ase.io.read("systems/si_periodic.xyz"),
+        "aims_kwargs": {"k_grid": [1, 1, 2]},
+        "sbatch_kwargs": {"ntasks-per-node": 20},
+    },
+    # ===== GOLD =====
+    # 11: {
+
+    # },
+    # ===== Old test cases =====
     # 4: {
     #     "name": "H2O, periodic, 4 kpt, serial",
     #     "atoms": ase.io.read("systems/water_periodic.xyz"),

@@ -2,15 +2,30 @@
 
 set -eux
 
-pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+# ===== ASE 
+# ===== A fork is needed, as this contains a bug fix for the FHI-aims ASE calculator
+pip uninstall -y ase
+pip cache remove "ase*"
+pip install git+https://gitlab.com/jwa7/ase@977968238d011a795a417f9791fa816a80d20d87
 
-pip uninstall -y metatensor metatensor-core metatensor-operations metatensor-torch
-pip uninstall -y rascaline rascaline-torch
+# ===== 'Cube-Toolz' for reading and manipulating cube files
+pip uninstall -y cube_tools
+pip cache remove "cube_tools*"
+pip install git+https://github.com/funkymunkycool/Cube-Toolz.git
 
-pip cache remove "metatensor*"
+# ===== chemiscope
+pip cache remove "chemiscope*"
+pip install chemiscope
+
+# ===== Uninstalls, clear caches
+pip uninstall -y pytorch rascaline rascaline-torch
+pip cache remove "torch*" 
 pip cache remove "rascaline*"
+pip uninstall -y metatensor metatensor-core metatensor-operations metatensor-torch metatensor-learn
+pip cache remove "metatensor*"
 
-# Has to be in this order, such that the recent changes in metatensor overrides
-# the older metatensor version installed by rascaline
-pip install --no-build-isolation git+https://github.com/luthaf/rascaline@148ed002074de6c1cd2130fbbb1bbe0ddd43ed4d
-pip install --no-build-isolation git+https://github.com/lab-cosmo/metatensor@659ce8dc6cab85cbea95371a4f841cd3bd686b54
+# ===== PyTorch, rascaline, rascaline-torch with CPU-only torch
+pip install --extra-index-url https://download.pytorch.org/whl/cpu "rascaline-torch @ git+https://github.com/luthaf/rascaline@ddd880286fa570ee38ab1698f8569c02db484eb8#subdirectory=python/rascaline-torch"
+
+# ===== metatensor-operations and metatensor-learn. Just use the release version for now.
+pip install --no-build-isolation --no-deps metatensor-operations metatensor-learn
