@@ -40,6 +40,7 @@ def write_aims_sbatch(
     fname: str,
     aims: str,
     load_modules: Optional[list] = None,
+    export_vars: Optional[list] = None,
     run_command: str = "srun",
     **kwargs
 ):
@@ -61,9 +62,11 @@ def write_aims_sbatch(
             f.write(f"module load {' '.join(load_modules)}\n\n")
 
         # Some environment varibales that need to be set
-        f.write("export OMP_NUM_THREADS=1\n")
-        f.write("export MKL_DYNAMIC=FALSE\n")
-        f.write("export MKL_NUM_THREADS=1\n\n")
+        if export_vars is not None:
+            f.write("# Set environment variables\n")
+            for var in export_vars:
+                f.write(f"export {var}\n")
+            f.write("\n")
 
         # Increase stack size to unlim
         f.write("ulimit -s unlimited\n")
@@ -82,7 +85,8 @@ def write_aims_sbatch_array(
     aims: str,
     structure_idxs: List[int],
     run_dir: Callable,
-    load_modules: Optional[list] = None,
+    load_modules: Optional[List[str]] = None,
+    export_vars: Optional[List[str]] = None,
     run_command: str = "srun",
     **kwargs,
 ):
@@ -113,9 +117,11 @@ def write_aims_sbatch_array(
             f.write(f"module load {' '.join(load_modules)}\n\n")
 
         # Some environment varibales that need to be set
-        f.write("export OMP_NUM_THREADS=1\n")
-        f.write("export MKL_DYNAMIC=FALSE\n")
-        f.write("export MKL_NUM_THREADS=1\n\n")
+        if export_vars is not None:
+            f.write("# Set environment variables\n")
+            for var in export_vars:
+                f.write(f"export {var}\n")
+            f.write("\n")
 
         # Increase stack size to unlim
         f.write("ulimit -s unlimited\n")
@@ -234,6 +240,7 @@ def run_aims(
             fname=os.path.join(run_dir, "run-aims.sh"),
             aims=aims_path,
             load_modules=["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+            export_vars=["OMP_NUM_THREADS=1", "MKL_DYNAMIC=FALSE", "MKL_NUM_THREADS=1"],
             run_command=run_command,
             **sbatch_kwargs_calc,
         )
@@ -251,6 +258,11 @@ def run_aims_array(
     sbatch_kwargs: dict,
     run_dir: Callable,
     load_modules: List[str] = ["intel", "intel-oneapi-mkl", "intel-oneapi-mpi"],
+    export_vars: List[str] = [
+        "OMP_NUM_THREADS=1",
+        "MKL_DYNAMIC=FALSE",
+        "MKL_NUM_THREADS=1",
+    ],
     run_command: str = "srun",
     write_geom: bool = True,
 ):
@@ -308,6 +320,7 @@ def run_aims_array(
         structure_idxs=list(calcs.keys()),
         run_dir=run_dir,
         load_modules=load_modules,
+        export_vars=export_vars,
         run_command=run_command,
         **sbatch_kwargs_calc,
     )
