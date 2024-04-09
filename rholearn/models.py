@@ -11,7 +11,7 @@ import metatensor.torch as mts
 from metatensor.torch.learn.nn import ModuleMap
 
 import rascaline.torch
-from rascaline.torch import SphericalExpansion
+from rascaline.torch import LodeSphericalExpansion, SphericalExpansion
 from rascaline.torch.utils.clebsch_gordan import DensityCorrelations
 
 
@@ -32,12 +32,16 @@ class LambdaSoapCalculator(torch.nn.Module):
         atom_types: List[int],
         spherical_expansion_hypers: dict,
         density_correlations_hypers: dict,
+        use_lode: bool = False,
     ):
         super(LambdaSoapCalculator, self).__init__()
         self._atom_types = atom_types
         self._spherical_expansion_hypers = spherical_expansion_hypers
         self._density_correlations_hypers = density_correlations_hypers
-        self._spherical_expansion_calculator = SphericalExpansion(**spherical_expansion_hypers)
+        if use_lode:
+            self._spherical_expansion_calculator = LodeSphericalExpansion(**spherical_expansion_hypers)
+        else:
+            self._spherical_expansion_calculator = SphericalExpansion(**spherical_expansion_hypers)
         self._density_correlations_calculator = DensityCorrelations(**density_correlations_hypers)
 
     def forward(
