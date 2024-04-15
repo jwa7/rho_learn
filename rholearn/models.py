@@ -32,17 +32,27 @@ class LambdaSoapCalculator(torch.nn.Module):
         atom_types: List[int],
         spherical_expansion_hypers: dict,
         density_correlations_hypers: dict,
-        use_lode: bool = False,
+        lode_spherical_expansion_hypers: Optional[dict] = None,
     ):
         super(LambdaSoapCalculator, self).__init__()
+
+        # Store the settings
         self._atom_types = atom_types
         self._spherical_expansion_hypers = spherical_expansion_hypers
         self._density_correlations_hypers = density_correlations_hypers
-        if use_lode:
-            self._spherical_expansion_calculator = LodeSphericalExpansion(**spherical_expansion_hypers)
-        else:
-            self._spherical_expansion_calculator = SphericalExpansion(**spherical_expansion_hypers)
-        self._density_correlations_calculator = DensityCorrelations(**density_correlations_hypers)
+        self._lode_spherical_expansion_hypers = lode_spherical_expansion_hypers
+
+        # Initialize the calculators
+        self._spherical_expansion_calculator = SphericalExpansion(
+            **spherical_expansion_hypers
+        )
+        self._density_correlations_calculator = DensityCorrelations(
+            **density_correlations_hypers
+        )
+        if self._lode_spherical_expansion_hypers is not None:
+            self._lode_spherical_expansion_calculator = LodeSphericalExpansion(
+                **lode_spherical_expansion_hypers
+            )
 
     def forward(
         self,
@@ -51,6 +61,8 @@ class LambdaSoapCalculator(torch.nn.Module):
         structure_id: List[int] = None,
         spherical_expansion_compute_args: Optional[Dict] = None,
         density_correlations_compute_args: Optional[Dict] = None,
+        lode_spherical_expansion_compute_args: Optional[Dict] = None,
+        correlate_what: Optional[str] = None,
     ) -> List:
         """
         Computes the lambda-SOAP descriptors for the given systems and returns
@@ -67,30 +79,148 @@ class LambdaSoapCalculator(torch.nn.Module):
             spherical_expansion_compute_args = {}
         if density_correlations_compute_args is None:
             density_correlations_compute_args = {}
+        if lode_spherical_expansion_compute_args is None:
+            lode_spherical_expansion_compute_args = {}
 
-        density = self._spherical_expansion_calculator.compute(
-            system, **spherical_expansion_compute_args
-        )
-        density = density.keys_to_properties(
-            keys_to_move=mts.Labels(
-                names=["species_neighbor"],
-                values=torch.tensor(self._atom_types).reshape(-1, 1),
+        assert correlate_what in ["pxp", "VxV", "pxp+V", "p+VxV", "pxp+VxV"]
+
+        if correlate_what == "pxp":  # Lambda-SOAP
+            # SOAP
+            density = self._spherical_expansion_calculator.compute(
+                system, **spherical_expansion_compute_args
             )
-        )
-        lsoap = self._density_correlations_calculator.compute(
-            density, **density_correlations_compute_args
-        )
+            density = density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-SOAP
+            descriptor = self._density_correlations_calculator.compute(
+                density, **density_correlations_compute_args
+            )
 
-        # Find the strutcure indices present in the systems. As `selected_samples` can
+        elif correlate_what == "VxV":  # Lambda-LODE
+            # LODE
+            density = self._lode_spherical_expansion_calculator.compute(
+                system, **lode_spherical_expansion_compute_args
+            )
+            density = density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-LODE
+            descriptor = self._density_correlations_calculator.compute(
+                density, **density_correlations_compute_args
+            )
+
+
+        elif correlate_what == "pxp+V":  # Lambda-SOAP + LODE
+            # SOAP
+            soap_density = self._spherical_expansion_calculator.compute(
+                system, **spherical_expansion_compute_args
+            )
+            soap_density = soap_density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-SOAP
+            lambda_soap = self._density_correlations_calculator.compute(
+                soap_density, **density_correlations_compute_args
+            )
+            # LODE
+            lode_density = self._lode_spherical_expansion_calculator.compute(
+                system, **lode_spherical_expansion_compute_args
+            )
+            lode_density = lode_density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-SOAP + LODE
+            descriptor = mts.join([lambda_soap, lode_density], axis="properties")
+
+
+        elif correlate_what == "p+VxV":  # SOAP + Lambda-LODE
+            # SOAP
+            soap_density = self._spherical_expansion_calculator.compute(
+                system, **spherical_expansion_compute_args
+            )
+            soap_density = soap_density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # LODE
+            lode_density = self._lode_spherical_expansion_calculator.compute(
+                system, **lode_spherical_expansion_compute_args
+            )
+            lode_density = lode_density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-LODE
+            lambda_lode = self._density_correlations_calculator.compute(
+                lode_density, **density_correlations_compute_args
+            )
+            # Descriptor: SOAP + Lambda-LODE
+            descriptor = mts.join([soap_density, lambda_lode], axis="properties")
+
+
+        elif correlate_what == "pxp+VxV":
+            # SOAP
+            soap_density = self._spherical_expansion_calculator.compute(
+                system, **spherical_expansion_compute_args
+            )
+            soap_density = soap_density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-SOAP
+            lambda_soap = self._density_correlations_calculator.compute(
+                soap_density, **density_correlations_compute_args
+            )
+            # LODE
+            lode_density = self._lode_spherical_expansion_calculator.compute(
+                system, **lode_spherical_expansion_compute_args
+            )
+            lode_density = lode_density.keys_to_properties(
+                keys_to_move=mts.Labels(
+                    names=["species_neighbor"],
+                    values=torch.tensor(self._atom_types).reshape(-1, 1),
+                )
+            )
+            # Lambda-LODE
+            lambda_lode = self._density_correlations_calculator.compute(
+                lode_density, **density_correlations_compute_args
+            )
+            # Descriptor: Lambda-SOAP + Lambda-LODE
+            descriptor = mts.join([lambda_soap, lambda_lode], axis="properties")
+
+
+        else:
+            raise ValueError("Invalid `correlate_what`")
+
+        # Find the structure indices present in the systems. As `selected_samples` can
         # be passed to the `SphericalExpansion.compute()` method, the structure indices
         # may not be continuous from 0 to len(systems) - 1.
-        _ids = mts.unique_metadata(lsoap, "samples", "structure").values.flatten()
+        _ids = mts.unique_metadata(descriptor, "samples", "structure").values.flatten()
 
         # Split into per-structure TensorMaps. Currently, the TensorMaps have
         # structure indices from 0 to len(system) - 1
-        lsoap = [
+        descriptor = [
             mts.slice(
-                lsoap,
+                descriptor,
                 "samples",
                 labels=mts.Labels(
                     names="structure", values=torch.tensor([A]).reshape(-1, 1)
@@ -101,16 +231,16 @@ class LambdaSoapCalculator(torch.nn.Module):
 
         # If `structure_id` is not passed, do not reindex the descriptors.
         if structure_id is None:
-            return lsoap
+            return descriptor
 
         # If `structure_id` is passed and is equivalent to the unique structure
         # indices found with `unique_metadata`, return the descriptors as is
         if torch.all(torch.tensor(structure_id) == _ids):
-            return lsoap
+            return descriptor
 
         # Otherwise, reindex the structure indices of each TensorMap
-        reindexed_lsoap = []
-        for A, desc in zip(structure_id, lsoap):
+        reindexed_descriptor = []
+        for A, desc in zip(structure_id, descriptor):
             # Edit the metadata to match the structure index
             desc = mts.remove_dimension(desc, axis="samples", name="structure")
             new_desc = []
@@ -138,9 +268,9 @@ class LambdaSoapCalculator(torch.nn.Module):
             #     values=torch.tensor([A]),
             #     index=0,
             # )
-            reindexed_lsoap.append(new_desc)
+            reindexed_descriptor.append(new_desc)
 
-        return reindexed_lsoap
+        return reindexed_descriptor
 
 
 class RhoModel(torch.nn.Module):
@@ -193,7 +323,9 @@ class RhoModel(torch.nn.Module):
         # Check or generate descriptors
         if system is not None:  # generate list of descriptors
             assert descriptor is None
-            descriptor = self._descriptor_calculator(system=system, structure_id=structure_id)
+            descriptor = self._descriptor_calculator(
+                system=system, structure_id=structure_id
+            )
         else:
             if isinstance(descriptor, tuple):
                 descriptor = list(descriptor)
@@ -229,4 +361,3 @@ class RhoModel(torch.nn.Module):
             if structure is not None:
                 system = rascaline.torch.systems_to_torch(structure)
             return self(system=system, structure_id=structure_id, check_metadata=True)
-
