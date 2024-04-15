@@ -149,7 +149,7 @@ def plot_parities(keys, target: TensorMap, prediction: TensorMap):
         l, a = key["spherical_harmonics_l"], key["species_center"]
         ax = axes[{1: 0, 14: 1}[a], l]
 
-        assert metatensor.equal_metadata_block(target.block(key), prediction.block(key))
+        metatensor.equal_metadata_block_raise(target.block(key), prediction.block(key))
         Y_vals = target.block(key).values
         Y_pred_vals = prediction.block(key).values
 

@@ -15,6 +15,7 @@ def timestamp() -> str:
     """Return a timestamp string in format YYYYMMDDHHMMSS."""
     return datetime.datetime.today().strftime('%Y%m%d%H%M%S')
 
+# ===== torch to core
 
 def mts_tensormap_torch_to_core(tensor: torch.ScriptObject) -> metatensor.TensorMap:
 
@@ -36,6 +37,29 @@ def mts_tensorblock_torch_to_core(block: torch.ScriptObject) -> metatensor.Tenso
 
 def mts_labels_torch_to_core(labels: torch.ScriptObject) -> metatensor.Labels:
     return metatensor.Labels(labels.names, values=np.array(labels.values))
+
+# ===== core to torch
+
+def mts_tensormap_core_to_torch(tensor: metatensor.TensorMap) -> torch.ScriptObject:
+
+    return metatensor.torch.TensorMap(
+        keys=mts_labels_core_to_torch(tensor.keys),
+        blocks=[
+            mts_tensorblock_core_to_torch(block)
+            for block in tensor
+        ]
+    )
+
+def mts_tensorblock_core_to_torch(block: metatensor.TensorBlock) -> torch.ScriptObject:
+    return metatensor.torch.TensorBlock(
+        values=torch.tensor(block.values),
+        samples=mts_labels_core_to_torch(block.samples),
+        components=[mts_labels_core_to_torch(c) for c in block.components],
+        properties=mts_labels_core_to_torch(block.properties),
+    )
+
+def mts_labels_core_to_torch(labels: metatensor.Labels) -> torch.ScriptObject:
+    return metatensor.torch.Labels(labels.names, values=torch.tensor(labels.values))
 
 
 def labels_where(labels: Labels, selection: Labels):
