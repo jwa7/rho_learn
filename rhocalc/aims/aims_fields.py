@@ -347,11 +347,20 @@ def evaluate_gaussian(target: float, center: float, width: float) -> float:
     )
 
 
-def calc_dos(kso_info_path: str, gaussian_width: float, e_grid: np.ndarray = None):
+def calculate_dos(
+    kso_info_path: str,
+    gaussian_width: float,
+    e_grid: np.ndarray = None,
+    orbital_occupancy: float = 2.0,
+):
     """
     Centers a Gaussian of width `gaussian_width` on each energy eigenvalue read from
     file "kso_info.out" at path `kso_info_path` and plots the sum of these as the
     Density of States (DOS).
+
+    The Gaussian centered on each eigenvalue is multiplied by its k-weight, and the
+    final DOS is multiplied by the `orbital_occupancy` to account for spin-(un)paired
+    orbitals.
     """
     kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
     if e_grid is None:
@@ -362,10 +371,65 @@ def calc_dos(kso_info_path: str, gaussian_width: float, e_grid: np.ndarray = Non
         )
 
     dos = np.zeros(len(e_grid))
-    for e_center in kso_info["energy_eV"]:
-        dos += evaluate_gaussian(target=e_grid, center=e_center, width=gaussian_width)
+    for kso in kso_info:
+        dos += (
+            evaluate_gaussian(
+                target=e_grid, center=kso["energy_eV"], width=gaussian_width
+            )
+            * kso["k_weight"]  # ensure k-weighted
+        )
+
+    dos *= orbital_occupancy  # acccount for orbital occupancy
 
     return e_grid, dos
+
+
+def calculate_fermi_energy(
+    kso_info_path: str,
+    n_electrons: int,
+    e_grid: Optional[np.ndarray] = None,
+    orbital_occupancy: float = 2.0,
+    gaussian_width: float = 0.3,
+    interpolation_truncation: Optional[float] = 0.1,
+) -> float:
+    """
+    Calculates the Fermi energy by integrating the cumulative density of states.
+
+    If `e_grid` is specified, the DOS will be calculated on this grid. Otherwise, the
+    `e_grid` is taken across the range of energies in the `kso_info_path` file.
+
+    The number of electrons `n_electrons` should correspond to the number of expected
+    electrons to be integrated over in the DOS for the given energy range.
+
+    If the `e_grid` range is specified as a subset, i.e. excluding core states,
+    `n_electrons` should beadjusted accordingly.
+
+    The `orbital_occupancy` is the number of electrons that can occupy each orbital. By
+    default, this is set to 2.0 for spin-paired electrons.
+    """
+    # Calc and plot the DOS
+    kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
+
+    # Calculate the DOS, k-weighted and accounting for orbital occupancy
+    e_grid, dos = calculate_dos(
+        kso_info_path,
+        gaussian_width=gaussian_width,
+        e_grid=e_grid,
+        orbital_occupancy=orbital_occupancy,
+    )
+
+    # Compute the cumulative DOS and interpolate
+    cumulative_dos = cumulative_trapezoid(dos, e_grid, axis=0) - n_electrons
+    interpolated = interp1d(
+        e_grid[:-1], cumulative_dos, kind="cubic", copy=True, assume_sorted=True
+    )
+    fermi_energy = brentq(
+        interpolated,
+        e_grid[0] + interpolation_truncation,
+        e_grid[-1] - interpolation_truncation,
+    )
+
+    return fermi_energy
 
 
 def sort_field_by_grid_points(field: Union[str, np.ndarray]) -> np.ndarray:
