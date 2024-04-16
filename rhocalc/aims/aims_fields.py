@@ -244,16 +244,23 @@ def _get_kso_weight_vector_ildos_analytical(
     Gaussian function of width \sigma, k_weight(a) is the weight of the k-point that
     accounts for symmetry in the Brillouin zone.
     """
+    if not np.abs(biasing_voltage) > 0:
+        raise ValueError("Biasing voltage must be non-zero")
+
+    # Define the integration limits. If biasing voltage is negative, limits should be
+    # switched
+    if biasing_voltage >= 0:
+        lim_lo, lim_hi = target_energy, target_energy + biasing_voltage
+    else:
+        lim_lo, lim_hi = target_energy + biasing_voltage, target_energy
+
     kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
 
     W_vect = []
     for kso in kso_info:
         W_a = 0.5 * (
-            erf((kso["energy_eV"] - target_energy) / (np.sqrt(2) * gaussian_width))
-            - erf(
-                (kso["energy_eV"] - target_energy - biasing_voltage)
-                / (np.sqrt(2) * gaussian_width)
-            )
+            erf((kso["energy_eV"] - lim_lo) / (np.sqrt(2) * gaussian_width))
+            - erf((kso["energy_eV"] - lim_hi) / (np.sqrt(2) * gaussian_width))
         )
         W_vect.append(W_a * kso["k_weight"])
 

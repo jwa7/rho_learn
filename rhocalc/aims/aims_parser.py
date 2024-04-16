@@ -752,3 +752,74 @@ def process_aims_ri_results(
     io.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), aims_out)
 
     return
+
+
+def calculate_electrostatic_potential(
+    rho: np.ndarray,
+    grid: np.ndarray,
+    eval_coords: Optional[np.ndarray] = None,
+    eval_coords_size: Optional[np.ndarray] = None, 
+) -> Tuple[np.ndarray]:
+    """
+    Calculate the electrostatic potential for a given charge density `rho` and grid
+    points on which it is evaluated `grid` (including integration weights).
+    
+    A vector of points `eval_coords` can be provided as the points at which the
+    potential is evaluated.
+    
+    If `eval_coords` is None, the grid is constructed by uniformly discretizing over the
+    min and max coordinates in `grid` along each axis, according to the
+    `eval_coord_size` parameter.
+
+    Returned is a tuple of the Z evaluation coordinates, and the electrostatic potential
+    V_z at the Z coordinate, averaged over the evaluation points in that Z plane.
+    """
+    # Check grid points match
+    assert np.all(rho[:, :3] == grid[:, :3])
+
+    # Weight the charge density by the grid weights
+    rho = rho[:, 3] * grid[:, 3]
+    coords = grid[:, :3]
+
+    if eval_coords is None:
+        if eval_coords_size is None:
+            raise ValueError("If `eval_coords` is None, `eval_coords_size` must be provided")
+        min_x, max_x = grid[:, 0].min(), grid[:, 0].max()
+        min_y, max_y = grid[:, 1].min(), grid[:, 1].max()
+        min_z, max_z = grid[:, 2].min(), grid[:, 2].max()
+        X, Y, Z = [
+            np.linspace(min_, max_, size) for min_, max_, size in zip(
+                [min_x, min_y, min_z], [max_x, max_y, max_z], eval_coords_size
+            )
+        ]
+    else:
+        if eval_coords.shape[1] != 3:
+            raise ValueError("eval_coords must have shape (N_pts, 3)")
+        Z = eval_coords[:, 2]
+
+    V = []
+    for z in Z:
+        # Get evaluation coordinates in the current z plane
+        eval_coords = np.array([np.array([x, y, z]) for x in X for y in Y])
+
+        # Calculate |r - r'| for all r in the `eval_coords` and all r' in `coords`
+        norm_length = np.linalg.norm(
+            np.abs(
+                coords.reshape(coords.shape[0], 1, coords.shape[1]).repeat(eval_coords.shape[0], axis=1) 
+                - eval_coords
+            ),
+            axis=2
+        )
+
+        # Calculate the integrand for all r in `coords` and all r' in `eval_coords`
+        integrand = (rho.reshape(-1, 1) / norm_length)
+        
+        # Calculate the integral, y summing over `coords` 
+        integral = integrand.sum(axis=0)
+
+        # Mean over points in the Z plane
+        V_z = integral.mean()
+        V.append(V_z)
+
+    return Z, np.array(V)
+
