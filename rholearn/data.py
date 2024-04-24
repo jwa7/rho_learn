@@ -4,9 +4,11 @@ Dataset.
 """
 
 from itertools import product
-from typing import List
+from typing import List, Optional, Union
 
+import numpy as np
 import torch
+
 import metatensor.torch as mts
 
 

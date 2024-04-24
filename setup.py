@@ -9,6 +9,8 @@ setup(
             "rhocalc.*",
             "rholearn", 
             "rholearn.*",
+            "rhotrain",
+            "rhotrain*",
             ]
         ),
 )

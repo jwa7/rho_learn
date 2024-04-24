@@ -5,23 +5,40 @@ import ase.io
 import torch
 import metatensor.torch as mts
 
-
-# ===== SETUP =====
-SEED = 42
-TOP_DIR = "/work/cosmo/abbott/april-24/si_masked"
+TOP_DIR = "/home/abbott/march-24/rho_learn/example/si_masked"
 DATA_DIR = join(TOP_DIR, "data")
 FIELD_NAME = "edensity"
 RI_FIT_ID = "edensity"
 ML_RUN_ID = "unmasked"
 ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID)
 
+DTYPE = torch.float64
+DEVICE = "cpu"
+
+SETTINGS = dict(
+
+# ===== SETUP =====
+SEED = 42,
+# TOP_DIR = "/home/abbott/march-24/rho_learn/example/si_masked",
+# DATA_DIR = join(TOP_DIR, "data"),
+# FIELD_NAME = "edensity",
+# RI_FIT_ID = "edensity",
+# ML_RUN_ID = "unmasked",
+# ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID),
+TOP_DIR = TOP_DIR,
+DATA_DIR = DATA_DIR,
+FIELD_NAME = FIELD_NAME,
+RI_FIT_ID = RI_FIT_ID,
+ML_RUN_ID = ML_RUN_ID,
+ML_DIR = ML_DIR,
+
 
 # ===== DATA =====
-ALL_STRUCTURE = ase.io.read(join(DATA_DIR, "si_slabs_dimer_z_depth_geomopt_distorted.xyz"), ":")
-ALL_STRUCTURE_ID = np.arange(len(ALL_FRAMES))
+ALL_STRUCTURE = ase.io.read(join(DATA_DIR, "si_slabs_dimer_z_depth_geomopt_distorted.xyz"), ":"),
+ALL_STRUCTURE_ID = np.arange(len(ALL_FRAMES)),
 # np.random.default_rng(seed=SEED).shuffle(ALL_STRUCTURE_ID)  # shuffle first?
-STRUCTURE_ID = ALL_STRUCTURE_ID[6::13]
-STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
+STRUCTURE_ID = ALL_STRUCTURE_ID[6::13],
+STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID],
 
 
 # ===== HPC
@@ -32,7 +49,7 @@ SBATCH = {
     "mem-per-cpu": 0,
     "partition": "standard",
     "ntasks-per-node": 72,
-}
+},
 HPC = {
     "load_modules": ["intel", "intel-oneapi-mpi", "intel-oneapi-mkl"],
     "export_vars": [
@@ -42,16 +59,16 @@ HPC = {
         "I_MPI_FABRICS=shm",
     ],
     "run_command": "srun",
-}
+},
 
 
 # ===== MODEL & TRAINING =====
-DTYPE = torch.float64
-DEVICE = "cpu"
+DTYPE = DTYPE,
+DEVICE = DEVICE,
 TORCH = {
     "dtype": DTYPE,  # important for model accuracy
     "device": torch.device(type=DEVICE),
-}
+},
 DESCRIPTOR_HYPERS = {
     "spherical_expansion_hypers": {
         "cutoff": 4.0,  # Angstrom
@@ -74,7 +91,7 @@ DESCRIPTOR_HYPERS = {
         ),
         "skip_redundant": True,
     }
-}
+},
 # TODO: move partially initialized architecture to here once updated
 # MODEL_HYPERS = {
 #     "nn": [
@@ -88,13 +105,13 @@ CROSSVAL = {
     "n_groups": 3,  # num groups for data split (i.e. 3 for train-test-val)
     "group_sizes": [len(STRUCTURE_ID), 0, 0],  # the abs/rel group sizes for the data splits
     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
-}
+},
 TRAIN = {
     # Training
     "batch_size": 1,
     "n_epochs": 3001,  # number of total epochs to run. End in a 1, i.e. 20001.
     "restart_epoch": 2000,  # The epoch of the last saved checkpoint, or None for no restart
-    "use_overlap": 0,  # epoch to start using ovlp in loss evaluation, or 0 to always use it, -1 to never use it.
+    "use_overlap": 0,  # True/False, or the epoch to start using it at
     # Evaluation
     "eval_interval": None,  # validate every x epochs against real-space SCF field. None to turn off evaluation
     "eval_subset": "train",
@@ -103,18 +120,18 @@ TRAIN = {
     # Saving and logging
     "checkpoint_interval": 250,  # save model and optimizer state every x intervals
     "log_interval": 250,  # how often to log the loss
-    "log_block_losses": True,  # whether to log the block losses
+    "log_block_loss": True,  # whether to log the block losses
     # Masked learning
     "masked_learning": True,
     "slab_depth": 4.0,  # Ang
     "interphase_depth": 1.0,  # Ang
-}
+},
 OPTIMIZER = partial(
     torch.optim.Adam, 
     **{
         "lr": 1e-3,
     }
-)
+),
 # SCHEDULER = None
 SCHEDULER = partial(
     torch.optim.lr_scheduler.MultiStepLR,
@@ -122,22 +139,34 @@ SCHEDULER = partial(
         "milestones": [2250, 2500, 2750],
         "gamma": 0.1,
     }
-)
+),
 
 
 # ===== Define and create relative directories
-SCF_DIR = lambda A: join(DATA_DIR, f"{A}")
-RI_DIR = lambda A: join(SCF_DIR(A), RI_FIT_ID)
-REBUILD_DIR = lambda A: join(RI_DIR(A), "rebuild")
-PROCESSED_DIR = lambda A: join(RI_DIR(A), "processed")
-CHKPT_DIR = lambda epoch: join(ML_DIR, "checkpoint", f"epoch_{epoch}")
-EVAL_DIR = lambda A, epoch: join(ML_DIR, "evaluation", f"epoch_{epoch}", f"{A}")
+SCF_DIR = lambda A: join(DATA_DIR, f"{A}"),
+RI_DIR = lambda A: join(SCF_DIR(A), RI_FIT_ID),
+REBUILD_DIR = lambda A: join(RI_DIR(A), "rebuild"),
+PROCESSED_DIR = lambda A: join(RI_DIR(A), "processed"),
+CHKPT_DIR = lambda epoch: join(ML_DIR, "checkpoint", f"epoch_{epoch}"),
+EVAL_DIR = lambda A, epoch: join(ML_DIR, "evaluation", f"epoch_{epoch}", f"{A}"),
+
+)
+
 # Create dirs
-if not exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
-if not exists(ML_DIR):
-    os.makedirs(ML_DIR)
-if not exists(join(ML_DIR, "checkpoint")):
-    os.makedirs(join(ML_DIR, "checkpoint"))
-if not exists(join(ML_DIR, "evaluation")):
-    os.makedirs(join(ML_DIR, "evaluation"))
+# if not exists(SETTINGS.DATA_DIR):
+#     os.makedirs(SETTINGS.DATA_DIR)
+# if not exists(ML_DIR):
+#     os.makedirs(ML_DIR)
+# if not exists(join(ML_DIR, "checkpoint")):
+#     os.makedirs(join(ML_DIR, "checkpoint"))
+# if not exists(join(ML_DIR, "evaluation")):
+#     os.makedirs(join(ML_DIR, "evaluation"))
+
+if not exists(SETTINGS.DATA_DIR):
+    os.makedirs(SETTINGS.DATA_DIR)
+if not exists(SETTINGS.ML_DIR):
+    os.makedirs(SETTINGS.ML_DIR)
+if not exists(join(SETTINGS.ML_DIR, "checkpoint")):
+    os.makedirs(join(SETTINGS.ML_DIR, "checkpoint"))
+if not exists(join(SETTINGS.ML_DIR, "evaluation")):
+    os.makedirs(join(SETTINGS.ML_DIR, "evaluation"))

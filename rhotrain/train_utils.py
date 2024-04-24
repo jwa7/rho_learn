@@ -7,6 +7,7 @@ import time
 from functools import partial
 from typing import Callable, List, Optional, Tuple, Union
 
+import ase
 import numpy as np
 import torch
 
@@ -15,11 +16,10 @@ from metatensor.torch.learn.data import IndexedDataset
 
 import rascaline.torch
 
-from rhocalc.aims import aims_parser
+from rhocalc.aims import aims_fields
 from rhocalc.ase import structure_builder
 from rholearn import data, nn
-
-from model import DescriptorCalculator
+from rhotrain.model import DescriptorCalculator
 
 
 def get_selected_samples(
@@ -52,16 +52,18 @@ def get_selected_samples(
     selected_samples = []
     for A, frame in zip(structure_id, structure):
         # Partition atoms into S, I, B regions
-        idxs_surface, idxs_interphase, idxs_bulk = structure_builder.get_atom_idxs_by_region(
-            frame, slab_depth, interphase_depth
+        idxs_surface, idxs_interphase, idxs_bulk = (
+            structure_builder.get_atom_idxs_by_region(
+                frame, slab_depth, interphase_depth
+            )
         )
         # Keep S + I atoms
         for atom_i in list(idxs_surface) + list(idxs_interphase):
-            selected_samples.append(
-                [A, atom_i]
-            )
+            selected_samples.append([A, atom_i])
 
-    return mts.Labels(names=["structure", "center"], values=torch.tensor(selected_samples))
+    return mts.Labels(
+        names=["structure", "center"], values=torch.tensor(selected_samples)
+    )
 
 
 def calculate_descriptors(
@@ -108,8 +110,10 @@ def mask_dft_data(
     """
     target_masked, aux_masked = [], []
     for frame, t, o in zip(structure, target, aux):
-        idxs_surface, idxs_interphase, idxs_bulk = structure_builder.get_atom_idxs_by_region(
-            frame, TRAIN.get("slab_depth"), TRAIN.get("interphase_depth")
+        idxs_surface, idxs_interphase, idxs_bulk = (
+            structure_builder.get_atom_idxs_by_region(
+                frame, TRAIN.get("slab_depth"), TRAIN.get("interphase_depth")
+            )
         )
         idxs_to_keep = list(idxs_surface) + list(idxs_interphase)
 
@@ -120,14 +124,13 @@ def mask_dft_data(
 
 
 def get_nn(
-    in_keys: Labels,
+    in_keys: mts.Labels,
     invariant_key_idxs: List[int],
-    in_properties: Labels,
-    out_properties: Labels,
+    in_properties: mts.Labels,
+    out_properties: mts.Labels,
     dtype: torch.dtype,
-
 ) -> torch.nn.Module:
-    """Initializes or loads from checkpoint the model"""
+    """Builds a NN sequential ModuleMap"""
 
     # TODO: move partially initialized nn architecture to settings
     return nn.Sequential(
@@ -135,9 +138,7 @@ def get_nn(
         nn.EquiLayerNorm(
             in_keys=in_keys,
             invariant_key_idxs=invariant_key_idxs,
-            normalized_shape=[
-                len(in_properties[i]) for i in invariant_key_idxs
-            ],
+            normalized_shape=[len(in_properties[i]) for i in invariant_key_idxs],
             dtype=dtype,
         ),
         nn.Linear(
@@ -145,8 +146,7 @@ def get_nn(
             in_features=[len(in_props) for in_props in in_properties],
             out_features=[len(out_props) for out_props in out_properties],
             bias=[
-                True if key["spherical_harmonics_l"] == 0 else False
-                for key in in_keys
+                True if key["spherical_harmonics_l"] == 0 else False for key in in_keys
             ],
             out_properties=out_properties,
             dtype=dtype,
@@ -154,12 +154,33 @@ def get_nn(
     )
 
 
+def parse_use_overlap_setting(
+    use_overlap: Union[bool, int], epochs: torch.Tensor
+) -> List[bool]:
+    """
+    Returns a list of boolean values, indicating whether to use the auxiliary
+    data (i.e. overlaps) in loss evaluation at each of the epochs in `epochs`.
+    """
+    if isinstance(use_overlap, bool):
+        return [use_overlap] * len(epochs)
+
+    assert isinstance(use_overlap, int)
+
+    parsed_use_overlap = []
+    for epoch in epochs:
+        if epoch < use_overlap:
+            parsed_use_overlap.append(False)
+        else:
+            parsed_use_overlap.append(True)
+
+    return parse_use_overlap
+
+
 def training_step(
-    model,
-    loss_fn,
-    optimizer,
     train_loader,
-    scheduler=None,
+    model,
+    optimizer,
+    loss_fn,
     check_metadata=False,
     use_aux: bool = False,
 ) -> Tuple[torch.Tensor]:
@@ -214,11 +235,7 @@ def training_step(
     return train_loss_epoch
 
 
-def validation_step(
-    model,
-    loss_fn,
-    val_loader,
-) -> torch.Tensor:
+def validation_step(val_loader, model, loss_fn) -> torch.Tensor:
     """
     Performs a single validation step
     """
@@ -304,7 +321,7 @@ def evaluation_step(
         target = np.loadtxt(  # target scalar field
             os.path.join(reference_dir(A), f"rho_{target_type}.out")
         )
-        percent_mae = aims_parser.get_percent_mae_between_fields(  # calc MAE
+        percent_mae = aims_fields.get_percent_mae_between_fields(  # calc MAE
             input=prediction,
             target=target,
             grid=grid,
@@ -342,6 +359,28 @@ def get_block_losses(model, dataloader):
                 )
 
     return block_losses
+
+
+def save_checkpoint(model: torch.nn.Module, optimizer, scheduler, chkpt_dir: str):
+    """
+    Saves model object, model state dict, optimizer state dict, scheduler state dict,
+    to file.
+    """
+    if not os.path.exists(chkpt_dir):  # create chkpoint dir
+        os.makedirs(chkpt_dir)
+
+    torch.save(model, os.path.join(chkpt_dir, f"model.pt"))  # model obj
+    torch.save(  # model state dict
+        model.state_dict(),
+        os.path.join(chkpt_dir, f"model_state_dict.pt"),
+    )
+    # Optimizer and scheduler
+    torch.save(optimizer.state_dict(), os.path.join(chkpt_dir, f"optimizer.pt"))
+    if scheduler is not None:
+        torch.save(
+            scheduler.state_dict(),
+            os.path.join(chkpt_dir, f"scheduler.pt"),
+        )
 
 
 def run_training_sbatch(run_dir: str, **kwargs) -> None:
