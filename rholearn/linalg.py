@@ -47,12 +47,15 @@ def linalg_fit(
         else:
             raise
 
-        # model = linear_model.Ridge(alpha=1e-20, fit_intercept=fit_intercept)
         if model_type == "linear":
             model = linear_model.LinearRegression(fit_intercept=fit_intercept)
         elif model_type == "ridge":
             model = linear_model.Ridge(
                 alpha=kwargs.get("alpha"), fit_intercept=fit_intercept
+            )
+        elif model_type == "ridgecv":
+            model = linear_model.RidgeCV(
+                alphas=kwargs.get("alphas"), fit_intercept=fit_intercept, cv=kwargs.get("cv"),
             )
         else:
             raise ValueError("invalid `model_type`")
