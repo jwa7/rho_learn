@@ -47,17 +47,24 @@ def unpickle_dict(path: str):
     return d
 
 
-def log(log_path: str, line: str):
+def log(log_path: str, line: str, comment: bool = True, timestamp: bool = True):
     """
     Writes the string in `line` to the file at `log_path`, inserting a newline
-    character at the end.
+    character at the end. By default a '#' is prefixed to every line, followed
+    optionally by a timestamp.
     """
+    log_line = ""
+    if comment:
+        log_line = "#"
+    if timestamp:
+        log_line += " " + utils.timestamp() + " "
+    log_line += line
     if os.path.exists(log_path):
         with open(log_path, "a") as f:
-            f.write(line + "\n")
+            f.write(log_line + "\n")
     else:
         with open(log_path, "w") as f:
-            f.write(line + "\n")
+            f.write(log_line + "\n")
 
 
 def load_rho_model(path: str) -> torch.nn.Module:

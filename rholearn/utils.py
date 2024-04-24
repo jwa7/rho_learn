@@ -12,8 +12,8 @@ from metatensor import Labels, TensorBlock, TensorMap
 
 
 def timestamp() -> str:
-    """Return a timestamp string in format YYYYMMDDHHMMSS."""
-    return datetime.datetime.today().strftime('%Y%m%d%H%M%S')
+    """Return a timestamp string in format YYYY-MM-DD-HH:MM:SS."""
+    return datetime.datetime.today().strftime('%Y-%m-%d-%H:%M:%S')
 
 # ===== torch to core
 

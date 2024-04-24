@@ -18,13 +18,10 @@ from rascaline.torch.utils.clebsch_gordan import DensityCorrelations
 torch.set_default_dtype(torch.float64)
 
 
-class LambdaSoapCalculator(torch.nn.Module):
+class DescriptorCalculator(torch.nn.Module):
     """
-    Defines a torchscriptable lambda-SOAP descriptor calculator.
-
-    :param atom_types: List of atomic numbers for the atom types in the system.
-        These should match the global species indices for which the model is
-        defined, such that any
+    Transforms an ASE frame into a atom-centered density correlation descriptor,
+    according to the specified hypers.
     """
 
     def __init__(
@@ -273,7 +270,7 @@ class LambdaSoapCalculator(torch.nn.Module):
         return reindexed_descriptor
 
 
-class RhoModel(torch.nn.Module):
+class Model(torch.nn.Module):
     """
     Global model class.
 

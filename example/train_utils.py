@@ -10,10 +10,148 @@ from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
-import metatensor
+import metatensor.torch as mts
+from metatensor.torch.learn.data import IndexedDataset
 
-from rholearn import io
+import rascaline.torch
+
 from rhocalc.aims import aims_parser
+from rhocalc.ase import structure_builder
+from rholearn import data, nn
+
+from model import DescriptorCalculator
+
+
+def get_selected_samples(
+    structure: List[ase.Atoms],
+    structure_id: List[int],
+    masked_learning: bool = False,
+    slab_depth: Optional[float] = None,
+    interphase_depth: Optional[float] = None,
+) -> mts.Labels:
+    """
+    Generates a `mts.Labels` object of the samples to compute when calling the
+    DescriptorCalculator. There are 2 uses of this:
+
+    1. Passing a global set of frames to, i.e. rascaline.SphericalExpansion, to then
+       compute only a subset. This ensures the feature space has the global dimension.
+    2. Computing the atom-centered density correlations for a subset of atoms within
+       each frame. This is useful for masked learning, i.e. for learning the surfaces of
+       slabs.
+
+    If `masked_learning` is true, `slab_depth` and `interphase_depth` must be passed.
+    """
+    # Normal use case: subset of structures
+    if not masked_learning:
+        return mts.Labels(
+            names=["structure"],
+            values=torch.tensor(structure_id).reshape(-1, 1),
+        )
+
+    # Extended use case: subset of structures and subset of atoms within them
+    selected_samples = []
+    for A, frame in zip(structure_id, structure):
+        # Partition atoms into S, I, B regions
+        idxs_surface, idxs_interphase, idxs_bulk = structure_builder.get_atom_idxs_by_region(
+            frame, slab_depth, interphase_depth
+        )
+        # Keep S + I atoms
+        for atom_i in list(idxs_surface) + list(idxs_interphase):
+            selected_samples.append(
+                [A, atom_i]
+            )
+
+    return mts.Labels(names=["structure", "center"], values=torch.tensor(selected_samples))
+
+
+def calculate_descriptors(
+    descriptor_calculator: torch.nn.Module,
+    all_structure: List[ase.Atoms],
+    all_structure_id: List[int],
+    structure_id: List[int],
+    correlate_what: str = "pxp",
+    selected_samples: Optional[mts.Labels] = None,
+) -> List[torch.ScriptObject]:
+    """
+    Takes an initialized DescriptorCalculator and calculates descriptors for the frames
+    in `all_structure` corresponding to those indexed in `structure_id`.
+    """
+    if selected_samples:
+        compute_args = {"selected_samples": selected_samples}
+    else:
+        compute_args = {}
+    descriptor = descriptor_calculator(
+        system=rascaline.torch.systems_to_torch(all_structure),
+        structure_id=structure_id,
+        selected_samples=selected_samples,
+        correlate_what=correlate_what,
+        spherical_expansion_compute_args=compute_args,
+        lode_spherical_expansion_compute_args=compute_args,
+    )
+
+    return descriptor
+
+
+def load_dft_data(path: str, torch_kwargs: dict) -> torch.ScriptObject:
+    """Loads a TensorMap from file and converts its backend to torch"""
+    return mts.load(path).to(**torch_kwargs)
+
+
+def mask_dft_data(
+    structure: List[ase.Atoms],
+    target: List[torch.ScriptObject],
+    aux: List[torch.ScriptObject],
+) -> Tuple[torch.ScriptObject]:
+    """
+    Masks the RI coefficients and overlap TensorMaps according to the slab/interphase
+    depth
+    """
+    target_masked, aux_masked = [], []
+    for frame, t, o in zip(structure, target, aux):
+        idxs_surface, idxs_interphase, idxs_bulk = structure_builder.get_atom_idxs_by_region(
+            frame, TRAIN.get("slab_depth"), TRAIN.get("interphase_depth")
+        )
+        idxs_to_keep = list(idxs_surface) + list(idxs_interphase)
+
+        target_masked.append(data.mask_coeff_vector_tensormap(t, idxs_to_keep))
+        aux_masked.append(data.mask_ovlp_matrix_tensormap(o, idxs_to_keep))
+
+    return target_masked, aux_masked
+
+
+def get_nn(
+    in_keys: Labels,
+    invariant_key_idxs: List[int],
+    in_properties: Labels,
+    out_properties: Labels,
+    dtype: torch.dtype,
+
+) -> torch.nn.Module:
+    """Initializes or loads from checkpoint the model"""
+
+    # TODO: move partially initialized nn architecture to settings
+    return nn.Sequential(
+        in_keys,
+        nn.EquiLayerNorm(
+            in_keys=in_keys,
+            invariant_key_idxs=invariant_key_idxs,
+            normalized_shape=[
+                len(in_properties[i]) for i in invariant_key_idxs
+            ],
+            dtype=dtype,
+        ),
+        nn.Linear(
+            in_keys,
+            in_features=[len(in_props) for in_props in in_properties],
+            out_features=[len(out_props) for out_props in out_properties],
+            bias=[
+                True if key["spherical_harmonics_l"] == 0 else False
+                for key in in_keys
+            ],
+            out_properties=out_properties,
+            dtype=dtype,
+        ),
+    )
 
 
 def training_step(
@@ -158,7 +296,7 @@ def evaluation_step(
     assert reference_dir is not None
 
     percent_maes = []
-    for A, frame, prediction in zip(structure_id, STRUCTURES, predictions):
+    for A, frame, prediction in zip(structure_id, structure, predictions):
 
         grid = np.loadtxt(  # integration weights
             os.path.join(reference_dir(A), "partition_tab.out")

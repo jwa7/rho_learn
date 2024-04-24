@@ -222,28 +222,23 @@ def make_slab_topside_dimer_pair(
     return slab
 
 
-def get_atom_idxs_by_region(frame: ase.Atoms, slab_depth: float, cutoff_dft: float):
+def get_atom_idxs_by_region(frame: ase.Atoms, slab_depth: float, interphase_depth: float):
     """
     Returns the atomic indices of the surface (S), interphase (I), and bulk (B) regions
     of a frame, respectively.
 
-    If `d_S` is the slab depth and `r_c` is the cutoff radius for the DFT calculations,
+    If `d_S` is the slab depth and `d_I` is depth of the interphase (buffer) region,
     `z_max` the maximum z_coordinate of the frame, and `z_i` is the z-coordinate of atom
     i, the atoms are classified as follows:
 
         - Surface: z_i >= z_max - d_S
-        - Interphase: z_max - d_S - r_c <= z_i < z_max - d_S
-        - Bulk: z_i < z_max - d_S - r_c
-
-    Surface atoms are defined as those with z-coordinates greater than the maximum
-    z-coordinate minus the slab depth.
-
-    Interphase atoms are defined as those with z-coordinates greater tha
+        - Buffer: z_max - d_S - d_I <= z_i < z_max - d_S
+        - Bulk: z_i < z_max - d_S - d_I
     """
     # Define the region boundaries
     z_max = frame.positions[:, 2].max()
     s_i_boundary = z_max - slab_depth
-    i_b_boundary = z_max - slab_depth - cutoff_dft
+    i_b_boundary = z_max - slab_depth - interphase_depth
 
     # Find the indices for the surface, interphase, and bulk regions
     idxs_surface = np.where(frame.positions[:, 2] >= s_i_boundary)[0]
