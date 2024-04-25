@@ -17,3 +17,9 @@ docs/example/tensor/ml/*
 # AIMS binary
 rhocalc/aims/aims.*
 rhocalc/aims/tests/*
+
+# Calculations
+example/*/*.sh
+example/*/slurm_out
+example/*/ml
+example/*/data

@@ -13,7 +13,7 @@ import metatensor.torch as mts
 
 # ===== SETUP =====
 SEED = 42
-TOP_DIR = "/home/abbott/march-24/rho_learn/example/si_masked"
+TOP_DIR = "/home/abbott/march-24/rho_learn/example"
 # DATA_DIR = join(TOP_DIR, "data")
 DATA_DIR = "/work/cosmo/abbott/march-24/si_z_depth_dimer_geomopt_distorted/data"
 FIELD_NAME = "edensity"
