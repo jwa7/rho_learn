@@ -33,7 +33,7 @@ def test_l2loss_identity_overlap():
 
     # Load dummy calculation info. The only important bits here are the basis
     # set info: lmax and nmax
-    calc = io.unpickle_dict("data/calc_info.pickle")
+    calc = utils.unpickle_dict("data/calc_info.pickle")
 
     # Convert output to TensorMap
     out_tm = metatensor.to(

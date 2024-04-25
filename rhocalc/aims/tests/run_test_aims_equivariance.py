@@ -338,7 +338,7 @@ aims_calc.process_aims_results_sbatch_array(
 basis_set_exists = False
 while not basis_set_exists:
     try:
-        basis_set = io.unpickle_dict(
+        basis_set = utils.unpickle_dict(
             os.path.join(ri_dir(0, DATA_SETTINGS["ri_restart_idx"]), "processed", "calc_info.pickle")
         )["basis_set"]
     except FileNotFoundError:

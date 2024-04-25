@@ -1,264 +1,201 @@
-"""
-Module containing functions to perform model training and evaluation steps.
-"""
-
-import os
+from os.path import exists, join
 import time
-from functools import partial
-from typing import Callable, List, Optional, Tuple, Union
 
-import numpy as np
 import torch
 
-import metatensor
+import metatensor.torch as mts
+from metatensor.torch.learn.data import DataLoader, IndexedDataset, group
 
-from rholearn import io
-from rhocalc.aims import aims_parser
+from rholearn import io, utils
+from rhotrain.model import DescriptorCalculator, Model
+from rhotrain.train_utils import *
 
 
-def training_step(
-    model,
-    loss_fn,
-    optimizer,
-    train_loader,
-    scheduler=None,
-    check_metadata=False,
-    use_aux: bool = False,
-) -> Tuple[torch.Tensor]:
-    """
-    Performs a single epoch of training by minibatching.
-    """
-    model.train()
+def set_settings_gloablly(ml_settings: dict):
+    global_vars = globals()
+    for key, value in ml_settings.items():
+        global_vars[key] = value
 
-    train_loss_epoch, n_train_epoch = 0, 0
-    for train_batch in train_loader:
 
-        optimizer.zero_grad()  # zero grads
+def train(ml_settings: dict):
 
-        id_train, struct_train, in_train, out_train, aux_train = (
-            train_batch  # unpack batch
+    # ===== Setup =====
+    t0_training = time.time()
+    set_settings_gloablly(ml_settings)
+    torch.manual_seed(SEED)
+    torch.set_default_dtype(DTYPE)
+
+    log_path = os.path.join(ML_DIR, "training.log")
+    utils.log(log_path, f"Setup")
+    utils.log(log_path, f"Top directory defined as: {TOP_DIR}")
+
+    # ===== Create datasets and dataloaders =====
+    utils.log(log_path, f"Split structure ids into subsets")
+    all_subset_id = data.group_idxs(  # cross-validation split of idxs
+        idxs=STRUCTURE_ID,
+        n_groups=CROSSVAL["n_groups"],
+        group_sizes=CROSSVAL["group_sizes"],
+        shuffle=CROSSVAL["shuffle"],
+        seed=SEED,
+    )
+    utils.log(log_path, f"Init descriptor calculator")
+    descriptor_calculator = DescriptorCalculator(**DESCRIPTOR_HYPERS)
+    datasets = []
+    for subset_id in all_subset_id:  # build each cross-val dataset
+        utils.log(log_path, f"Build dataset for structures {subset_id}")
+        selected_samples = get_selected_samples(  # for structure and/or atomic subsets
+            structure=[ALL_STRUCTURE[A] for A in subset_id],
+            structure_id=subset_id,
+            masked_learning=TRAIN["masked_learning"],
+            slab_depth=TRAIN.get("slab_depth"),
+            interphase_depth=TRAIN.get("interphase_depth"),
         )
-        if not use_aux:
-            aux_train = None
-
-        out_train_pred = model(  # forward pass
-            descriptor=in_train, check_metadata=check_metadata
+        utils.log(log_path, f"Calculate descriptors for subset {subset_id}")
+        descriptor = calculate_descriptors(  # pre-compute descriptors
+            descriptor_calculator=descriptor_calculator,
+            all_structure=ALL_STRUCTURE,
+            all_structure_id=ALL_STRUCTURE_ID,
+            structure_id=subset_id,
+            correlate_what="pxp",
+            selected_samples=selected_samples,
         )
-
-        # Drop the blocks from the prediction that aren't part of the target
-        if isinstance(out_train_pred, torch.ScriptObject):
-            out_train_pred = mts.TensorMap(
-                keys=out_train.keys,
-                blocks=[out_train_pred[key].copy() for key in out_train.keys],
+        utils.log(log_path, "Load targets and auxiliaries")
+        target = [  # load RI coeffs
+            load_dft_data(join(PROCESSED_DIR(A), "ri_coeffs.npz"), torch_kwargs=TORCH)
+            for A in subset_id
+        ]
+        aux = [  # load overlaps
+            load_dft_data(join(PROCESSED_DIR(A), "ri_ovlp.npz"), torch_kwargs=TORCH)
+            for A in subset_id
+        ]
+        if TRAIN["masked_learning"]:  # mask the RI coeffs and overlaps for bulk atoms
+            utils.log(
+                log_path,
+                f"Mask targets and auxiliaries based on slab/interphase depths of {[TRAIN.get('slab_depth'), TRAIN.get('interphase_depth')]}",
             )
-        else:
-            out_train_pred = [
-                mts.TensorMap(
-                    keys=out_train[i].keys,
-                    blocks=[out_train_pred[i][key].copy() for key in out_train[i].keys],
-                )
-                for i in range(len(out_train_pred))
+            target, aux = mask_dft_data(
+                structure=[ALL_STRUCTURE[A] for A in subset_id], target=target, aux=aux
+            )
+
+        assert mts.equal_metadata(
+            descriptor[0], target[0], check=["samples", "components"]
+        )
+
+        datasets.append(
+            IndexedDataset(
+                sample_id=subset_id,
+                structure=[ALL_STRUCTURE[A] for A in subset_id],
+                descriptor=descriptor,
+                target=target,
+                aux=aux,
+            )
+        )
+    dataloaders = [  # build dataloaders
+        DataLoader(
+            dset,
+            collate_fn=group,
+            batch_size=TRAIN["batch_size"],
+        )
+        for dset in datasets
+    ]
+
+    # ===== Model, optimizer, scheduler, loss fn =====
+    if TRAIN.get("restart_epoch") is None:  # initialize
+        utils.log(log_path, "Initializing model, optimizer, loss fn")
+        epochs = torch.arange(TRAIN["n_epochs"] + 1)
+        in_keys = descriptor[0].keys
+        invariant_key_idxs = [
+            i for i, key in enumerate(in_keys) if key["spherical_harmonics_l"] == 0
+        ]
+        in_properties = [descriptor[0][key].properties for key in in_keys]
+        out_properties = [target[0][key].properties for key in in_keys]
+        model = Model(
+            in_keys=in_keys,
+            in_properties=in_properties,
+            out_properties=out_properties,
+            descriptor_calculator=descriptor_calculator,
+            nn=get_nn(
+                in_keys, invariant_key_idxs, in_properties, out_properties, DTYPE
+            ),
+            **TORCH,
+        )
+        optimizer = OPTIMIZER(model.params())
+        scheduler = None
+        if SCHEDULER is not None:
+            utils.log(log_path, "Using LR scheduler")
+            scheduler = SCHEDULER(optimizer)
+
+    else:  # load
+        utils.log(log_path, "Loading model, optimizer, loss fn")
+        epochs = torch.arange(TRAIN["restart_epoch"] + 1, TRAIN["n_epochs"] + 1)
+        model = torch.load(join(CHKPT_DIR(TRAIN["restart_epoch"]), "model.pt"))
+        optimizer = torch.load(join(CHKPT_DIR(TRAIN["restart_epoch"]), "optimizer.pt"))
+        scheduler = None
+        if exists(join(CHKPT_DIR(TRAIN["restart_epoch"]), "optimizer.pt")):
+            utils.log(log_path, "Using LR scheduler")
+            scheduler = torch.load(
+                join(CHKPT_DIR(TRAIN["restart_epoch"]), "optimizer.pt")
+            )
+
+    loss_fn = LOSS_FN()
+
+    # Try a model save/load
+    torch.save(model, os.path.join(ML_DIR, "model.pt"))
+    torch.load(os.path.join(ML_DIR, "model.pt"))
+    os.remove(os.path.join(ML_DIR, "model.pt"))
+    utils.log(log_path, "Model Architecture:")
+    utils.log(str(model).replace("\n", "\n#"))
+
+    # ===== Training loop =====
+    utils.log(log_path, f"Start training loops. Epochs: {epochs[0]} -> {epochs[-1]}")
+    use_overlap = parse_use_overlap_setting(TRAIN["use_overlap"], epochs)
+
+    for epoch, use_ovlp in zip(epochs, use_ovlps):
+
+        t0 = time.time()
+        train_loss = training_step(  # train subset
+            dataloaders[0],
+            model,
+            optimizer,
+            loss_fn,
+            check_metadata=epoch == 0,
+            use_aux=use_ovlp,
+        )
+        val_losses = []
+        if len(dataloaders) > 1:  # i.e. val and test subsets, if present
+            val_losses = [
+                validation_step(dloader, model, loss_fn) for dloader in dataloaders[1:]
             ]
+            if (
+                scheduler is not None
+            ):  # update learning rate based on the validation loss
+                scheduler.step(val_losses[0])
+                lr = scheduler._last_lr[0]
+            else:
+                lr = torch.nan
 
-        train_loss_batch = loss_fn(  # train loss
-            input=out_train_pred,
-            target=out_train,
-            overlap=aux_train,
-            check_metadata=check_metadata,
-        )
-        train_loss_batch.backward()  # backward pass
-        optimizer.step()  # update parameters
-        train_loss_epoch += train_loss_batch  # store loss
-        n_train_epoch += len(id_train)  # accumulate num structures in epoch
+        # Log general info and losses
+        if epoch % TRAIN("log_interval") == 0:
+            log_msg = f"epoch {epoch} lr {lr} time {time.time() - t0} use_ovlp {use_ovlp} train_loss {train_loss}"
+            if len(val_losses) > 0:
+                for i, tmp_val_loss in enumerate(val_losses):
+                    log_msg += f"val_loss_{i} {tmp_val_loss}"
+            utils.log(log_path, log_msg)
 
-    train_loss_epoch /= n_train_epoch  # normalize loss by num structures
+            if TRAIN("log_block_loss"):
+                block_losses = get_block_losses(model, train_loader)
+                for key, block_loss in block_losses.items():
+                    utils.log(log_path, f"    key {key} block_loss {block_loss}")
 
-    return train_loss_epoch
+        # Save checkpoint
+        if epoch % TRAIN_["checkpoint_interval"] == 0:
+            save_checkpoint(model, optimizer, scheduler, chkpt_dir=CHKPT_DIR(epoch))
 
-
-def validation_step(
-    model,
-    loss_fn,
-    val_loader,
-) -> torch.Tensor:
-    """
-    Performs a single validation step
-    """
-    with torch.no_grad():
-        val_loss_epoch, out_val_pred = torch.nan, None
-        val_loss_epoch = 0
-        n_val_epoch = 0
-        for val_batch in val_loader:  # minibatches
-
-            id_val, struct_val, in_val, out_val, aux_val = val_batch  # unpack batch
-            if not use_aux:
-                aux_val = None
-
-            out_val_pred = model(in_val, check_metadata=check_metadata)
-            val_loss_batch = loss_fn(  # validation loss
-                input=out_val_pred,
-                target=out_val,
-                overlap=aux_val,
-                check_metadata=check_metadata,
-            )
-            val_loss_epoch += val_loss_batch  # store loss
-            n_val_epoch += len(id_val)
-
-        val_loss_epoch /= n_val_epoch  # normalize loss
-
-        return val_loss_epoch
-
-
-def evaluation_step(
-    model,
-    dataloader,
-    save_dir: Callable,
-    calculate_error: bool = False,
-    target_type: Optional[str] = None,
-    reference_dir: Optional[Callable] = None,
-) -> Union[None, float]:
-    """
-    Evaluates the model by making a prediction (with no gradient tracking) and
-    rebuilding the scalar field from these coefficients by calling AIMS. Rebuilt
-    scalar fields are saved to `save_dir`, a callable called with each structure
-    index as an argument.
-
-    If `calculate_error` is set to true, the % MAE (normalized by the number of
-    electrons) of the rebuilt scalar field relative to either the DFT scalar
-    field (`target_type="ref"`) or the RI scalar field (`target_type="ri"`) is
-    returned.
-
-    In this case, the directories where the reference DFT calculation files are
-    stored must be specified in `reference_dir`. This is again a callable,
-    called with each structure index.
-    """
-    model.eval()
-
-    assert target_type in ["ref", "ri"]
-
-    # Compile relevant data from all minibatches
-    structure_id, structure, descriptor = [], [], []
-    for batch in dataloader:
-        for idx in batch.sample_id:
-            structure_id.append(idx)
-        for struct in batch.structure:
-            structure.append(struct)
-        for desc in batch.descriptor:
-            descriptor.append(desc)
-
-    # Make prediction with the model
-    with torch.no_grad():
-        prediction = model(  # return a list of TensorMap (or ScriptObject)
-            descriptor=descriptor, check_metadata=True
-        )
-
-    if not calculate_error:
-        return np.nan
-
-    assert reference_dir is not None
-
-    percent_maes = []
-    for A, frame, prediction in zip(structure_id, STRUCTURES, predictions):
-
-        grid = np.loadtxt(  # integration weights
-            os.path.join(reference_dir(A), "partition_tab.out")
-        )
-        target = np.loadtxt(  # target scalar field
-            os.path.join(reference_dir(A), f"rho_{target_type}.out")
-        )
-        percent_mae = aims_parser.get_percent_mae_between_fields(  # calc MAE
-            input=prediction,
-            target=target,
-            grid=grid,
-        )
-        percent_maes.append(percent_mae)
-
-    return np.mean(percent_maes)
-
-
-def get_block_losses(model, dataloader):
-    """
-    For all structures in the dataloader, sums the squared errors on the
-    predictions from the model and returns the total SE for each block in a
-    dictionary.
-    """
-    with torch.no_grad():
-        # Get all the descriptors structures
-        descriptor = [desc for batch in dataloader for desc in batch.descriptor]
-        target = [targ for batch in dataloader for targ in batch.target]
-        prediction = model(descriptor=descriptor, check_metadata=False)
-        keys = prediction[0].keys
-
-        block_losses = {tuple(key): 0 for key in keys}
-        for key in keys:
-            for pred, targ in zip(prediction, target):
-                if key not in targ.keys:  # target does not have this key
-                    continue
-                # Remove predicted blocks that aren't in the target
-                pred = mts.TensorMap(
-                    keys=targ.keys, blocks=[pred[key].copy() for key in targ.keys]
-                )
-                assert mts.equal_metadata(pred, targ)
-                block_losses[tuple(key)] += torch.nn.MSELoss(reduction="sum")(
-                    pred[key].values, targ[key].values
-                )
-
-    return block_losses
-
-
-def run_training_sbatch(run_dir: str, **kwargs) -> None:
-    """
-    Writes a bash script to `fname` that allows running of model training.
-    `run_dir` must contain two files; "run_training.py" and "settings.py".
-    """
-    top_dir = os.getcwd()
-    os.chdir(run_dir)
-
-    fname = "run-training.sh"
-
-    with open(os.path.join(run_dir, fname), "w+") as f:
-
-        # Make a dir for the slurm outputs
-        if not os.path.exists(os.path.join(run_dir, "slurm_out")):
-            os.mkdir(os.path.join(run_dir, "slurm_out"))
-
-        # Write the header
-        f.write("#!/bin/bash\n")
-
-        # Write the sbatch parameters
-        for tag, val in kwargs.items():
-            f.write(f"#SBATCH --{tag}={val}\n")
-
-        f.write(
-            f"#SBATCH --output={os.path.join(run_dir, 'slurm_out', 'slurm_train.out')}\n"
-        )
-        f.write("#SBATCH --get-user-env\n")
-        f.write("\n\n")
-
-        # Define the run directory and cd to it
-        f.write("# Define the run directory and cd into it\n")
-        f.write(f"RUNDIR={run_dir}\n")
-        f.write("cd $RUNDIR\n\n")
-
-        f.write("# Run the Python command\n")
-        f.write("python run_training.py\n\n")
-
-    os.system(f"sbatch {fname}")
-    os.chdir(top_dir)
-
-    return
-
-
-def run_training_local(run_dir: str) -> None:
-    """
-    Runs the training loop in the local environment. `run_dir` must contain this
-    file "run_training.py", and the settings file "settings.py".
-    """
-    top_dir = os.getcwd()
-    os.chdir(run_dir)
-
-    os.system("python run_training.py")
-
-    os.chdir(top_dir)
-
-    return
+    # Finish
+    dt_training = time.time() - t0_training
+    if dt_training <= 60:
+        utils.log(log_path, f"Training complete in {dt_training} seconds.")
+    elif 60 < dt_training <= 3600:
+        utils.log(log_path, f"Training complete in {dt_training / 60} minutes.")
+    else:
+        utils.log(log_path, f"Training complete in {dt_training / 3600} hours.")

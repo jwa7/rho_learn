@@ -2,6 +2,7 @@ import ctypes
 import datetime
 import gc
 import os
+import pickle
 from typing import List, Union, Optional
 
 import numpy as np
@@ -188,3 +189,63 @@ def trim_memory() -> int:
     except OSError:
         # libc = ctypes.CDLL("libc++.dylib")  # for MacOS ?
         return
+
+
+# ===== File IO utilities =====
+
+
+def check_or_create_dir(dir_path: str):
+    """
+    Takes as input an absolute directory path. Checks whether or not it exists.
+    If not, creates it.
+    """
+    if not os.path.exists(dir_path):
+        try:
+            os.mkdir(dir_path)
+        except FileNotFoundError:
+            raise ValueError(
+                f"Specified directory {dir_path} is not valid."
+                + " Check that the parent directory of the one you are trying to create exists."
+            )
+
+
+def pickle_dict(path: str, dict: dict):
+    """
+    Pickles a dict at the specified absolute path. Add a .pickle suffix if
+    not given in the path.
+    """
+    if not path.endswith(".pickle"):
+        path += ".pickle"
+    with open(path, "wb") as handle:
+        pickle.dump(dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def unpickle_dict(path: str):
+    """
+    Unpickles a dict object from the specified absolute path and returns
+    it.
+    """
+    with open(path, "rb") as handle:
+        d = pickle.load(handle)
+    return d
+
+
+def log(log_path: str, line: str, comment: bool = True, timestamp: bool = True):
+    """
+    Writes the string in `line` to the file at `log_path`, inserting a newline
+    character at the end. By default a '#' is prefixed to every line, followed
+    optionally by a timestamp.
+    """
+    log_line = ""
+    if comment:
+        log_line = "#"
+    if timestamp:
+        log_line += " " + timestamp() + " "
+    log_line += line
+    if os.path.exists(log_path):
+        with open(log_path, "a") as f:
+            f.write(log_line + "\n")
+    else:
+        with open(log_path, "w") as f:
+            f.write(log_line + "\n")
+

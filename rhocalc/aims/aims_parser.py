@@ -725,7 +725,7 @@ def process_aims_ri_results(
         del coeffs, projs, ovlp
 
     # Pickle calc info
-    io.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), aims_out)
+    utils.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), aims_out)
 
     return
 

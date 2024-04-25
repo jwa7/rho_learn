@@ -30,7 +30,7 @@ class DescriptorCalculator(torch.nn.Module):
         density_correlations_hypers: dict,
         lode_spherical_expansion_hypers: Optional[dict] = None,
     ):
-        super(LambdaSoapCalculator, self).__init__()
+        super().__init__()
 
         # Store the settings
         self._spherical_expansion_hypers = spherical_expansion_hypers
@@ -54,10 +54,10 @@ class DescriptorCalculator(torch.nn.Module):
         system,
         *,
         structure_id: List[int] = None,
+        correlate_what: Optional[str] = None,
         spherical_expansion_compute_args: Optional[Dict] = None,
         density_correlations_compute_args: Optional[Dict] = None,
         lode_spherical_expansion_compute_args: Optional[Dict] = None,
-        correlate_what: Optional[str] = None,
         # atom_types: List[int],
     ) -> List:
         """

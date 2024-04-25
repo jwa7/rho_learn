@@ -102,8 +102,8 @@ rho_data = data.RhoData(
 # Write std dev of output training data to file
 if data_settings["calc_out_train_std_dev"] is True:
     out_train_std_dev = rho_data.out_train_std_dev.detach().numpy()
-    io.log(log_file, "# Write out train stddev to file")
-    io.log(log_file, f"# out_train_std_dev: {np.round(out_train_std_dev, 15)}")
+    utils.log(log_file, "# Write out train stddev to file")
+    utils.log(log_file, f"# out_train_std_dev: {np.round(out_train_std_dev, 15)}")
     np.savez("std_dev.npz", out_train=out_train_std_dev)
 
 
@@ -116,13 +116,13 @@ if (
     data_settings["calc_out_train_inv_means"]
     and ml_settings["model"]["train_on_baselined_coeffs"]
 ):
-    io.log(log_file, "# Block models will be trained on baselined coefficients")
+    utils.log(log_file, "# Block models will be trained on baselined coefficients")
     out_train_inv_means = rho_data.out_train_inv_means
 
 # Initialize training objects
 restart_epoch = ml_settings["training"]["restart_epoch"]
 if restart_epoch == 0:
-    io.log(log_file, "# Initializing training objects")
+    utils.log(log_file, "# Initializing training objects")
     model = models.RhoModel(
         model_type=ml_settings["model"]["model_type"],
         input=rho_data[rho_data._all_idxs[0]][1],
@@ -141,7 +141,7 @@ if restart_epoch == 0:
 
 # Or load from checkpoint
 else:
-    io.log(log_file, f"# Load training objects from checkpoint {restart_epoch}")
+    utils.log(log_file, f"# Load training objects from checkpoint {restart_epoch}")
     chkpt = training.load_from_checkpoint(
         path=os.path.join(
             ml_settings["run_dir"], "checkpoints", f"checkpoint_{restart_epoch}.pt"
@@ -155,7 +155,7 @@ coeff_loss_fn = loss.CoeffLoss()
 
 # Reinitialize optimizer
 if ml_settings["optimizer"]["reinitialize"] is True:
-    io.log(log_file, f"# Reinitializing optimizer")
+    utils.log(log_file, f"# Reinitializing optimizer")
     optimizer = ml_settings["optimizer"]["algorithm"](
         model.parameters(),
         **ml_settings["optimizer"]["args"],
@@ -163,7 +163,7 @@ if ml_settings["optimizer"]["reinitialize"] is True:
 
 # Reinitialize scheduler
 if ml_settings["scheduler"]["reinitialize"] is True:
-    io.log(log_file, f"# Reinitializing scheduler")
+    utils.log(log_file, f"# Reinitializing scheduler")
     scheduler = ml_settings["scheduler"]["algorithm"](
         optimizer=optimizer,
         **ml_settings["scheduler"]["args"],
@@ -171,7 +171,7 @@ if ml_settings["scheduler"]["reinitialize"] is True:
 
 # Optimize model and optimizer for Intel CPUs
 if torch_settings["use_ipex"] is True:
-    io.log(log_file, f"# Optimizing model and optimizer for Intel CPUs")
+    utils.log(log_file, f"# Optimizing model and optimizer for Intel CPUs")
     model, optimizer = ipex.optimize(model, optimizer=optimizer)
 
 # Initialize the train and test loaders
@@ -195,7 +195,7 @@ test_loader = data.RhoLoader(
 
 # Pre-collate train data if not performing train batching
 if ml_settings["loading"]["train"]["do_batching"] is False:
-    io.log(log_file, "# Pre-collating single batch of train data")
+    utils.log(log_file, "# Pre-collating single batch of train data")
     if use_rho_loss:
         train_batch_idxs, x_train, c_train, s_train = next(iter(train_loader))
     else:
@@ -203,7 +203,7 @@ if ml_settings["loading"]["train"]["do_batching"] is False:
 
 # Pre-collate test data if not performing test batching
 if ml_settings["loading"]["test"]["do_batching"] is False:
-    io.log(log_file, "# Pre-collating single batch of test data")
+    utils.log(log_file, "# Pre-collating single batch of test data")
     if use_rho_loss:
         test_batch_idxs, x_test, c_test, s_test = next(iter(test_loader))
     else:
@@ -368,7 +368,7 @@ for epoch in range(
         )
 
     # Write log for the epoch
-    io.log(
+    utils.log(
         log_file,
         f"{epoch} "
         f"{np.round(train_losses[-1].detach().numpy(), 15)} "

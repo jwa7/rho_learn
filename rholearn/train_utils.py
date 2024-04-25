@@ -85,10 +85,10 @@ def calculate_descriptors(
     descriptor = descriptor_calculator(
         system=rascaline.torch.systems_to_torch(all_structure),
         structure_id=structure_id,
-        selected_samples=selected_samples,
         correlate_what=correlate_what,
         spherical_expansion_compute_args=compute_args,
         lode_spherical_expansion_compute_args=compute_args,
+        density_correlations_compute_args={},
     )
 
     return descriptor
@@ -383,7 +383,7 @@ def save_checkpoint(model: torch.nn.Module, optimizer, scheduler, chkpt_dir: str
         )
 
 
-def run_training_sbatch(run_dir: str, **kwargs) -> None:
+def run_training_sbatch(run_dir: str, python_command: str, **kwargs) -> None:
     """
     Writes a bash script to `fname` that allows running of model training.
     `run_dir` must contain two files; "run_training.py" and "settings.py".
@@ -391,51 +391,36 @@ def run_training_sbatch(run_dir: str, **kwargs) -> None:
     top_dir = os.getcwd()
     os.chdir(run_dir)
 
-    fname = "run-training.sh"
+    fname = "run_training.sh"
 
     with open(os.path.join(run_dir, fname), "w+") as f:
-
         # Make a dir for the slurm outputs
         if not os.path.exists(os.path.join(run_dir, "slurm_out")):
             os.mkdir(os.path.join(run_dir, "slurm_out"))
 
-        # Write the header
-        f.write("#!/bin/bash\n")
-
-        # Write the sbatch parameters
-        for tag, val in kwargs.items():
+        f.write("#!/bin/bash\n")  # Write the header
+        for tag, val in kwargs.items():  # Write the sbatch parameters
             f.write(f"#SBATCH --{tag}={val}\n")
-
         f.write(
             f"#SBATCH --output={os.path.join(run_dir, 'slurm_out', 'slurm_train.out')}\n"
         )
-        f.write("#SBATCH --get-user-env\n")
-        f.write("\n\n")
+        f.write("#SBATCH --get-user-env\n\n")
 
-        # Define the run directory and cd to it
-        f.write("# Define the run directory and cd into it\n")
+        # Define the run directory, cd to it, run command
         f.write(f"RUNDIR={run_dir}\n")
         f.write("cd $RUNDIR\n\n")
-
-        f.write("# Run the Python command\n")
-        f.write("python run_training.py\n\n")
+        f.write(f"{python_command}\n")
 
     os.system(f"sbatch {fname}")
     os.chdir(top_dir)
 
-    return
 
-
-def run_training_local(run_dir: str) -> None:
+def run_training_local(run_dir: str, python_command: str) -> None:
     """
     Runs the training loop in the local environment. `run_dir` must contain this
     file "run_training.py", and the settings file "settings.py".
     """
     top_dir = os.getcwd()
     os.chdir(run_dir)
-
-    os.system("python run_training.py")
-
+    os.system(f"{python_command}")
     os.chdir(top_dir)
-
-    return
