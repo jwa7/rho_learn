@@ -19,7 +19,7 @@ import rascaline.torch
 from rhocalc.aims import aims_fields
 from rhocalc.ase import structure_builder
 from rholearn import data, nn
-from rhotrain.model import DescriptorCalculator
+from rholearn.model import DescriptorCalculator
 
 
 def get_selected_samples(
@@ -73,6 +73,7 @@ def calculate_descriptors(
     structure_id: List[int],
     correlate_what: str = "pxp",
     selected_samples: Optional[mts.Labels] = None,
+    drop_empty_blocks: bool = True,
 ) -> List[torch.ScriptObject]:
     """
     Takes an initialized DescriptorCalculator and calculates descriptors for the frames
@@ -90,6 +91,26 @@ def calculate_descriptors(
         lode_spherical_expansion_compute_args=compute_args,
         density_correlations_compute_args={},
     )
+    if drop_empty_blocks:
+        descriptor_dropped = []
+        for desc in descriptor:
+            # Find empty blocks
+            keys_to_drop = []
+            for key, block in desc.items():
+                if block.values.shape[0] == 0:  # has been sliced to zero samples
+                    keys_to_drop.append(key)
+
+            # Drop empty blocks
+            desc_dropped = mts.drop_blocks(
+                desc,
+                keys=mts.Labels(
+                    names=keys_to_drop[0].names,
+                    values=torch.tensor([[i for i in k.values] for k in keys_to_drop]),
+                ),
+            )
+            descriptor_dropped.append(desc_dropped)
+
+        descriptor = descriptor_dropped
 
     return descriptor
 
@@ -103,6 +124,8 @@ def mask_dft_data(
     structure: List[ase.Atoms],
     target: List[torch.ScriptObject],
     aux: List[torch.ScriptObject],
+    slab_depth: float,
+    interphase_depth: float,
 ) -> Tuple[torch.ScriptObject]:
     """
     Masks the RI coefficients and overlap TensorMaps according to the slab/interphase
@@ -112,7 +135,7 @@ def mask_dft_data(
     for frame, t, o in zip(structure, target, aux):
         idxs_surface, idxs_interphase, idxs_bulk = (
             structure_builder.get_atom_idxs_by_region(
-                frame, TRAIN.get("slab_depth"), TRAIN.get("interphase_depth")
+                frame, slab_depth, interphase_depth
             )
         )
         idxs_to_keep = list(idxs_surface) + list(idxs_interphase)

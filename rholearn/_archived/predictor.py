@@ -15,7 +15,7 @@
 # import qstack
 # from qstack import equio
 
-# from rholearn import io, features, utils
+# from rholearn import features, utils
 
 
 # def predict_density_from_xyz(

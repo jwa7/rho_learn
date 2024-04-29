@@ -8,7 +8,7 @@ import torch
 
 import metatensor
 
-from rholearn import io, loss
+from rholearn import utils, loss
 from rhocalc import convert
 
 

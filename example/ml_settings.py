@@ -11,6 +11,8 @@ import numpy as np
 import torch
 import metatensor.torch as mts
 
+from rholearn.loss import L2Loss
+
 # ===== SETUP =====
 SEED = 42
 TOP_DIR = "/home/abbott/march-24/rho_learn/example"
@@ -109,7 +111,7 @@ TRAIN = {
     "log_interval": 250,  # how often to log the loss
     "log_block_loss": True,  # whether to log the block losses
     # Masked learning
-    "masked_learning": False,
+    "masked_learning": True,
     "slab_depth": 4.0,  # Ang
     "interphase_depth": 1.0,  # Ang
 }
@@ -127,6 +129,7 @@ SCHEDULER = partial(
         "gamma": 0.1,
     },
 )
+LOSS_FN = L2Loss
 
 
 # ===== RELATIVE DIRS =====
@@ -171,6 +174,7 @@ ML_SETTINGS = {
     "TRAIN": TRAIN,
     "OPTIMIZER": OPTIMIZER,
     "SCHEDULER": SCHEDULER,
+    "LOSS_FN": LOSS_FN,
     "SCF_DIR": SCF_DIR,
     "RI_DIR": RI_DIR,
     "REBUILD_DIR": REBUILD_DIR,

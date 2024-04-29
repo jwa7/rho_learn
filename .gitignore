@@ -4,22 +4,13 @@ build/
 rho_learn.egg-info
 
 
-# Field example
-docs/example/field/data/*
-docs/example/field/ml/*
-docs/example/field/slurm_out/*
-docs/example/field/precalc_data/*/lsoap.npz
-
-# Tensor example
-docs/example/tensor/data/*
-docs/example/tensor/ml/*
-
 # AIMS binary
 rhocalc/aims/aims.*
 rhocalc/aims/tests/*
 
 # Calculations
-example/*/*.sh
-example/*/slurm_out
-example/*/ml
-example/*/data
+*.sh
+*.log
+*slurm_out*
+*checkpoint*
+*evaluation*

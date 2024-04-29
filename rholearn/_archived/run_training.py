@@ -11,7 +11,7 @@ import intel_extension_for_pytorch as ipex
 
 import equistore
 
-from rholearn import io, data, loss, models, training
+from rholearn import utils, data, loss, models, training
 from settings import data_settings, ml_settings, torch_settings
 
 torch.set_default_dtype(torch_settings["tensor"]["dtype"])
@@ -31,11 +31,11 @@ if not os.path.exists(os.path.join(ml_settings["run_dir"], "checkpoints")):
 
 # Define a log file
 log_file = os.path.join(ml_settings["run_dir"], "log.txt")
-io.log(log_file, "# Start process.")
+utils.log(log_file, "# Start process.")
 
 
 # ===== DATASET AND TRAIN TEST SPLIT IDXS =====
-io.log(log_file, "# Train/test split")
+utils.log(log_file, "# Train/test split")
 
 # Get the grouped indices for train/test(/val) splits
 tmp_idxs = data.group_idxs(
@@ -73,19 +73,19 @@ if ml_settings["loading"]["test"]["do_batching"] is False:
     if ml_settings["loading"]["test"]["batch_size"] < len(test_idxs):
         test_idxs = test_idxs[: ml_settings["loading"]["test"]["batch_size"]]
 
-io.log(log_file, "# Save split data idxs")
+utils.log(log_file, "# Save split data idxs")
 np.savez(
     os.path.join(ml_settings["run_dir"], "idxs.npz"),
     train=train_idxs,
     test=test_idxs,
     val=val_idxs,
 )
-io.log(log_file, "# Num train structures: " + str(len(train_idxs)))
-io.log(log_file, "# Num test structures: " + str(len(test_idxs)))
-io.log(log_file, "# Num val structures: " + str(len(val_idxs)))
+utils.log(log_file, "# Num train structures: " + str(len(train_idxs)))
+utils.log(log_file, "# Num test structures: " + str(len(test_idxs)))
+utils.log(log_file, "# Num val structures: " + str(len(val_idxs)))
 
 # Build density dataset
-io.log(log_file, "# Building dataset")
+utils.log(log_file, "# Building dataset")
 rho_data = data.RhoData(
     all_idxs=np.concatenate([train_idxs, test_idxs]),
     train_idxs=train_idxs,
@@ -175,7 +175,7 @@ if torch_settings["use_ipex"] is True:
     model, optimizer = ipex.optimize(model, optimizer=optimizer)
 
 # Initialize the train and test loaders
-io.log(log_file, "# Constructing training data loader")
+utils.log(log_file, "# Constructing training data loader")
 use_rho_loss = False
 if ml_settings["training"]["learn_on_rho_at_epoch"] == 0:
     use_rho_loss = True
@@ -185,7 +185,7 @@ train_loader = data.RhoLoader(
     get_overlaps=use_rho_loss,
     batch_size=ml_settings["loading"]["train"]["batch_size"],
 )
-io.log(log_file, "# Constructing testing data loader")
+utils.log(log_file, "# Constructing testing data loader")
 test_loader = data.RhoLoader(
     rho_data,
     idxs=test_idxs,
@@ -214,8 +214,8 @@ if ml_settings["loading"]["test"]["do_batching"] is False:
 # ===== TRAINING LOOP =====
 
 # Start training
-io.log(log_file, "# Start model training")
-io.log(log_file, "# epoch train_loss test_loss lr time learning_on_rho grad_norm")
+utils.log(log_file, "# Start model training")
+utils.log(log_file, "# epoch train_loss test_loss lr time learning_on_rho grad_norm")
 train_losses = []
 test_losses = []
 for epoch in range(
@@ -380,4 +380,4 @@ for epoch in range(
     )
 
 # All epochs complete
-io.log(log_file, "# Training complete.")
+utils.log(log_file, "# Training complete.")

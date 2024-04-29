@@ -230,7 +230,7 @@ def unpickle_dict(path: str):
     return d
 
 
-def log(log_path: str, line: str, comment: bool = True, timestamp: bool = True):
+def log(log_path: str, line: str, comment: bool = True, use_timestamp: bool = True):
     """
     Writes the string in `line` to the file at `log_path`, inserting a newline
     character at the end. By default a '#' is prefixed to every line, followed
@@ -239,7 +239,7 @@ def log(log_path: str, line: str, comment: bool = True, timestamp: bool = True):
     log_line = ""
     if comment:
         log_line = "#"
-    if timestamp:
+    if use_timestamp:
         log_line += " " + timestamp() + " "
     log_line += line
     if os.path.exists(log_path):
