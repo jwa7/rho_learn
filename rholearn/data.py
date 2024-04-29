@@ -174,6 +174,9 @@ def group_idxs(
     # Get absolute group sizes for train/test/validation split
     abs_group_sizes = get_group_sizes(n_groups, len(idxs), group_sizes)
 
+    if np.sum(abs_group_sizes) != len(idxs):
+        raise ValueError("sum of group sizes not equal to len of `idxs` passed")
+
     # Grouped the indices
     grouped_idxs = []
     prev_size = 0
@@ -259,3 +262,26 @@ def _cascade_round(array: np.ndarray) -> np.ndarray:
     assert round(np.sum(array)) == round(np.sum(rounded_array))
 
     return np.array(rounded_array)
+
+
+def get_log_subset_sizes(
+    n_max: int,
+    n_subsets: int,
+    base: Optional[float] = 10.0,
+) -> np.array:
+    """
+    Returns an ``n_subsets`` length array of subset sizes equally spaced along a
+    log of specified ``base`` (default base 10) scale from 0 up to ``n_max``.
+    Elements of the returned array are rounded to integer values. The final
+    element of the returned array may be less than ``n_max``.
+    """
+    # Generate subset sizes evenly spaced on a log scale, custom base
+    subset_sizes = np.logspace(
+        np.log(n_max / n_subsets) / np.log(base),
+        np.log(n_max) / np.log(base),
+        num=n_subsets,
+        base=base,
+        endpoint=True,
+        dtype=int,
+    )
+    return subset_sizes

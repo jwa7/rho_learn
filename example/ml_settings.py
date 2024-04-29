@@ -12,15 +12,15 @@ import torch
 import metatensor.torch as mts
 
 from rholearn.loss import L2Loss
+from rholearn.utils import timestamp
 
 # ===== SETUP =====
 SEED = 42
 TOP_DIR = "/home/abbott/march-24/rho_learn/example"
-# DATA_DIR = join(TOP_DIR, "data")
-DATA_DIR = "/work/cosmo/abbott/march-24/si_z_depth_dimer_geomopt_distorted/data"
+DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
 FIELD_NAME = "edensity"
 RI_FIT_ID = "edensity"
-ML_RUN_ID = "unmasked"
+ML_RUN_ID = "unmasked_7"
 ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID)
 
 # ===== DATA =====
@@ -29,8 +29,22 @@ ALL_STRUCTURE = ase.io.read(
 )
 ALL_STRUCTURE_ID = np.arange(len(ALL_STRUCTURE))
 # np.random.default_rng(seed=SEED).shuffle(ALL_STRUCTURE_ID)  # shuffle first?
-STRUCTURE_ID = ALL_STRUCTURE_ID[6::13][:1]
+STRUCTURE_ID = ALL_STRUCTURE_ID[6::13][:2]
 STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
+
+ALL_SUBSET_ID = [
+    STRUCTURE_ID[:7],  # train subsets: [4, 7, 11, 17]
+    STRUCTURE_ID[-5:-3],  # 2 x val
+    STRUCTURE_ID[-3:]  # 3 x test
+]
+CROSSVAL = None
+
+# ALL_SUBSET_ID = None
+# CROSSVAL = {
+#     "n_groups": 2,  # num groups for data split (i.e. 3 for train-test-val)
+#     "group_sizes": [1, 1],  # the abs/rel group sizes for the data splits
+#     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
+# }
 
 
 # ===== HPC =====
@@ -90,15 +104,10 @@ DESCRIPTOR_HYPERS = {
 #         nn.EquiLinear,
 #     ]
 # }
-CROSSVAL = {
-    "n_groups": 1,  # num groups for data split (i.e. 3 for train-test-val)
-    "group_sizes": [len(STRUCTURE_ID)],  # the abs/rel group sizes for the data splits
-    "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
-}
 TRAIN = {
     # Training
     "batch_size": 1,
-    "n_epochs": 3001,  # number of total epochs to run. End in a 1, i.e. 20001.
+    "n_epochs": 2001,  # number of total epochs to run. End in a 1, i.e. 20001.
     "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
     "use_overlap": False,  # True/False, or the epoch to start using it at
     # Evaluation
@@ -107,25 +116,20 @@ TRAIN = {
     "calculate_error": False,  # whether to wait for AIMS calcs to finish
     "target_type": "ri",  # evaluate against QM ("ref") or RI ("ri") scalar field
     # Saving and logging
-    "checkpoint_interval": 250,  # save model and optimizer state every x intervals
-    "log_interval": 250,  # how often to log the loss
+    "checkpoint_interval": 500,  # save model and optimizer state every x intervals
+    "log_interval": 500,  # how often to log the loss
     "log_block_loss": True,  # whether to log the block losses
     # Masked learning
     "masked_learning": True,
     "slab_depth": 4.0,  # Ang
     "interphase_depth": 1.0,  # Ang
 }
-OPTIMIZER = partial(
-    torch.optim.Adam,
-    **{
-        "lr": 1e-3,
-    },
-)
+OPTIMIZER = partial(torch.optim.Adam, **{"lr": 1e-2})
 # SCHEDULER = None
 SCHEDULER = partial(
     torch.optim.lr_scheduler.MultiStepLR,
     **{
-        "milestones": [2250, 2500, 2750],
+        "milestones": [500, 1000, 1500],
         "gamma": 0.1,
     },
 )
@@ -164,13 +168,14 @@ ML_SETTINGS = {
     "ALL_STRUCTURE_ID": ALL_STRUCTURE_ID,
     "STRUCTURE_ID": STRUCTURE_ID,
     "STRUCTURE": STRUCTURE,
+    "ALL_SUBSET_ID": ALL_SUBSET_ID,
+    "CROSSVAL": CROSSVAL,
     "SBATCH": SBATCH,
     "HPC": HPC,
     "DTYPE": DTYPE,
     "DEVICE": DEVICE,
     "TORCH": TORCH,
     "DESCRIPTOR_HYPERS": DESCRIPTOR_HYPERS,
-    "CROSSVAL": CROSSVAL,
     "TRAIN": TRAIN,
     "OPTIMIZER": OPTIMIZER,
     "SCHEDULER": SCHEDULER,

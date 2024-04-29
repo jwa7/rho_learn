@@ -412,9 +412,6 @@ def calculate_fermi_energy(
     The `orbital_occupancy` is the number of electrons that can occupy each orbital. By
     default, this is set to 2.0 for spin-paired electrons.
     """
-    # Calc and plot the DOS
-    kso_info = aims_parser.get_ks_orbital_info(kso_info_path)
-
     # Calculate the DOS, k-weighted and accounting for orbital occupancy
     e_grid, dos = calculate_dos(
         kso_info_path,

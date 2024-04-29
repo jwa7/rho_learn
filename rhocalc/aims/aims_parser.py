@@ -17,7 +17,7 @@ import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
 
 from rhocalc import convert
-from rholearn import io
+from rholearn import utils
 
 
 # ===== AIMS output file parsing =====

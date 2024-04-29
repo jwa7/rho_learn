@@ -11,6 +11,7 @@ rhocalc/aims/tests/*
 # Calculations
 *.sh
 *.log
+*.out
 *slurm_out*
 *checkpoint*
 *evaluation*

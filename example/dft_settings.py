@@ -2,6 +2,7 @@
 Module containing global varibales for running DFT calculations, more specifically
 running SCF, RI, and density rebuild procedures.
 """
+
 import os
 from os.path import exists, join
 import ase.io
@@ -11,9 +12,9 @@ import numpy as np
 SEED = 42
 TOP_DIR = "/home/abbott/march-24/rho_learn/example"
 # DATA_DIR = join(TOP_DIR, "data")
-DATA_DIR = "/work/cosmo/abbott/march-24/si_z_depth_dimer_geomopt_distorted/data"
-FIELD_NAME = "edensity"
-RI_FIT_ID = "edensity"
+DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
+FIELD_NAME = "ildos"
+RI_FIT_ID = "ildos-1V"
 
 # ===== DATA =====
 ALL_STRUCTURE = ase.io.read(
@@ -21,7 +22,7 @@ ALL_STRUCTURE = ase.io.read(
 )
 ALL_STRUCTURE_ID = np.arange(len(ALL_STRUCTURE))
 # np.random.default_rng(seed=SEED).shuffle(ALL_STRUCTURE_ID)  # shuffle first?
-STRUCTURE_ID = ALL_STRUCTURE_ID[6::13][:1]
+STRUCTURE_ID = ALL_STRUCTURE_ID[6::13]
 STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
 
 
@@ -29,10 +30,10 @@ STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
 SBATCH = {
     "job-name": "si_mask",
     "nodes": 1,
-    "time": "1:00:00",
-    "mem-per-cpu": 2000,
+    "time": "8:00:00",
+    "mem-per-cpu": 0,
     "partition": "standard",
-    "ntasks-per-node": 20,
+    "ntasks-per-node": 72,
 }
 HPC = {
     "load_modules": ["intel", "intel-oneapi-mpi", "intel-oneapi-mkl"],
@@ -47,7 +48,7 @@ HPC = {
 
 # ===== BASE AIMS =====
 AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"
-BASE_AIMS_KWARGS = {
+BASE_AIMS = {
     "species_dir": "/home/abbott/march-24/rho_learn/rhocalc/aims/aims_species/tight/default",
     "xc": "pbe",
     "spin": "none",
@@ -59,18 +60,21 @@ BASE_AIMS_KWARGS = {
 }
 
 # ===== SCF =====
-SCF_KWARGS = {
+SCF = {
     "elsi_restart": "read",
     "ri_fit_write_orbital_info": True,
     # "evaluate_work_function": True,
-    "output": ["atom_proj_dos -30 5 1000 0.3", "cube hartree_potential"],  # atom_proj_dos Estart Eend n_points broadening
+    "output": [
+        "atom_proj_dos -30 5 1000 0.3",
+        "cube hartree_potential",
+    ],  # atom_proj_dos Estart Eend n_points broadening
     # Geometry Optimization. Use "light" for pre-relaxation.
     # "relax_geometry": ["bfgs 0.01"],
     # "species_dir": "/home/abbott/march-24/rho_learn/rhocalc/aims/aims_species/light/default",  # jed
 }
 
 # ===== RI =====
-RI_KWARGS = {
+RI = {
     # ===== To restart from a converged density matrix and force no SCF:
     "elsi_restart": "read",
     "sc_iter_limit": 0,
@@ -94,7 +98,7 @@ RI_KWARGS = {
 }
 
 # ===== REBUILD =====
-REBUILD_KWARGS = {
+REBUILD = {
     # ===== Force no SCF
     "sc_iter_limit": 0,
     "postprocess_anyway": True,
@@ -102,8 +106,8 @@ REBUILD_KWARGS = {
     # ===== What we want to do
     "ri_fit_rebuild_from_coeffs": True,
     # ===== Specific settings for RI rebuild
-    "ri_fit_ovlp_cutoff_radius": RI_KWARGS["ri_fit_ovlp_cutoff_radius"],
-    "default_max_l_prodbas": RI_KWARGS["default_max_l_prodbas"],
+    "ri_fit_ovlp_cutoff_radius": RI["ri_fit_ovlp_cutoff_radius"],
+    "default_max_l_prodbas": RI["default_max_l_prodbas"],
     # ===== What to write as output
     "ri_fit_write_rebuilt_field": True,
     "ri_fit_write_rebuilt_field_cube": True,
@@ -112,13 +116,13 @@ REBUILD_KWARGS = {
 }
 
 # ===== FIELD AND CUBE =====
-LDOS_KWARGS = {
-    "target_energy": "fermi",
-    "gaussian_width": 0.1,  # eV
-    "biasing_voltage": 1.0,  # V, for the integrated LDOS
+LDOS = {
+    "target_energy": "fermi_integrated_eV",  # "fermi_integrated_eV", "vbm_eV", "fermi_eV"
+    "gaussian_width": 0.3,  # eV
+    "biasing_voltage": -1.0,  # V, for the integrated LDOS
     "method": "gaussian_analytical",
 }
-CUBE_KWARGS = {
+CUBE = {
     "slab": True,
     "n_points": (100, 100, 100),  # number of cube edge points
 }
@@ -147,10 +151,10 @@ DFT_SETTINGS = {
     "SBATCH": SBATCH,
     "HPC": HPC,
     "AIMS_PATH": AIMS_PATH,
-    "BASE_AIMS_KWARGS": BASE_AIMS_KWARGS,
-    "SCF_KWARGS": SCF_KWARGS,
-    "RI_KWARGS": RI_KWARGS,
-    "REBUILD_KWARGS": REBUILD_KWARGS,
-    "LDOS_KWARGS": LDOS_KWARGS,
-    "CUBE_KWARGS": CUBE_KWARGS
+    "BASE_AIMS": BASE_AIMS,
+    "SCF": SCF,
+    "RI": RI,
+    "REBUILD": REBUILD,
+    "LDOS": LDOS,
+    "CUBE": CUBE,
 }

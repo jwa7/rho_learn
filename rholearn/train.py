@@ -30,14 +30,18 @@ def train(ml_settings: dict):
     utils.log(log_path, f"Top directory defined as: {TOP_DIR}")
 
     # ===== Create datasets and dataloaders =====
-    utils.log(log_path, f"Split structure ids into subsets")
-    all_subset_id = data.group_idxs(  # cross-validation split of idxs
-        idxs=STRUCTURE_ID,
-        n_groups=CROSSVAL["n_groups"],
-        group_sizes=CROSSVAL["group_sizes"],
-        shuffle=CROSSVAL["shuffle"],
-        seed=SEED,
-    )
+    if ALL_SUBSET_ID is None:
+        utils.log(log_path, f"Split structure ids into subsets")
+        all_subset_id = data.group_idxs(  # cross-validation split of idxs
+            idxs=STRUCTURE_ID,
+            n_groups=CROSSVAL["n_groups"],
+            group_sizes=CROSSVAL["group_sizes"],
+            shuffle=CROSSVAL["shuffle"],
+            seed=SEED,
+        )
+    else:
+        all_subset_id = ALL_SUBSET_ID
+    utils.log(log_path, f"Subset IDs are: {all_subset_id}")
     utils.log(log_path, f"Init descriptor calculator")
     descriptor_calculator = DescriptorCalculator(**DESCRIPTOR_HYPERS)
     datasets = []
@@ -58,6 +62,7 @@ def train(ml_settings: dict):
             structure_id=subset_id,
             correlate_what="pxp",
             selected_samples=selected_samples,
+            drop_empty_blocks=True,
         )
         utils.log(log_path, "Load targets and auxiliaries")
         target = [  # load RI coeffs
@@ -80,7 +85,6 @@ def train(ml_settings: dict):
                 aux=aux,
                 slab_depth=TRAIN["slab_depth"],
                 interphase_depth=TRAIN["interphase_depth"],
-                drop_empty_blocks=True,
             )
 
         for desc, targ in zip(descriptor, target):  # check metadata match
@@ -172,10 +176,8 @@ def train(ml_settings: dict):
             val_losses = [
                 validation_step(dloader, model, loss_fn) for dloader in dataloaders[1:]
             ]
-            if (
-                scheduler is not None
-            ):  # update learning rate based on the validation loss
-                scheduler.step(val_losses[0])
+            if (scheduler is not None):  # update scheduler params
+                step_scheduler(val_losses[0], scheduler)
                 lr = scheduler._last_lr[0]
 
         # Log general info and losses
@@ -186,7 +188,7 @@ def train(ml_settings: dict):
             )
             if len(val_losses) > 0:
                 for i, tmp_val_loss in enumerate(val_losses):
-                    log_msg += f"val_loss_{i} {tmp_val_loss}"
+                    log_msg += f" val_loss_{i} {tmp_val_loss}"
             utils.log(log_path, log_msg)
 
             if TRAIN["log_block_loss"]:

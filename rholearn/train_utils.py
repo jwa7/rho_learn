@@ -3,6 +3,7 @@ Module containing functions to perform model training and evaluation steps.
 """
 
 import os
+from os.path import exists, join
 import time
 from functools import partial
 from typing import Callable, List, Optional, Tuple, Union
@@ -96,6 +97,8 @@ def calculate_descriptors(
         for desc in descriptor:
             # Find empty blocks
             keys_to_drop = []
+            if len(keys_to_drop) == 0:
+                continue
             for key, block in desc.items():
                 if block.values.shape[0] == 0:  # has been sliced to zero samples
                     keys_to_drop.append(key)
@@ -204,7 +207,7 @@ def training_step(
     model,
     optimizer,
     loss_fn,
-    check_metadata=False,
+    check_metadata: bool = False,
     use_aux: bool = False,
 ) -> Tuple[torch.Tensor]:
     """
@@ -258,7 +261,9 @@ def training_step(
     return train_loss_epoch
 
 
-def validation_step(val_loader, model, loss_fn) -> torch.Tensor:
+def validation_step(
+    val_loader, model, loss_fn, check_metadata: bool = False, use_aux: bool = False
+) -> torch.Tensor:
     """
     Performs a single validation step
     """
@@ -272,7 +277,7 @@ def validation_step(val_loader, model, loss_fn) -> torch.Tensor:
             if not use_aux:
                 aux_val = None
 
-            out_val_pred = model(in_val, check_metadata=check_metadata)
+            out_val_pred = model(descriptor=in_val, check_metadata=check_metadata)
             val_loss_batch = loss_fn(  # validation loss
                 input=out_val_pred,
                 target=out_val,
@@ -285,6 +290,14 @@ def validation_step(val_loader, model, loss_fn) -> torch.Tensor:
         val_loss_epoch /= n_val_epoch  # normalize loss
 
         return val_loss_epoch
+
+
+def step_scheduler(val_loss: torch.Tensor, scheduler) -> None:
+    """Updates the scheduler parameters based on the validation loss"""
+    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+        scheduler.step(val_losses[0])
+    else:
+        scheduler.step()
 
 
 def evaluation_step(
@@ -339,10 +352,10 @@ def evaluation_step(
     for A, frame, prediction in zip(structure_id, structure, predictions):
 
         grid = np.loadtxt(  # integration weights
-            os.path.join(reference_dir(A), "partition_tab.out")
+            join(reference_dir(A), "partition_tab.out")
         )
         target = np.loadtxt(  # target scalar field
-            os.path.join(reference_dir(A), f"rho_{target_type}.out")
+            join(reference_dir(A), f"rho_{target_type}.out")
         )
         percent_mae = aims_fields.get_percent_mae_between_fields(  # calc MAE
             input=prediction,
@@ -389,20 +402,20 @@ def save_checkpoint(model: torch.nn.Module, optimizer, scheduler, chkpt_dir: str
     Saves model object, model state dict, optimizer state dict, scheduler state dict,
     to file.
     """
-    if not os.path.exists(chkpt_dir):  # create chkpoint dir
+    if not exists(chkpt_dir):  # create chkpoint dir
         os.makedirs(chkpt_dir)
 
-    torch.save(model, os.path.join(chkpt_dir, f"model.pt"))  # model obj
+    torch.save(model, join(chkpt_dir, f"model.pt"))  # model obj
     torch.save(  # model state dict
         model.state_dict(),
-        os.path.join(chkpt_dir, f"model_state_dict.pt"),
+        join(chkpt_dir, f"model_state_dict.pt"),
     )
     # Optimizer and scheduler
-    torch.save(optimizer.state_dict(), os.path.join(chkpt_dir, f"optimizer.pt"))
+    torch.save(optimizer.state_dict(), join(chkpt_dir, f"optimizer.pt"))
     if scheduler is not None:
         torch.save(
             scheduler.state_dict(),
-            os.path.join(chkpt_dir, f"scheduler.pt"),
+            join(chkpt_dir, f"scheduler.pt"),
         )
 
 
@@ -412,21 +425,22 @@ def run_training_sbatch(run_dir: str, python_command: str, **kwargs) -> None:
     `run_dir` must contain two files; "run_training.py" and "settings.py".
     """
     top_dir = os.getcwd()
-    os.chdir(run_dir)
 
+    # Copy training script and settings
+    shutil.copy(join(top_dir, "ml_settings.py"), join(run_dir, "ml_settings.py"))
+    
+    os.chdir(run_dir)
     fname = "run_training.sh"
 
-    with open(os.path.join(run_dir, fname), "w+") as f:
+    with open(join(run_dir, fname), "w+") as f:
         # Make a dir for the slurm outputs
-        if not os.path.exists(os.path.join(run_dir, "slurm_out")):
-            os.mkdir(os.path.join(run_dir, "slurm_out"))
+        if not exists(join(run_dir, "slurm_out")):
+            os.mkdir(join(run_dir, "slurm_out"))
 
         f.write("#!/bin/bash\n")  # Write the header
         for tag, val in kwargs.items():  # Write the sbatch parameters
             f.write(f"#SBATCH --{tag}={val}\n")
-        f.write(
-            f"#SBATCH --output={os.path.join(run_dir, 'slurm_out', 'slurm_train.out')}\n"
-        )
+        f.write(f"#SBATCH --output={join(run_dir, 'slurm_out', 'slurm_train.out')}\n")
         f.write("#SBATCH --get-user-env\n\n")
 
         # Define the run directory, cd to it, run command
