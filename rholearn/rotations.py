@@ -229,7 +229,7 @@ class WignerDReal:
         """
         Rotates a TensorBlock ``block``, represented in the spherical basis,
         according to the Wigner D Real matrices for the given ``l`` value.
-        Assumes the components of the block are [("spherical_harmonics_m",),].
+        Assumes the components of the block are [("o3_mu",),].
         """
         # Get the Wigner matrix for this l value
         wig = self.matrices[angular_l].T
@@ -265,7 +265,7 @@ class WignerDReal:
         """
         # Retrieve the key and the position of the l value in the key names
         keys = tensor.keys
-        idx_l_value = keys.names.index("spherical_harmonics_l")
+        idx_l_value = keys.names.index("o3_lambda")
 
         # Iterate over the blocks and rotate
         rotated_blocks = []
@@ -288,7 +288,7 @@ class WignerDReal:
         """
         # Retrieve the key and the position of the l value in the key names
         keys = tensor.keys
-        idx_l_value = keys.names.index("spherical_harmonics_l")
+        idx_l_value = keys.names.index("o3_lambda")
 
         # Iterate over the blocks and rotate
         new_blocks = []
@@ -301,13 +301,13 @@ class WignerDReal:
 
             # Work out the inversion multiplier according to the convention
             inversion_multiplier = 1
-            if key["spherical_harmonics_l"] % 2 == 1:
+            if key["o3_lambda"] % 2 == 1:
                 inversion_multiplier *= -1
 
-            # "inversion_sigma" may not be present if CG iterations haven't been
+            # "o3_sigma" may not be present if CG iterations haven't been
             # performed (i.e. nu=1 rascaline SphericalExpansion)
-            if "inversion_sigma" in keys.names:
-                if key["inversion_sigma"] == -1:
+            if "o3_sigma" in keys.names:
+                if key["o3_sigma"] == -1:
                     inversion_multiplier *= -1
 
             # Invert the block by applying the inversion multiplier

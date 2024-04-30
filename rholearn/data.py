@@ -18,7 +18,7 @@ import metatensor.torch as mts
 def mask_coeff_vector_tensormap(
     vector_tensor: torch.ScriptObject,
     idxs_to_keep: List[int],
-    atomic_center_name: str = "center",
+    atomic_center_name: str = "atom",
 ) -> torch.ScriptObject:
     """
     Takes a TensorMap corresponding to a vector of coefficients and slices it to only
@@ -60,7 +60,7 @@ def mask_coeff_vector_tensormap(
 def mask_ovlp_matrix_tensormap(
     matrix_tensor: torch.ScriptObject,
     idxs_to_keep: List[int],
-    atomic_center_name_prefix: str = "center",
+    atomic_center_name_prefix: str = "atom",
 ) -> torch.ScriptObject:
     """
     Takes a TensorMap corresponding to a matrix of overlaps and slices it to only

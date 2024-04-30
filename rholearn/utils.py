@@ -8,59 +8,135 @@ from typing import List, Union, Optional
 import numpy as np
 import torch
 
-import metatensor
+import metatensor as mts
 from metatensor import Labels, TensorBlock, TensorMap
 
 
 def timestamp() -> str:
     """Return a timestamp string in format YYYY-MM-DD-HH:MM:SS."""
-    return datetime.datetime.today().strftime('%Y-%m-%d-%H:%M:%S')
+    return datetime.datetime.today().strftime("%Y-%m-%d-%H:%M:%S")
+
 
 # ===== torch to core
 
-def mts_tensormap_torch_to_core(tensor: torch.ScriptObject) -> metatensor.TensorMap:
 
-    return metatensor.TensorMap(
+def mts_tensormap_torch_to_core(tensor: torch.ScriptObject) -> TensorMap:
+
+    return TensorMap(
         keys=mts_labels_torch_to_core(tensor.keys),
-        blocks=[
-            mts_tensorblock_torch_to_core(block)
-            for block in tensor
-        ]
+        blocks=[mts_tensorblock_torch_to_core(block) for block in tensor],
     )
 
-def mts_tensorblock_torch_to_core(block: torch.ScriptObject) -> metatensor.TensorBlock:
-    return metatensor.TensorBlock(
+
+def mts_tensorblock_torch_to_core(block: torch.ScriptObject) -> TensorBlock:
+    return TensorBlock(
         values=np.array(block.values),
         samples=mts_labels_torch_to_core(block.samples),
         components=[mts_labels_torch_to_core(c) for c in block.components],
         properties=mts_labels_torch_to_core(block.properties),
     )
 
-def mts_labels_torch_to_core(labels: torch.ScriptObject) -> metatensor.Labels:
-    return metatensor.Labels(labels.names, values=np.array(labels.values))
+
+def mts_labels_torch_to_core(labels: torch.ScriptObject) -> Labels:
+    return Labels(labels.names, values=np.array(labels.values))
+
 
 # ===== core to torch
 
-def mts_tensormap_core_to_torch(tensor: metatensor.TensorMap) -> torch.ScriptObject:
 
-    return metatensor.torch.TensorMap(
+def mts_tensormap_core_to_torch(tensor: TensorMap) -> torch.ScriptObject:
+
+    return mts.torch.TensorMap(
         keys=mts_labels_core_to_torch(tensor.keys),
-        blocks=[
-            mts_tensorblock_core_to_torch(block)
-            for block in tensor
-        ]
+        blocks=[mts_tensorblock_core_to_torch(block) for block in tensor],
     )
 
-def mts_tensorblock_core_to_torch(block: metatensor.TensorBlock) -> torch.ScriptObject:
-    return metatensor.torch.TensorBlock(
+
+def mts_tensorblock_core_to_torch(block: TensorBlock) -> torch.ScriptObject:
+    return mts.torch.TensorBlock(
         values=torch.tensor(block.values),
         samples=mts_labels_core_to_torch(block.samples),
         components=[mts_labels_core_to_torch(c) for c in block.components],
         properties=mts_labels_core_to_torch(block.properties),
     )
 
-def mts_labels_core_to_torch(labels: metatensor.Labels) -> torch.ScriptObject:
-    return metatensor.torch.Labels(labels.names, values=torch.tensor(labels.values))
+
+def mts_labels_core_to_torch(labels: Labels) -> torch.ScriptObject:
+    return mts.torch.Labels(labels.names, values=torch.tensor(labels.values))
+
+
+# Rename TensorMaps
+
+
+def rename_coeff_tensor(tensor: TensorMap) -> TensorMap:
+    """
+    Renames a TensorMap corresponding to a coefficient vector according to the new
+    naming convention.
+    """
+    # Keys
+    tensor = mts.rename_dimension(tensor, "keys", "spherical_harmonics_l", "o3_lambda")
+    tensor = mts.rename_dimension(tensor, "keys", "species_center", "center_type")
+    # Samples
+    tensor = mts.rename_dimension(tensor, "samples", "structure", "system")
+    tensor = mts.rename_dimension(tensor, "samples", "center", "atom")
+    # Components
+    tensor = TensorMap(
+        tensor.keys,
+        blocks=[
+            TensorBlock(
+                values=block.values,
+                samples=block.samples,
+                components=[
+                    Labels(names=["o3_mu"], values=block.components[0].values),
+                ],
+                properties=block.properties,
+            )
+            for block in tensor
+        ],
+    )
+
+    return tensor
+
+
+def rename_ovlp_matrix(tensor: TensorMap) -> TensorMap:
+    """
+    Renames a TensorMap corresponding to an overlap matrix according to the new naming
+    convention.
+    """
+    # Keys
+    tensor = mts.rename_dimension(
+        tensor, "keys", "spherical_harmonics_l1", "o3_lambda_1"
+    )
+    tensor = mts.rename_dimension(
+        tensor, "keys", "spherical_harmonics_l2", "o3_lambda_2"
+    )
+    tensor = mts.rename_dimension(tensor, "keys", "species_center_1", "center_1_type")
+    tensor = mts.rename_dimension(tensor, "keys", "species_center_2", "center_2_type")
+    # Samples
+    tensor = mts.rename_dimension(tensor, "samples", "structure", "system")
+    tensor = mts.rename_dimension(tensor, "samples", "center_1", "atom_1")
+    tensor = mts.rename_dimension(tensor, "samples", "center_2", "atom_2")
+    # Components
+    tensor = TensorMap(
+        tensor.keys,
+        blocks=[
+            TensorBlock(
+                values=block.values,
+                samples=block.samples,
+                components=[
+                    Labels(names=["o3_mu_1"], values=block.components[0].values),
+                    Labels(names=["o3_mu_2"], values=block.components[1].values),
+                ],
+                properties=block.properties,
+            )
+            for block in tensor
+        ],
+    )
+    # Properties
+    tensor = mts.rename_dimension(tensor, "properties", "n1", "n_1")
+    tensor = mts.rename_dimension(tensor, "properties", "n2", "n_2")
+
+    return tensor
 
 
 def labels_where(labels: Labels, selection: Labels):
@@ -248,4 +324,3 @@ def log(log_path: str, line: str, comment: bool = True, use_timestamp: bool = Tr
     else:
         with open(log_path, "w") as f:
             f.write(log_line + "\n")
-

@@ -104,7 +104,7 @@ def learning_curve(data, subset_sizes: np.array, point: str = "best"):
 def parity_plot(
     target: TensorMap,
     predicted: TensorMap,
-    color_by: str = "spherical_harmonics_l",
+    color_by: str = "o3_lambda",
 ):
     """
     Returns a parity plot of the target (x axis) and predicted (y axis)
@@ -178,14 +178,14 @@ def plot_coeff_hist(
                 )
 
     # Get the list of L values
-    L = np.sort(np.unique(tensors[0].keys["spherical_harmonics_l"]))
+    L = np.sort(np.unique(tensors[0].keys["o3_lambda"]))
 
     # Compile flattened vectors of absolute nonzero coefficients for each l
     # value
     results = [{l: np.array([]) for l in L} for tensor in tensors]
     for tensor_i, tensor in enumerate(tensors):
         for key, block in tensor.items():
-            l = key["spherical_harmonics_l"]
+            l = key["o3_lambda"]
             vals = block.values.flatten()
             results[tensor_i][l] = np.concatenate([results[tensor_i][l], vals])
 
@@ -228,7 +228,7 @@ def plot_coeff_hist(
             textcoords="offset points",
             size="large",
             ha="right",
-            va="center",
+            va="atom",
         )
     # Add column titles
     if len(tensors) > 1:
@@ -241,7 +241,7 @@ def plot_coeff_hist(
                 xycoords="axes fraction",
                 textcoords="offset points",
                 size="large",
-                ha="center",
+                ha="atom",
                 va="baseline",
             )
     fig.tight_layout()
@@ -321,7 +321,7 @@ def plot_comparison_hist(
             textcoords="offset points",
             size="large",
             ha="right",
-            va="center",
+            va="atom",
         )
 
     # Add column titles
@@ -334,7 +334,7 @@ def plot_comparison_hist(
             xycoords="axes fraction",
             textcoords="offset points",
             size="large",
-            ha="center",
+            ha="atom",
             va="baseline",
         )
 

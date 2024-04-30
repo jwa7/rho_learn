@@ -131,8 +131,8 @@ def coeff_vector_ndarray_to_tensormap(
     :param structure_idx: int, the index of the structure in the overall
         dataset. If None (default), the samples metadata of each block in the
         output TensorMap will not contain an index for the structure, i.e. the
-        sample names will just be ["center"]. If an integer, the sample names
-        will be ["structure", "center"] and the index for "structure" will be
+        sample names will just be ["atom"]. If an integer, the sample names
+        will be ["system", "atom"] and the index for "system" will be
         ``structure_idx``.
     :param tests: int, the number of coefficients to randomly compare between
         the raw input array and processed TensorMap to check for correct
@@ -219,8 +219,8 @@ def coeff_vector_ndarray_to_tensormap(
 
     # Build the TensorMap blocks
     blocks = []
-    for l, species_center in keys:
-        symbol = NUM_TO_SYM[species_center]
+    for l, center_type in keys:
+        symbol = NUM_TO_SYM[center_type]
         raw_block = results_dict[(l, symbol)]
         atom_idxs = np.sort(list(raw_block.keys()))
         # Define the sample values, with or without the structure index
@@ -292,9 +292,9 @@ def overlap_matrix_ndarray_to_tensormap(
     :param structure_idx: int, the index of the structure in the overall
         dataset. If None (default), the samples metadata of each block in the
         output TensorMap will not contain an index for the structure, i.e. the
-        sample names will just be ["center_1", "center_2"]. If an integer, the
-        sample names will be ["structure", "center_1", "center_2"] and the index
-        for "structure" will be ``structure_idx``.
+        sample names will just be ["atom_1", "atom_2"]. If an integer, the
+        sample names will be ["system", "atom_1", "atom_2"] and the index
+        for "system" will be ``structure_idx``.
     :param tests: int, the number of coefficients to randomly compare between
         the raw input array ``overlap`` and processed TensorMap to check for
         correct conversion.
@@ -360,20 +360,20 @@ def overlap_matrix_ndarray_to_tensormap(
                 num_coeffs_by_uniq_symbol[symbols[i1]],
                 num_coeffs_by_uniq_symbol[symbols[i2]],
             )
-            # Split by angular channel l1, along axis 0
+            # Split by angular channel l_1, along axis 0
             split_by_l1 = np.split(
                 i2_matrix, np.cumsum(num_coeffs_by_l[symbols[i1]]), axis=0
             )[:-1]
             assert len(split_by_l1) == lmax[symbols[i1]] + 1
 
             tmp_l1 = []
-            for l1, l1_matrix in enumerate(split_by_l1):
+            for l_1, l1_matrix in enumerate(split_by_l1):
                 # Check the shape
                 assert l1_matrix.shape == (
-                    num_coeffs_by_l[symbols[i1]][l1],
+                    num_coeffs_by_l[symbols[i1]][l_1],
                     num_coeffs_by_uniq_symbol[symbols[i2]],
                 )
-                # Split now by angular channel l2, along axis 1
+                # Split now by angular channel l_2, along axis 1
                 split_by_l2 = np.split(
                     l1_matrix, np.cumsum(num_coeffs_by_l[symbols[i2]]), axis=1
                 )[:-1]
@@ -381,19 +381,19 @@ def overlap_matrix_ndarray_to_tensormap(
 
                 # Now reshape the matrices such that the m-components are expanded
                 tmp_l2 = []
-                for l2, l2_matrix in enumerate(split_by_l2):
+                for l_2, l2_matrix in enumerate(split_by_l2):
                     assert l2_matrix.shape == (
-                        num_coeffs_by_l[symbols[i1]][l1],
-                        num_coeffs_by_l[symbols[i2]][l2],
+                        num_coeffs_by_l[symbols[i1]][l_1],
+                        num_coeffs_by_l[symbols[i2]][l_2],
                     )
 
                     l2_matrix = np.reshape(
                         l2_matrix,
                         (
                             1,  # as this is a single atomic sample
-                            2 * l1 + 1,
-                            nmax[(symbols[i1], l1)],
-                            num_coeffs_by_l[symbols[i2]][l2],
+                            2 * l_1 + 1,
+                            nmax[(symbols[i1], l_1)],
+                            num_coeffs_by_l[symbols[i2]][l_2],
                         ),
                         order="F",
                     )
@@ -402,10 +402,10 @@ def overlap_matrix_ndarray_to_tensormap(
                         l2_matrix,
                         (
                             1,
-                            2 * l1 + 1,
-                            nmax[(symbols[i1], l1)],
-                            2 * l2 + 1,
-                            nmax[(symbols[i2], l2)],
+                            2 * l_1 + 1,
+                            nmax[(symbols[i1], l_1)],
+                            2 * l_2 + 1,
+                            nmax[(symbols[i2], l_2)],
                         ),
                         order="F",
                     )
@@ -413,24 +413,24 @@ def overlap_matrix_ndarray_to_tensormap(
                     # intermediate dimensions
                     l2_matrix = np.swapaxes(l2_matrix, 2, 3)
 
-                    # Reshape matrix such that both n1 and n2 are along the final
+                    # Reshape matrix such that both n_1 and n_2 are along the final
                     # axes
                     l2_matrix = np.reshape(
                         l2_matrix,
                         (
                             1,
-                            2 * l1 + 1,
-                            2 * l2 + 1,
-                            nmax[(symbols[i1], l1)] * nmax[(symbols[i2], l2)],
+                            2 * l_1 + 1,
+                            2 * l_2 + 1,
+                            nmax[(symbols[i1], l_1)] * nmax[(symbols[i2], l_2)],
                         ),
                         order="C",
                     )
 
                     assert l2_matrix.shape == (
                         1,
-                        2 * l1 + 1,
-                        2 * l2 + 1,
-                        nmax[(symbols[i1], l1)] * nmax[(symbols[i2], l2)],
+                        2 * l_1 + 1,
+                        2 * l_2 + 1,
+                        nmax[(symbols[i1], l_1)] * nmax[(symbols[i2], l_2)],
                     )
                     tmp_l2.append(l2_matrix)
                 tmp_l1.append(tmp_l2)
@@ -441,24 +441,24 @@ def overlap_matrix_ndarray_to_tensormap(
     # Initialize dict of the form {(l, symbol): array}
     results_dict = {}
     for symbol_1, symbol_2 in itertools.product(np.unique(symbols), repeat=2):
-        for l1 in range(lmax[symbol_1] + 1):
-            for l2 in range(lmax[symbol_2] + 1):
-                results_dict[(l1, l2, symbol_1, symbol_2)] = {}
+        for l_1 in range(lmax[symbol_1] + 1):
+            for l_2 in range(lmax[symbol_2] + 1):
+                results_dict[(l_1, l_2, symbol_1, symbol_2)] = {}
 
-    # Store the arrays by l1, l2, species
+    # Store the arrays by l_1, l_2, species
     for i1, (symbol_1, i1_matrix) in enumerate(zip(symbols, split_by_i1)):
         for i2, (symbol_2, i2_matrix) in enumerate(zip(symbols, i1_matrix)):
-            for l1, l1_matrix in zip(range(lmax[symbol_1] + 1), i2_matrix):
-                for l2, l2_matrix in zip(range(lmax[symbol_2] + 1), l1_matrix):
-                    results_dict[(l1, l2, symbol_1, symbol_2)][i1, i2] = l2_matrix
+            for l_1, l1_matrix in zip(range(lmax[symbol_1] + 1), i2_matrix):
+                for l_2, l2_matrix in zip(range(lmax[symbol_2] + 1), l1_matrix):
+                    results_dict[(l_1, l_2, symbol_1, symbol_2)][i1, i2] = l2_matrix
 
     # Contruct the TensorMap keys
     keys = Labels(
         names=convention.OVERLAP_MATRIX.keys.names,
         values=np.array(
             [
-                [l1, l2, SYM_TO_NUM[symbol_1], SYM_TO_NUM[symbol_2]]
-                for l1, l2, symbol_1, symbol_2 in results_dict.keys()
+                [l_1, l_2, SYM_TO_NUM[symbol_1], SYM_TO_NUM[symbol_2]]
+                for l_1, l_2, symbol_1, symbol_2 in results_dict.keys()
             ]
         ),
     )
@@ -471,13 +471,13 @@ def overlap_matrix_ndarray_to_tensormap(
 
     # Contruct the TensorMap blocks
     blocks = []
-    for l1, l2, species_center_1, species_center_2 in keys:
+    for l_1, l_2, center_1_type, center_2_type in keys:
         # Get the chemical symbols for the corresponding atomic numbers
-        symbol_1 = NUM_TO_SYM[species_center_1]
-        symbol_2 = NUM_TO_SYM[species_center_2]
+        symbol_1 = NUM_TO_SYM[center_1_type]
+        symbol_2 = NUM_TO_SYM[center_2_type]
 
         # Retrieve the raw block of data for the l and symbols
-        raw_block = results_dict[(l1, l2, symbol_1, symbol_2)]
+        raw_block = results_dict[(l_1, l_2, symbol_1, symbol_2)]
 
         # Get the atomic indices
         atom_idxs = np.array(list(raw_block.keys()))
@@ -502,21 +502,21 @@ def overlap_matrix_ndarray_to_tensormap(
             components=[
                 Labels(
                     names=convention.OVERLAP_MATRIX.block(0).components[0].names,
-                    values=np.arange(-l1, +l1 + 1).reshape(-1, 1),
+                    values=np.arange(-l_1, +l_1 + 1).reshape(-1, 1),
                 ),
                 Labels(
                     names=convention.OVERLAP_MATRIX.block(0).components[1].names,
-                    values=np.arange(-l2, +l2 + 1).reshape(-1, 1),
+                    values=np.arange(-l_2, +l_2 + 1).reshape(-1, 1),
                 ),
             ],
             properties=Labels(
                 names=convention.OVERLAP_MATRIX.property_names,
                 values=np.array(
                     [
-                        [n1, n2]
-                        for n1, n2 in itertools.product(
-                            np.arange(nmax[(symbol_1, l1)]),
-                            np.arange(nmax[(symbol_2, l2)]),
+                        [n_1, n_2]
+                        for n_1, n_2 in itertools.product(
+                            np.arange(nmax[(symbol_1, l_1)]),
+                            np.arange(nmax[(symbol_2, l_2)]),
                         )
                     ]
                 ),
@@ -564,29 +564,29 @@ def overlap_is_symmetric(tensor: TensorMap) -> bool:
     # Iterate over the blocks
     checked = set()  # for storing the keys that have been checked
     for key in keys:
-        l1, l2, a1, a2 = key
-        if (l1, l2, a1, a2) in checked or (l2, l1, a2, a1) in checked:
+        l_1, l_2, a1, a2 = key
+        if (l_1, l_2, a1, a2) in checked or (l_2, l_1, a2, a1) in checked:
             continue
 
         # Get 2 blocks for comparison, permuting l and a. If this is a diagonal
         # block, block 1 and block 2 will be the same object
         block1 = tensor.block(
-            spherical_harmonics_l1=l1,
-            spherical_harmonics_l2=l2,
-            species_center_1=a1,
-            species_center_2=a2,
+            o3_lambda_1=l_1,
+            o3_lambda_2=l_2,
+            center_1_type=a1,
+            center_2_type=a2,
         )
         block2 = tensor.block(
-            spherical_harmonics_l1=l2,
-            spherical_harmonics_l2=l1,
-            species_center_1=a2,
-            species_center_2=a1,
+            o3_lambda_1=l_2,
+            o3_lambda_2=l_1,
+            center_1_type=a2,
+            center_2_type=a1,
         )
         if not overlap_is_symmetric_block(block1, block2):
             return False
         # Only track checking of off-diagonal blocks
-        if not (l1 == l2 and a1 == a2):
-            checked.update({(l1, l2, a1, a2)})
+        if not (l_1 == l_2 and a1 == a2):
+            checked.update({(l_1, l_2, a1, a2)})
 
     return True
 
@@ -603,11 +603,11 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
     If symmetric, the data tensor of ``block2`` should be exactly equivalent to
     that of ``block2`` after permuting:
 
-        - the atom-center pairs in the samples, i.e. 'center_1' with 'center_2'.
+        - the atom-center pairs in the samples, i.e. 'atom_1' with 'atom_2'.
         - the spherical harmonics components *axes* (as these exist on separate
           component axes, not in the same one as with samples/properties), i.e.
-          'spherical_harmonics_m1' with 'spherical_harmonics_m2'.
-        - the radial channels in the properties, i.e. 'n1' with 'n2'.
+          'o3_mu_1' with 'o3_mu_2'.
+        - the radial channels in the properties, i.e. 'n_1' with 'n_2'.
     """
     # Check the samples names and determine whether or not the structure index
     # is included
@@ -661,7 +661,7 @@ def overlap_is_symmetric_block(block1: TensorBlock, block2: TensorBlock) -> bool
     # Create a properties filter for how the properties map to eachother between
     # blocks
     properties_filter = [
-        block2.properties.position((n2, n1)) for [n1, n2] in block1.properties
+        block2.properties.position((n_2, n_1)) for [n_1, n_2] in block1.properties
     ]
     # Broadcast the values array using the filters, and swap the components axes
     reordered_block2 = np.swapaxes(
@@ -675,21 +675,21 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
     """
     Takes an input TensorMap ``tensor`` that corresponds to the overlap matrix
     for a given structure. Assumes blocks have keys with names
-    ("spherical_harmonics_l1", "spherical_harmonics_l2", "species_center_1",
-    "species_center_2",) corresponding to indices of the form (l1, l2, a1, a2).
+    ("o3_lambda_1", "o3_lambda_2", "center_1_type",
+    "center_2_type",) corresponding to indices of the form (l_1, l_2, a1, a2).
 
     The returned TensorMap only has off-diagonal blocks with keys where:
-        - l1 < l2, or
-        - a1 <= a2 if l1 == l2
+        - l_1 < l_2, or
+        - a1 <= a2 if l_1 == l_2
 
-    ensuring that if an off-diagonal block (l1, l2, a1, a2) exists (i.e. where
-    l1 != l2 or a1 != a2), then the exactly symmetric (and redundant) block (l2,
-    l1, a2, a1) has been dropped.
+    ensuring that if an off-diagonal block (l_1, l_2, a1, a2) exists (i.e. where
+    l_1 != l_2 or a1 != a2), then the exactly symmetric (and redundant) block (l_2,
+    l_1, a2, a1) has been dropped.
 
     :param tensor: the input TensorMap corresponding to the overlap-type matrix
         in metatensor format. Must have keys with names
-        ("spherical_harmonics_l1", "spherical_harmonics_l2", "species_center_1",
-        "species_center_2",)
+        ("o3_lambda_1", "o3_lambda_2", "center_1_type",
+        "center_2_type",)
 
     :return: the TensorMap with redundant off-diagonal blocks dropped.
     """
@@ -699,16 +699,16 @@ def overlap_drop_redundant_off_diagonal_blocks(tensor: TensorMap) -> TensorMap:
 
     # Define a filter for the keys *TO DROP*
     keys_to_drop_filter = []
-    for l1, l2, a1, a2 in keys:
-        # Keep keys where l1 < l2, or a1 <= a2 if l1 == l2
-        if l1 < l2:  # keep
+    for l_1, l_2, a1, a2 in keys:
+        # Keep keys where l_1 < l_2, or a1 <= a2 if l_1 == l_2
+        if l_1 < l_2:  # keep
             keys_to_drop_filter.append(False)
-        elif l1 == l2:
+        elif l_1 == l_2:
             if a1 <= a2:  # keep
                 keys_to_drop_filter.append(False)
             else:  # drop
                 keys_to_drop_filter.append(True)
-        else:  # l1 > l2: drop
+        else:  # l_1 > l_2: drop
             keys_to_drop_filter.append(True)
 
     # Drop these blocks
@@ -759,7 +759,7 @@ def coeff_vector_tensormap_to_ndarray(
     # is included
     if tensor.sample_names == convention.COEFF_VECTOR.sample_names:
         structure_idx_present = True
-        structure_idxs = metatensor.unique_metadata(tensor, "samples", "structure")
+        structure_idxs = metatensor.unique_metadata(tensor, "samples", "system")
         assert len(structure_idxs) == 1
         structure_idx = structure_idxs[0]
     elif tensor.sample_names == convention.COEFF_VECTOR.sample_names[1:]:
@@ -803,8 +803,8 @@ def coeff_vector_tensormap_to_ndarray(
         tmp_dict = {}
 
         # Store the block values in a dict by atom index
-        for atom_idx in np.unique(block.samples["center"]):
-            atom_idx_mask = block.samples["center"] == atom_idx
+        for atom_idx in np.unique(block.samples["atom"]):
+            atom_idx_mask = block.samples["atom"] == atom_idx
             # Get the array of values for this atom, of species `symbol` and `l`` value
             # The shape of this array is (1, 2*l+1, nmax[(symbol, l)]
             atom_arr = block.values[atom_idx_mask]
@@ -892,8 +892,8 @@ def test_coeff_vector_conversion(
 
     # Pick out this element from the TensorMap
     tm_block = coeffs_tm.block(
-        spherical_harmonics_l=l,
-        species_center=ase.Atoms(symbol).get_atomic_numbers()[0],
+        o3_lambda=l,
+        center_type=ase.Atoms(symbol).get_atomic_numbers()[0],
     )
     if structure_idx is None:
         s_idx = tm_block.samples.position((i,))
@@ -956,23 +956,23 @@ def test_overlap_matrix_conversion(
         symbol1, symbol2 = species_symbols[i1], species_symbols[i2]
 
     # Pick pairs of random l
-    l1 = rng.integers(lmax[symbol1] + 1)
-    if off_diags_dropped:  # ensure l1 <= l2
-        l2 = rng.integers(l1, lmax[symbol2] + 1)
+    l_1 = rng.integers(lmax[symbol1] + 1)
+    if off_diags_dropped:  # ensure l_1 <= l_2
+        l_2 = rng.integers(l_1, lmax[symbol2] + 1)
     else:
-        l2 = rng.integers(lmax[symbol2] + 1)
+        l_2 = rng.integers(lmax[symbol2] + 1)
 
     # Pick random pairs of n and m based on the l values
-    n1, n2 = rng.integers(nmax[(symbol1, l1)]), rng.integers(nmax[(symbol2, l2)])
-    m1, m2 = rng.integers(-l1, l1 + 1), rng.integers(-l2, l2 + 1)
+    n_1, n_2 = rng.integers(nmax[(symbol1, l_1)]), rng.integers(nmax[(symbol2, l_2)])
+    m1, m2 = rng.integers(-l_1, l_1 + 1), rng.integers(-l_2, l_2 + 1)
 
     if print_level > 0:
-        print("Atom 1:", i1, symbol1, "l1:", l1, "n1:", n1, "m1:", m1)
-        print("Atom 2:", i2, symbol2, "l2:", l2, "n2:", n2, "m2:", m2)
+        print("Atom 1:", i1, symbol1, "l_1:", l_1, "n_1:", n_1, "m1:", m1)
+        print("Atom 2:", i2, symbol2, "l_2:", l_2, "n_2:", n_2, "m2:", m2)
 
     # Get the flat row and column indices for this matrix element
-    row_idx = get_flat_index(species_symbols, lmax, nmax, i1, l1, n1, m1)
-    col_idx = get_flat_index(species_symbols, lmax, nmax, i2, l2, n2, m2)
+    row_idx = get_flat_index(species_symbols, lmax, nmax, i1, l_1, n_1, m1)
+    col_idx = get_flat_index(species_symbols, lmax, nmax, i2, l_2, n_2, m2)
     raw_elem = overlaps_matrix[row_idx][col_idx]
 
     # Check that the matrix element is symmetric
@@ -984,10 +984,10 @@ def test_overlap_matrix_conversion(
     # Pick out this matrix element from the TensorMap
     # Start by extracting the block.
     tm_block = overlaps_tm.block(
-        spherical_harmonics_l1=l1,
-        spherical_harmonics_l2=l2,
-        species_center_1=SYM_TO_NUM[symbol1],
-        species_center_2=SYM_TO_NUM[symbol2],
+        o3_lambda_1=l_1,
+        o3_lambda_2=l_2,
+        center_1_type=SYM_TO_NUM[symbol1],
+        center_2_type=SYM_TO_NUM[symbol2],
     )
 
     # Define the samples, components, and properties indices
@@ -997,7 +997,7 @@ def test_overlap_matrix_conversion(
         s_idx = tm_block.samples.position((structure_idx, i1, i2))
     c_idx_1 = tm_block.components[0].position((m1,))
     c_idx_2 = tm_block.components[1].position((m2,))
-    p_idx = tm_block.properties.position((n1, n2))
+    p_idx = tm_block.properties.position((n_1, n_2))
 
     tm_elem = tm_block.values[s_idx][c_idx_1][c_idx_2][p_idx]
     if print_level > 0:

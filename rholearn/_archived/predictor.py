@@ -119,14 +119,14 @@
 #         )
 
 #     # Drop the structure label from the TensorMap
-#     tmp_out_pred = utils.drop_metadata_name(out_pred, axis="samples", name="structure")
+#     tmp_out_pred = utils.drop_metadata_name(out_pred, axis="samples", name="system")
 
 #     # Convert TensorMap to Q-Stack coeffs. Need to rename the TensorMap keys
 #     # here to fit LCMD naming convention
 #     vect_coeffs = qstack.equio.tensormap_to_vector(
 #         mol,
 #         utils.rename_tensor(
-#             tmp_out_pred, keys_names=["spherical_harmonics_l", "element"]
+#             tmp_out_pred, keys_names=["o3_lambda", "element"]
 #         ),
 #     )
 

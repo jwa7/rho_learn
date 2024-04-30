@@ -14,12 +14,13 @@ import torch
 
 import metatensor.torch as mts
 from metatensor.torch.learn.data import IndexedDataset
+from metatensor.torch.learn.nn import Sequential
 
 import rascaline.torch
 
 from rhocalc.aims import aims_fields
 from rhocalc.ase import structure_builder
-from rholearn import data, nn
+from rholearn import data
 from rholearn.model import DescriptorCalculator
 
 
@@ -45,7 +46,7 @@ def get_selected_samples(
     # Normal use case: subset of structures
     if not masked_learning:
         return mts.Labels(
-            names=["structure"],
+            names=["system"],
             values=torch.tensor(structure_id).reshape(-1, 1),
         )
 
@@ -62,9 +63,7 @@ def get_selected_samples(
         for atom_i in list(idxs_surface) + list(idxs_interphase):
             selected_samples.append([A, atom_i])
 
-    return mts.Labels(
-        names=["structure", "center"], values=torch.tensor(selected_samples)
-    )
+    return mts.Labels(names=["system", "atom"], values=torch.tensor(selected_samples))
 
 
 def calculate_descriptors(
@@ -97,20 +96,22 @@ def calculate_descriptors(
         for desc in descriptor:
             # Find empty blocks
             keys_to_drop = []
-            if len(keys_to_drop) == 0:
-                continue
             for key, block in desc.items():
                 if block.values.shape[0] == 0:  # has been sliced to zero samples
                     keys_to_drop.append(key)
 
-            # Drop empty blocks
-            desc_dropped = mts.drop_blocks(
-                desc,
-                keys=mts.Labels(
-                    names=keys_to_drop[0].names,
-                    values=torch.tensor([[i for i in k.values] for k in keys_to_drop]),
-                ),
-            )
+            if len(keys_to_drop) > 0:  # Drop empty blocks
+                desc_dropped = mts.drop_blocks(
+                    desc,
+                    keys=mts.Labels(
+                        names=keys_to_drop[0].names,
+                        values=torch.tensor(
+                            [[i for i in k.values] for k in keys_to_drop]
+                        ),
+                    ),
+                )
+            else:  # no empty blocks to drop
+                desc_dropped = desc
             descriptor_dropped.append(desc_dropped)
 
         descriptor = descriptor_dropped
@@ -147,37 +148,6 @@ def mask_dft_data(
         aux_masked.append(data.mask_ovlp_matrix_tensormap(o, idxs_to_keep))
 
     return target_masked, aux_masked
-
-
-def get_nn(
-    in_keys: mts.Labels,
-    invariant_key_idxs: List[int],
-    in_properties: mts.Labels,
-    out_properties: mts.Labels,
-    dtype: torch.dtype,
-) -> torch.nn.Module:
-    """Builds a NN sequential ModuleMap"""
-
-    # TODO: move partially initialized nn architecture to settings
-    return nn.Sequential(
-        in_keys,
-        nn.EquiLayerNorm(
-            in_keys=in_keys,
-            invariant_key_idxs=invariant_key_idxs,
-            normalized_shape=[len(in_properties[i]) for i in invariant_key_idxs],
-            dtype=dtype,
-        ),
-        nn.Linear(
-            in_keys,
-            in_features=[len(in_props) for in_props in in_properties],
-            out_features=[len(out_props) for out_props in out_properties],
-            bias=[
-                True if key["spherical_harmonics_l"] == 0 else False for key in in_keys
-            ],
-            out_properties=out_properties,
-            dtype=dtype,
-        ),
-    )
 
 
 def parse_use_overlap_setting(
@@ -428,7 +398,7 @@ def run_training_sbatch(run_dir: str, python_command: str, **kwargs) -> None:
 
     # Copy training script and settings
     shutil.copy(join(top_dir, "ml_settings.py"), join(run_dir, "ml_settings.py"))
-    
+
     os.chdir(run_dir)
     fname = "run_training.sh"
 
