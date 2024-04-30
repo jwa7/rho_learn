@@ -18,14 +18,20 @@ pip cache remove "chemiscope*"
 pip install chemiscope
 
 # ===== Uninstalls, clear caches
-pip uninstall -y pytorch rascaline rascaline-torch
+pip uninstall -y torch rascaline rascaline-torch metatensor metatensor-core metatensor-operations metatensor-torch metatensor-learn wigners
 pip cache remove "torch*" 
-pip cache remove "rascaline*"
-pip uninstall -y metatensor metatensor-core metatensor-operations metatensor-torch metatensor-learn
+pip cache remove "rascaline*" 
 pip cache remove "metatensor*"
 
 # ===== PyTorch, rascaline, rascaline-torch with CPU-only torch
-pip install --extra-index-url https://download.pytorch.org/whl/cpu "rascaline-torch @ git+https://github.com/luthaf/rascaline@ddd880286fa570ee38ab1698f8569c02db484eb8#subdirectory=python/rascaline-torch"
+pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.2.0
+pip install metatensor-torch
+pip install wigners
+pip install --no-build-isolation --no-deps "rascaline @ git+https://github.com/luthaf/rascaline@37563c37a0d194c10dff3268e650b9b5cb47fcac"
+pip install --no-build-isolation --no-deps "rascaline-torch @ git+https://github.com/luthaf/rascaline@37563c37a0d194c10dff3268e650b9b5cb47fcac#subdirectory=python/rascaline-torch"
 
-# ===== metatensor-operations and metatensor-learn. Just use the release version for now.
-pip install --no-build-isolation --no-deps metatensor-operations metatensor-learn
+# ===== metatensor-operations release version
+pip install --no-build-isolation --no-deps metatensor-operations
+
+# ===== metatensor-learn latest version
+pip install --no-build-isolation --no-deps "metatensor-learn @ git+https://github.com/lab-cosmo/metatensor@590e3ac087596f4b44f8ba6270f5424d6bb5e61f#subdirectory=python/metatensor-learn"

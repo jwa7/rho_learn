@@ -22,7 +22,7 @@ def get_dataset_invariant_means(
 ) -> TensorMap:
     """
     Joins all samples from `dataset` for the specified data `field`, extracts
-    the invariant blocks (i.e. where key "spherical_harmonics_l" = 0) and
+    the invariant blocks (i.e. where key "o3_lambda" = 0) and
     returns a TensorMap containing the means these invariant features.
 
     As typically these invariant means are used for non-learnable biases in an
@@ -168,7 +168,7 @@ def get_invariant_means(tensor: TensorMap) -> TensorMap:
     # Define the keys of the covariant blocks
     keys_to_drop = Labels(
         names=tensor.keys.names,
-        values=tensor.keys.values[tensor.keys.column("spherical_harmonics_l") != 0],
+        values=tensor.keys.values[tensor.keys.column("o3_lambda") != 0],
     )
 
     # Drop these blocks

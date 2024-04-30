@@ -140,7 +140,7 @@ def evaluate_l2_loss_nonorthogonal_basis(
                 input,
                 "samples",
                 mts.Labels(
-                    names=["structure"], values=torch.tensor([A]).reshape(-1, 1)
+                    names=["system"], values=torch.tensor([A]).reshape(-1, 1)
                 ),
             )
             for A in structure_idxs
@@ -156,7 +156,7 @@ def evaluate_l2_loss_nonorthogonal_basis(
                 target,
                 "samples",
                 mts.Labels(
-                    names=["structure"], values=torch.tensor([A]).reshape(-1, 1)
+                    names=["system"], values=torch.tensor([A]).reshape(-1, 1)
                 ),
             )
             for A in structure_idxs
@@ -172,7 +172,7 @@ def evaluate_l2_loss_nonorthogonal_basis(
                 overlap,
                 "samples",
                 mts.Labels(
-                    names=["structure"], values=torch.tensor([A]).reshape(-1, 1)
+                    names=["system"], values=torch.tensor([A]).reshape(-1, 1)
                 ),
             )
             for A in structure_idxs
@@ -211,8 +211,8 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
     # Calculate the delta coefficient tensor
     delta_coeffs = mts.subtract(input, target)
 
-    l1: int
-    l2: int
+    l_1: int
+    l_2: int
     a1: int
     a2: int
 
@@ -221,18 +221,18 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
     for key, ovlp_block in overlap.items():
 
         # Unpack key values and retrieve the coeff blocks
-        l1, l2, a1, a2 = key.values
+        l_1, l_2, a1, a2 = key.values
         c1 = delta_coeffs.block(
-            {"spherical_harmonics_l": int(l1), "species_center": int(a1)},
+            {"o3_lambda": int(l_1), "center_type": int(a1)},
         ).values
         c2 = delta_coeffs.block(
-            {"spherical_harmonics_l": int(l2), "species_center": int(a2)},
+            {"o3_lambda": int(l_2), "center_type": int(a2)},
         ).values
 
         # Reshape the overlap block
-        i1, m1, n1 = c1.shape
-        i2, m2, n2 = c2.shape
-        o_vals = ovlp_block.values.reshape(i1, i2, m1, m2, n1, n2)
+        i1, m1, n_1 = c1.shape
+        i2, m2, n_2 = c2.shape
+        o_vals = ovlp_block.values.reshape(i1, i2, m1, m2, n_1, n_2)
         o_vals = o_vals.permute(0, 2, 4, 1, 3, 5)
 
         # Calculate the block loss by dot product
@@ -240,7 +240,7 @@ def evaluate_l2_loss_nonorthogonal_basis_one_structure(
 
         # Count the off-diagonal blocks twice as we only work with the
         # upper-triangle of the overlap matrix
-        if l1 == l2 and a1 == a2:
+        if l_1 == l_2 and a1 == a2:
             loss += block_loss
         else:
             loss += 2 * block_loss

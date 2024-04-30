@@ -114,7 +114,7 @@ def train(ml_settings: dict):
         epochs = torch.arange(TRAIN["n_epochs"] + 1)
         in_keys = descriptor[0].keys
         invariant_key_idxs = [
-            i for i, key in enumerate(in_keys) if key["spherical_harmonics_l"] == 0
+            i for i, key in enumerate(in_keys) if key["o3_lambda"] == 0
         ]
         in_properties = [descriptor[0][key].properties for key in in_keys]
         out_properties = [target[0][key].properties for key in in_keys]
@@ -123,8 +123,12 @@ def train(ml_settings: dict):
             in_properties=in_properties,
             out_properties=out_properties,
             descriptor_calculator=descriptor_calculator,
-            nn=get_nn(
-                in_keys, invariant_key_idxs, in_properties, out_properties, DTYPE
+            nn=NN(
+                in_keys=in_keys,
+                invariant_key_idxs=invariant_key_idxs,
+                in_properties=in_properties,
+                out_properties=out_properties,
+                **TORCH,
             ),
             **TORCH,
         )

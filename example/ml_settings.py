@@ -1,26 +1,29 @@
 """
-Module containing global varibales for running ML training.
+Module containing global variables for running model training.
 """
 
 from functools import partial
 import os
 from os.path import join, exists
+from typing import List
 
 import ase.io
 import numpy as np
 import torch
 import metatensor.torch as mts
 
+from metatensor.torch.learn import nn
+
 from rholearn.loss import L2Loss
 from rholearn.utils import timestamp
 
 # ===== SETUP =====
 SEED = 42
-TOP_DIR = "/home/abbott/march-24/rho_learn/example"
-DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
+TOP_DIR = "/Users/joe.abbott/Documents/phd/code/rho/april-24/rho_learn/example"
+DATA_DIR = "/Users/joe.abbott/Documents/phd/code/rho/april-24/si_mask/data"
 FIELD_NAME = "edensity"
 RI_FIT_ID = "edensity"
-ML_RUN_ID = "unmasked_7"
+ML_RUN_ID = "unmasked_1"
 ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID)
 
 # ===== DATA =====
@@ -29,11 +32,11 @@ ALL_STRUCTURE = ase.io.read(
 )
 ALL_STRUCTURE_ID = np.arange(len(ALL_STRUCTURE))
 # np.random.default_rng(seed=SEED).shuffle(ALL_STRUCTURE_ID)  # shuffle first?
-STRUCTURE_ID = ALL_STRUCTURE_ID[6::13][:2]
+STRUCTURE_ID = ALL_STRUCTURE_ID[6::13]
 STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
 
 ALL_SUBSET_ID = [
-    STRUCTURE_ID[:7],  # train subsets: [4, 7, 11, 17]
+    STRUCTURE_ID[:1],  # train subsets: [4, 7, 11, 17]
     STRUCTURE_ID[-5:-3],  # 2 x val
     STRUCTURE_ID[-3:]  # 3 x test
 ]
@@ -91,19 +94,46 @@ DESCRIPTOR_HYPERS = {
         "correlation_order": 2,
         "angular_cutoff": 3,
         "selected_keys": mts.Labels(
-            names=["spherical_harmonics_l", "inversion_sigma"],
+            names=["o3_lambda", "o3_sigma"],
             values=torch.tensor([[l, 1] for l in np.arange(LMAX + 1)]),
         ),
         "skip_redundant": True,
     },
 }
-# TODO: move partially initialized architecture to here once updated
-# MODEL_HYPERS = {
-#     "nn": [
-#         partial(nn.EquiLayerNorm, ,
-#         nn.EquiLinear,
-#     ]
-# }
+def get_nn(
+    in_keys: mts.Labels,
+    invariant_key_idxs: List[int],
+    in_properties: mts.Labels,
+    out_properties: mts.Labels,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.nn.Module:
+    """Builds a NN sequential ModuleMap"""
+    return nn.Sequential(
+        in_keys,
+        nn.InvariantLayerNorm(
+            in_keys=in_keys,
+            invariant_key_idxs=invariant_key_idxs,
+            in_features=[
+                len(in_props)
+                for i, in_props in enumerate(in_properties)
+                if i in invariant_key_idxs
+            ],
+            dtype=dtype,
+            device=device,
+        ),
+        nn.EquivariantLinear(
+            in_keys=in_keys,
+            invariant_key_idxs=invariant_key_idxs,
+            in_features=[len(in_props) for in_props in in_properties],
+            out_properties=out_properties,
+            bias=True,  # equivariant bias
+            dtype=dtype,
+            device=device,
+        ),
+    )
+NN = get_nn
+
 TRAIN = {
     # Training
     "batch_size": 1,
@@ -120,7 +150,7 @@ TRAIN = {
     "log_interval": 500,  # how often to log the loss
     "log_block_loss": True,  # whether to log the block losses
     # Masked learning
-    "masked_learning": True,
+    "masked_learning": False,
     "slab_depth": 4.0,  # Ang
     "interphase_depth": 1.0,  # Ang
 }
@@ -176,6 +206,7 @@ ML_SETTINGS = {
     "DEVICE": DEVICE,
     "TORCH": TORCH,
     "DESCRIPTOR_HYPERS": DESCRIPTOR_HYPERS,
+    "NN": NN,
     "TRAIN": TRAIN,
     "OPTIMIZER": OPTIMIZER,
     "SCHEDULER": SCHEDULER,

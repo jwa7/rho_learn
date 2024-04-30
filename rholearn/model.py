@@ -65,7 +65,7 @@ class DescriptorCalculator(torch.nn.Module):
         them as per-structure TensorMaps.
 
             1. Build SphericalExpansion
-            2. Moves 'species_neighbor' to properties
+            2. Moves 'neighbor_type' to properties
             3. Compute DensityCorrelations
             4. Split into per-structure TensorMaps
             5. Reindex the structure indices of each TensorMap if
@@ -87,11 +87,11 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # density = density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(atom_types).reshape(-1, 1),
             #     )
             # )
-            density = density.keys_to_properties("species_neighbor")
+            density = density.keys_to_properties("neighbor_type")
             # Lambda-SOAP
             descriptor = self._density_correlations_calculator.compute(
                 density, **density_correlations_compute_args
@@ -104,11 +104,11 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # density = density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            density = density.keys_to_properties("species_neighbor")
+            density = density.keys_to_properties("neighbor_type")
             # Lambda-LODE
             descriptor = self._density_correlations_calculator.compute(
                 density, **density_correlations_compute_args
@@ -122,11 +122,11 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # soap_density = soap_density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            soap_density = soap_density.keys_to_properties("species_neighbor")
+            soap_density = soap_density.keys_to_properties("neighbor_type")
             # Lambda-SOAP
             lambda_soap = self._density_correlations_calculator.compute(
                 soap_density, **density_correlations_compute_args
@@ -137,11 +137,11 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # lode_density = lode_density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            lode_density = lode_density.keys_to_properties("species_neighbor")
+            lode_density = lode_density.keys_to_properties("neighbor_type")
             # Lambda-SOAP + LODE
             descriptor = mts.join([lambda_soap, lode_density], axis="properties")
 
@@ -153,22 +153,22 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # soap_density = soap_density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            soap_density = soap_density.keys_to_properties("species_neighbor")
+            soap_density = soap_density.keys_to_properties("neighbor_type")
             # LODE
             lode_density = self._lode_spherical_expansion_calculator.compute(
                 system, **lode_spherical_expansion_compute_args
             )
             # lode_density = lode_density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            lode_density = lode_density.keys_to_properties("species_neighbor")
+            lode_density = lode_density.keys_to_properties("neighbor_type")
             # Lambda-LODE
             lambda_lode = self._density_correlations_calculator.compute(
                 lode_density, **density_correlations_compute_args
@@ -184,11 +184,11 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # soap_density = soap_density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            soap_density = soap_density.keys_to_properties("species_neighbor")
+            soap_density = soap_density.keys_to_properties("neighbor_type")
             # Lambda-SOAP
             lambda_soap = self._density_correlations_calculator.compute(
                 soap_density, **density_correlations_compute_args
@@ -199,11 +199,11 @@ class DescriptorCalculator(torch.nn.Module):
             )
             # lode_density = lode_density.keys_to_properties(
             #     keys_to_move=mts.Labels(
-            #         names=["species_neighbor"],
+            #         names=["neighbor_type"],
             #         values=torch.tensor(self._atom_types).reshape(-1, 1),
             #     )
             # )
-            lode_density = lode_density.keys_to_properties("species_neighbor")
+            lode_density = lode_density.keys_to_properties("neighbor_type")
             # Lambda-LODE
             lambda_lode = self._density_correlations_calculator.compute(
                 lode_density, **density_correlations_compute_args
@@ -215,10 +215,13 @@ class DescriptorCalculator(torch.nn.Module):
         else:
             raise ValueError("Invalid `correlate_what`")
 
+        # Drop the redundant 'o3_sigma' key as it is 1 for this application (real vectors)
+        descriptor = mts.remove_dimension(descriptor, axis="keys", name="o3_sigma")
+
         # Find the structure indices present in the systems. As `selected_samples` can
         # be passed to the `SphericalExpansion.compute()` method, the structure indices
         # may not be continuous from 0 to len(systems) - 1.
-        _ids = mts.unique_metadata(descriptor, "samples", "structure").values.flatten()
+        _ids = mts.unique_metadata(descriptor, "samples", "system").values.flatten()
 
         # Split into per-structure TensorMaps. Currently, the TensorMaps have
         # structure indices from 0 to len(system) - 1
@@ -227,7 +230,7 @@ class DescriptorCalculator(torch.nn.Module):
                 descriptor,
                 "samples",
                 labels=mts.Labels(
-                    names="structure", values=torch.tensor([A]).reshape(-1, 1)
+                    names="system", values=torch.tensor([A]).reshape(-1, 1)
                 ),
             )
             for A in _ids
@@ -246,7 +249,7 @@ class DescriptorCalculator(torch.nn.Module):
         reindexed_descriptor = []
         for A, desc in zip(structure_id, descriptor):
             # Edit the metadata to match the structure index
-            desc = mts.remove_dimension(desc, axis="samples", name="structure")
+            desc = mts.remove_dimension(desc, axis="samples", name="system")
             new_desc = []
             for key, block in desc.items():
                 new_desc.append(
@@ -254,7 +257,7 @@ class DescriptorCalculator(torch.nn.Module):
                         values=block.values,
                         samples=block.samples.insert(
                             index=0,
-                            name="structure",
+                            name="system",
                             values=torch.tensor(
                                 [A] * len(block.samples), dtype=torch.int32
                             ),
@@ -268,7 +271,7 @@ class DescriptorCalculator(torch.nn.Module):
             # new_desc = mts.insert_dimension(
             #     descriptor,
             #     axis="samples",
-            #     name="structure",
+            #     name="system",
             #     values=torch.tensor([A]),
             #     index=0,
             # )

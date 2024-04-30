@@ -22,7 +22,7 @@ def linalg_fit(
     models = []
     for key in keys:
         if bias_invariants:
-            if key["spherical_harmonics_l"] == 0:
+            if key["o3_lambda"] == 0:
                 fit_intercept = True
             else:
                 fit_intercept = False
@@ -149,7 +149,7 @@ def plot_parities(keys, target: TensorMap, prediction: TensorMap):
 
     # Parity plots
     for key in keys:
-        l, a = key["spherical_harmonics_l"], key["species_center"]
+        l, a = key["o3_lambda"], key["center_type"]
         ax = axes[{1: 0, 14: 1}[a], l]
 
         metatensor.equal_metadata_block_raise(target.block(key), prediction.block(key))
@@ -157,7 +157,7 @@ def plot_parities(keys, target: TensorMap, prediction: TensorMap):
         Y_pred_vals = prediction.block(key).values
 
         for n in target.block(key).properties.column("n"):
-            for m in target.block(key).components[0].column("spherical_harmonics_m"):
+            for m in target.block(key).components[0].column("o3_mu"):
                 m_idx = index_to_m(l)[m]
                 ax.scatter(
                     Y_vals[:, :, n][:, m_idx], 
