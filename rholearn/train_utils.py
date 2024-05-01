@@ -24,48 +24,6 @@ from rholearn import data
 from rholearn.model import DescriptorCalculator
 
 
-def get_selected_samples(
-    structure: List[ase.Atoms],
-    structure_id: List[int],
-    masked_learning: bool = False,
-    slab_depth: Optional[float] = None,
-    interphase_depth: Optional[float] = None,
-) -> mts.Labels:
-    """
-    Generates a `mts.Labels` object of the samples to compute when calling the
-    DescriptorCalculator. There are 2 uses of this:
-
-    1. Passing a global set of frames to, i.e. rascaline.SphericalExpansion, to then
-       compute only a subset. This ensures the feature space has the global dimension.
-    2. Computing the atom-centered density correlations for a subset of atoms within
-       each frame. This is useful for masked learning, i.e. for learning the surfaces of
-       slabs.
-
-    If `masked_learning` is true, `slab_depth` and `interphase_depth` must be passed.
-    """
-    # Normal use case: subset of structures
-    if not masked_learning:
-        return mts.Labels(
-            names=["system"],
-            values=torch.tensor(structure_id).reshape(-1, 1),
-        )
-
-    # Extended use case: subset of structures and subset of atoms within them
-    selected_samples = []
-    for A, frame in zip(structure_id, structure):
-        # Partition atoms into S, I, B regions
-        idxs_surface, idxs_interphase, idxs_bulk = (
-            structure_builder.get_atom_idxs_by_region(
-                frame, slab_depth, interphase_depth
-            )
-        )
-        # Keep S + I atoms
-        for atom_i in list(idxs_surface) + list(idxs_interphase):
-            selected_samples.append([A, atom_i])
-
-    return mts.Labels(names=["system", "atom"], values=torch.tensor(selected_samples))
-
-
 def calculate_descriptors(
     descriptor_calculator: torch.nn.Module,
     all_structure: List[ase.Atoms],
@@ -422,10 +380,9 @@ def run_training_sbatch(run_dir: str, python_command: str, **kwargs) -> None:
     os.chdir(top_dir)
 
 
-def run_training_local(run_dir: str, python_command: str) -> None:
+def run_python_local(run_dir: str, python_command: str) -> None:
     """
-    Runs the training loop in the local environment. `run_dir` must contain this
-    file "run_training.py", and the settings file "settings.py".
+    Runs a python command locally in `run_dir`.
     """
     top_dir = os.getcwd()
     os.chdir(run_dir)

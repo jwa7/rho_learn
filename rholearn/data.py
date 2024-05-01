@@ -12,7 +12,54 @@ import torch
 import metatensor.torch as mts
 
 
-# ===== Fxns to mask / unmask tensors =====
+# ===== Fxns for masked learning =====
+
+
+def select_samples_for_masked_learning(
+    system: List[ase.Atoms],
+    structure_id: Optional[List[int]] = None,
+    masked_learning: bool = False,
+    slab_depth: Optional[float] = None,
+    interphase_depth: Optional[float] = None,
+) -> mts.Labels:
+    """
+    Generates a `mts.Labels` object of the samples selected for masked learning.
+
+    1. Passing a global set of frames to, i.e. rascaline.SphericalExpansion, to then
+    compute only a subset. This ensures the feature space has the global dimension.
+    2. Computing the atom-centered density correlations for a subset of atoms within
+    each frame. This is useful for masked learning, i.e. for learning the surfaces of
+    slabs.
+
+    If `masked_learning` is true, `slab_depth` and `interphase_depth` must be passed.
+    """
+    # Normal use case: subset of structures
+    if masked_learning is False:
+        return mts.Labels(
+            names=["system"],
+            values=torch.tensor(structure_id).reshape(-1, 1),
+        )
+
+    if slab_depth is None or interphase_depth is None:
+        raise ValueError(
+            "If `masked_learning` is True, `slab_depth` and `interphase_depth` must be passed."
+        )
+
+    # Extended use case: subset of structures and subset of atoms within them
+    selected_samples = []
+    for A, sys in enumerate(system):
+        if structure_id is not None:
+            if A not in structure_id:
+                continue
+        # Partition atoms into S, I, B regions
+        idxs_surface, idxs_interphase, idxs_bulk = (
+            structure_builder.get_atom_idxs_by_region(sys, slab_depth, interphase_depth)
+        )
+        # Keep S + I atoms
+        for atom_i in list(idxs_surface) + list(idxs_interphase):
+            selected_samples.append([A, atom_i])
+
+    return mts.Labels(names=["system", "atom"], values=torch.tensor(selected_samples))
 
 
 def mask_coeff_vector_tensormap(

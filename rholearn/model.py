@@ -14,6 +14,8 @@ import rascaline.torch
 from rascaline.torch import LodeSphericalExpansion, SphericalExpansion
 from rascaline.torch.utils.clebsch_gordan import DensityCorrelations
 
+from rholearn import data
+
 
 torch.set_default_dtype(torch.float64)
 
@@ -28,14 +30,20 @@ class DescriptorCalculator(torch.nn.Module):
         self,
         spherical_expansion_hypers: dict,
         density_correlations_hypers: dict,
-        lode_spherical_expansion_hypers: Optional[dict] = None,
-    ):
+        atom_types: List[int],
+        mask_descriptor: bool = False,
+        **mask_kwargs,
+    ) -> None:
         super().__init__()
 
         # Store the settings
         self._spherical_expansion_hypers = spherical_expansion_hypers
         self._density_correlations_hypers = density_correlations_hypers
-        self._lode_spherical_expansion_hypers = lode_spherical_expansion_hypers
+        self._atom_types = atom_types
+        self._mask_descriptor = mask_descriptor
+        if self._mask_descriptor:
+            assert mask_kwargs is not None
+            self._mask_kwargs = mask_kwargs
 
         # Initialize the calculators
         self._spherical_expansion_calculator = SphericalExpansion(
@@ -44,245 +52,83 @@ class DescriptorCalculator(torch.nn.Module):
         self._density_correlations_calculator = DensityCorrelations(
             **density_correlations_hypers
         )
-        if self._lode_spherical_expansion_hypers is not None:
-            self._lode_spherical_expansion_calculator = LodeSphericalExpansion(
-                **lode_spherical_expansion_hypers
-            )
 
-    def forward(
-        self,
-        system,
-        *,
-        structure_id: List[int] = None,
-        correlate_what: Optional[str] = None,
-        spherical_expansion_compute_args: Optional[Dict] = None,
-        density_correlations_compute_args: Optional[Dict] = None,
-        lode_spherical_expansion_compute_args: Optional[Dict] = None,
-        # atom_types: List[int],
-    ) -> List:
+    def __repr__(self) -> str:
+        return (
+            f"DescriptorCalculator("
+            f"\n\tspherical_expansion_hypers={self._spherical_expansion_hypers},"
+            f"\n\tdensity_correlations_hypers={self._density_correlations_hypers},"
+            f"\n\tatom_types={self._atom_types},"
+            f"\n\tmask_descriptor={self._mask_descriptor},"
+            f"\n\tmask_kwargs={self._mask_kwargs},"
+            "\n)"
+        )
+
+    def compute(self, system, selected_samples: Labels) -> torch.ScriptObject:
         """
-        Computes the lambda-SOAP descriptors for the given systems and returns
-        them as per-structure TensorMaps.
+        Takes a rascaline system and computes: 1) a spherical expansion, then 2) takes a
+        CG tensor product to produce a lambda-SOAP descriptor.
 
-            1. Build SphericalExpansion
-            2. Moves 'neighbor_type' to properties
-            3. Compute DensityCorrelations
-            4. Split into per-structure TensorMaps
-            5. Reindex the structure indices of each TensorMap if
-               `structure_id` is passed
+        Explicit sparsity in the global neighbor types is created to ensure consistent
+        properties dimensions.
+
+        The systems present in the output TensorMap `descriptor` will be indexed by the
+        continuous numeric range 0 .. len(system) - 1. As such, any system index passed
+        in `selected_samples` must reflect this range.
         """
-        if spherical_expansion_compute_args is None:
-            spherical_expansion_compute_args = {}
-        if density_correlations_compute_args is None:
-            density_correlations_compute_args = {}
-        if lode_spherical_expansion_compute_args is None:
-            lode_spherical_expansion_compute_args = {}
+        # Compute Spherical Expansion then Lambda-SOAP
+        density = self._spherical_expansion_calculator.compute(
+            system, selected_samples=selected_samples
+        )
+        # Move 'neighbor_type' to properties, accounting for neighbor types not
+        # necessarily present in the system but present globally
+        density = density.keys_to_properties(
+            keys_to_move=mts.Labels(
+                names=["neighbor_type"],
+                values=torch.tensor(self._atom_types).reshape(-1, 1),
+            )
+        )
+        # Compute lambda-SOAP
+        descriptor = self._density_correlations_calculator.compute(density)
 
-        assert correlate_what in ["pxp", "VxV", "pxp+V", "p+VxV", "pxp+VxV"]
-
-        if correlate_what == "pxp":  # Lambda-SOAP
-            # SOAP
-            density = self._spherical_expansion_calculator.compute(
-                system, **spherical_expansion_compute_args
-            )
-            # density = density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(atom_types).reshape(-1, 1),
-            #     )
-            # )
-            density = density.keys_to_properties("neighbor_type")
-            # Lambda-SOAP
-            descriptor = self._density_correlations_calculator.compute(
-                density, **density_correlations_compute_args
-            )
-
-        elif correlate_what == "VxV":  # Lambda-LODE
-            # LODE
-            density = self._lode_spherical_expansion_calculator.compute(
-                system, **lode_spherical_expansion_compute_args
-            )
-            # density = density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            density = density.keys_to_properties("neighbor_type")
-            # Lambda-LODE
-            descriptor = self._density_correlations_calculator.compute(
-                density, **density_correlations_compute_args
-            )
-
-
-        elif correlate_what == "pxp+V":  # Lambda-SOAP + LODE
-            # SOAP
-            soap_density = self._spherical_expansion_calculator.compute(
-                system, **spherical_expansion_compute_args
-            )
-            # soap_density = soap_density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            soap_density = soap_density.keys_to_properties("neighbor_type")
-            # Lambda-SOAP
-            lambda_soap = self._density_correlations_calculator.compute(
-                soap_density, **density_correlations_compute_args
-            )
-            # LODE
-            lode_density = self._lode_spherical_expansion_calculator.compute(
-                system, **lode_spherical_expansion_compute_args
-            )
-            # lode_density = lode_density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            lode_density = lode_density.keys_to_properties("neighbor_type")
-            # Lambda-SOAP + LODE
-            descriptor = mts.join([lambda_soap, lode_density], axis="properties")
-
-
-        elif correlate_what == "p+VxV":  # SOAP + Lambda-LODE
-            # SOAP
-            soap_density = self._spherical_expansion_calculator.compute(
-                system, **spherical_expansion_compute_args
-            )
-            # soap_density = soap_density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            soap_density = soap_density.keys_to_properties("neighbor_type")
-            # LODE
-            lode_density = self._lode_spherical_expansion_calculator.compute(
-                system, **lode_spherical_expansion_compute_args
-            )
-            # lode_density = lode_density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            lode_density = lode_density.keys_to_properties("neighbor_type")
-            # Lambda-LODE
-            lambda_lode = self._density_correlations_calculator.compute(
-                lode_density, **density_correlations_compute_args
-            )
-            # Descriptor: SOAP + Lambda-LODE
-            descriptor = mts.join([soap_density, lambda_lode], axis="properties")
-
-
-        elif correlate_what == "pxp+VxV":
-            # SOAP
-            soap_density = self._spherical_expansion_calculator.compute(
-                system, **spherical_expansion_compute_args
-            )
-            # soap_density = soap_density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            soap_density = soap_density.keys_to_properties("neighbor_type")
-            # Lambda-SOAP
-            lambda_soap = self._density_correlations_calculator.compute(
-                soap_density, **density_correlations_compute_args
-            )
-            # LODE
-            lode_density = self._lode_spherical_expansion_calculator.compute(
-                system, **lode_spherical_expansion_compute_args
-            )
-            # lode_density = lode_density.keys_to_properties(
-            #     keys_to_move=mts.Labels(
-            #         names=["neighbor_type"],
-            #         values=torch.tensor(self._atom_types).reshape(-1, 1),
-            #     )
-            # )
-            lode_density = lode_density.keys_to_properties("neighbor_type")
-            # Lambda-LODE
-            lambda_lode = self._density_correlations_calculator.compute(
-                lode_density, **density_correlations_compute_args
-            )
-            # Descriptor: Lambda-SOAP + Lambda-LODE
-            descriptor = mts.join([lambda_soap, lambda_lode], axis="properties")
-
-
-        else:
-            raise ValueError("Invalid `correlate_what`")
-
-        # Drop the redundant 'o3_sigma' key as it is 1 for this application (real vectors)
+        # Remove redundant o3_sigma key name
         descriptor = mts.remove_dimension(descriptor, axis="keys", name="o3_sigma")
 
-        # Find the structure indices present in the systems. As `selected_samples` can
-        # be passed to the `SphericalExpansion.compute()` method, the structure indices
-        # may not be continuous from 0 to len(systems) - 1.
-        _ids = mts.unique_metadata(descriptor, "samples", "system").values.flatten()
+        return descriptor
 
-        # Split into per-structure TensorMaps. Currently, the TensorMaps have
-        # structure indices from 0 to len(system) - 1
-        descriptor = [
-            mts.slice(
-                descriptor,
-                "samples",
-                labels=mts.Labels(
-                    names="system", values=torch.tensor([A]).reshape(-1, 1)
-                ),
+    def forward(self, system, system_id: List[int] = None) -> List:
+        """
+        Computes the lambda-SOAP descriptors for the given systems and returns them as
+        per-system TensorMaps.
+
+            - Select atom subsets for each system if computing masked descriptors
+            - Compute a SphericalExpansion then take CG tensor product
+            - Split into per-system TensorMaps and reindex if appropriate
+        """
+        selected_samples = None
+        if self._mask_descriptor:  # select atom subsets for each system
+            selected_samples = data.select_samples_for_masked_learning(
+                system=system,
+                system_id=system_id,
+                masked_learning=self._mask_descriptor,
+                **self._mask_kwargs,
             )
-            for A in _ids
-        ]
 
-        # If `structure_id` is not passed, do not reindex the descriptors.
-        if structure_id is None:
-            return descriptor
+        # Compute the descriptor
+        descriptor = self.compute(system, selected_samples)
 
-        # If `structure_id` is passed and is equivalent to the unique structure
-        # indices found with `unique_metadata`, return the descriptors as is
-        if torch.all(torch.tensor(structure_id) == _ids):
-            return descriptor
+        # Split into per-system TensorMaps and reindex if appropriate
+        if system_id is not None:
+            descriptor = split_descriptor_and_reindex(
+                descriptor, n_systems=len(systems), system_id=system_id
+            )
 
-        # Otherwise, reindex the structure indices of each TensorMap
-        reindexed_descriptor = []
-        for A, desc in zip(structure_id, descriptor):
-            # Edit the metadata to match the structure index
-            desc = mts.remove_dimension(desc, axis="samples", name="system")
-            new_desc = []
-            for key, block in desc.items():
-                new_desc.append(
-                    mts.TensorBlock(
-                        values=block.values,
-                        samples=block.samples.insert(
-                            index=0,
-                            name="system",
-                            values=torch.tensor(
-                                [A] * len(block.samples), dtype=torch.int32
-                            ),
-                        ),
-                        components=block.components,
-                        properties=block.properties,
-                    )
-                )
-            new_desc = mts.TensorMap(desc.keys, new_desc)
-            # TODO: when metatensor PR #519 is merged
-            # new_desc = mts.insert_dimension(
-            #     descriptor,
-            #     axis="samples",
-            #     name="system",
-            #     values=torch.tensor([A]),
-            #     index=0,
-            # )
-            reindexed_descriptor.append(new_desc)
-
-        return reindexed_descriptor
+        return descriptor
 
 
 class Model(torch.nn.Module):
     """
-    Global model class, combining the descriptor calculator and neural network
+    Global model class that combines the descriptor calculator and neural network
     architecture.
     """
 
@@ -311,24 +157,19 @@ class Model(torch.nn.Module):
         self,
         system=None,
         descriptor: List[torch.ScriptObject] = None,
-        structure_id: Optional[List[int]] = None,
+        system_id: Optional[List[int]] = None,
         check_metadata: bool = False,
     ) -> List:
         """
         Calls the forward method of the `self._nn` passed to the constructor.
         """
-
         if system is not None and descriptor is not None:
-            raise ValueError
+            raise ValueError("cannot pass both `system` and `descriptor`")
         if system is None and descriptor is None:
-            raise ValueError
+            raise ValueError("must pass either `system` or `descriptor`")
 
-        # Check or generate descriptors
-        if system is not None:  # generate list of descriptors
-            assert descriptor is None
-            descriptor = self._descriptor_calculator(
-                system=system, structure_id=structure_id
-            )
+        if system is not None:  # calculate descriptors
+            descriptor = self._descriptor_calculator(system=system, system_id=system_id)
         else:
             if isinstance(descriptor, tuple):
                 descriptor = list(descriptor)
@@ -350,7 +191,7 @@ class Model(torch.nn.Module):
         return [self._nn(desc) for desc in descriptor]
 
     def predict(
-        self, structure: List[ase.Atoms] = None, system=None, structure_id: List = None
+        self, system: List[ase.Atoms] = None, system=None, system_id: List = None
     ) -> List:
         """
         Makes a prediction on a list of ASE atoms or a rascaline.Systems object.
@@ -358,10 +199,75 @@ class Model(torch.nn.Module):
         self.eval()
         with torch.no_grad():
 
-            if structure is not None and system is not None:
+            if system is not None and system is not None:
                 raise ValueError
 
-            if structure is not None:
-                system = rascaline.torch.systems_to_torch(structure)
-            return self(system=system, structure_id=structure_id, check_metadata=True)
+            if system is not None:
+                system = rascaline.torch.systems_to_torch(system)
+            return self(system=system, system_id=system_id, check_metadata=True)
 
+
+# ===== Helper functions =====
+
+
+def split_descriptor_and_reindex(
+    self, descriptor: torch.ScriptObject, n_systems: int, system_id: List[int]
+) -> List:
+    """
+    Takes a single descriptor TensorMap output from :py:meth:`compute` and splits it
+    into per-system TensorMaps. If `system_id` is passed, reindexes the system
+    indices of each TensorMap.
+    """
+    # # Find the unique system indices present in the systems
+    # _ids = mts.unique_metadata(descriptor, "samples", "system").values.flatten()
+    _ids = torch.arange(n_systems)
+
+    # Split into per-system TensorMaps. Currently, the TensorMaps have
+    # system indices from [0, ..., n_systems - 1]
+    descriptor = [
+        mts.slice(
+            descriptor,
+            "samples",
+            labels=mts.Labels(names="system", values=torch.tensor([A]).reshape(-1, 1)),
+        )
+        for A in _ids
+    ]
+
+    # If `system_id` is passed and is equivalent to the unique system
+    # indices found with `unique_metadata`, return the descriptors as is
+    if torch.all(torch.tensor(system_id) == _ids):
+        return descriptor
+
+    # Otherwise, reindex the system indices of each TensorMap
+    reindexed_descriptor = []
+    for A, desc in zip(system_id, descriptor):
+        # Edit the metadata to match the system index
+        new_desc = mts.remove_dimension(desc, axis="samples", name="system")
+        # new_desc = []
+        # for key, block in desc.items():
+        #     new_desc.append(
+        #         mts.TensorBlock(
+        #             values=block.values,
+        #             samples=block.samples.insert(
+        #                 index=0,
+        #                 name="system",
+        #                 values=torch.tensor(
+        #                     [A] * len(block.samples), dtype=torch.int32
+        #                 ),
+        #             ),
+        #             components=block.components,
+        #             properties=block.properties,
+        #         )
+        #     )
+        # new_desc = mts.TensorMap(desc.keys, new_desc)
+        # TODO: when metatensor PR #519 is merged
+        new_desc = mts.insert_dimension(
+            new_desc,
+            axis="samples",
+            name="system",
+            values=torch.tensor([A]),
+            index=0,
+        )
+        reindexed_descriptor.append(new_desc)
+
+    return reindexed_descriptor
