@@ -24,59 +24,6 @@ from rholearn import data
 from rholearn.model import DescriptorCalculator
 
 
-def calculate_descriptors(
-    descriptor_calculator: torch.nn.Module,
-    all_structure: List[ase.Atoms],
-    all_structure_id: List[int],
-    structure_id: List[int],
-    correlate_what: str = "pxp",
-    selected_samples: Optional[mts.Labels] = None,
-    drop_empty_blocks: bool = True,
-) -> List[torch.ScriptObject]:
-    """
-    Takes an initialized DescriptorCalculator and calculates descriptors for the frames
-    in `all_structure` corresponding to those indexed in `structure_id`.
-    """
-    if selected_samples:
-        compute_args = {"selected_samples": selected_samples}
-    else:
-        compute_args = {}
-    descriptor = descriptor_calculator(
-        system=rascaline.torch.systems_to_torch(all_structure),
-        structure_id=structure_id,
-        correlate_what=correlate_what,
-        spherical_expansion_compute_args=compute_args,
-        lode_spherical_expansion_compute_args=compute_args,
-        density_correlations_compute_args={},
-    )
-    if drop_empty_blocks:
-        descriptor_dropped = []
-        for desc in descriptor:
-            # Find empty blocks
-            keys_to_drop = []
-            for key, block in desc.items():
-                if block.values.shape[0] == 0:  # has been sliced to zero samples
-                    keys_to_drop.append(key)
-
-            if len(keys_to_drop) > 0:  # Drop empty blocks
-                desc_dropped = mts.drop_blocks(
-                    desc,
-                    keys=mts.Labels(
-                        names=keys_to_drop[0].names,
-                        values=torch.tensor(
-                            [[i for i in k.values] for k in keys_to_drop]
-                        ),
-                    ),
-                )
-            else:  # no empty blocks to drop
-                desc_dropped = desc
-            descriptor_dropped.append(desc_dropped)
-
-        descriptor = descriptor_dropped
-
-    return descriptor
-
-
 def load_dft_data(path: str, torch_kwargs: dict) -> torch.ScriptObject:
     """Loads a TensorMap from file and converts its backend to torch"""
     return mts.load(path).to(**torch_kwargs)

@@ -15,7 +15,7 @@ import metatensor.torch as mts
 from metatensor.torch.learn import nn
 
 from rholearn.loss import L2Loss
-from rholearn.utils import timestamp
+from rholearn.utils import timestamp, unpickle_dict
 
 # ===== SETUP =====
 SEED = 42
@@ -23,7 +23,7 @@ TOP_DIR = "/Users/joe.abbott/Documents/phd/code/rho/april-24/rho_learn/example"
 DATA_DIR = "/Users/joe.abbott/Documents/phd/code/rho/april-24/si_mask/data"
 FIELD_NAME = "edensity"
 RI_FIT_ID = "edensity"
-ML_RUN_ID = "unmasked_1"
+ML_RUN_ID = "masked_1"
 ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID)
 
 # ===== DATA =====
@@ -48,6 +48,24 @@ CROSSVAL = None
 #     "group_sizes": [1, 1],  # the abs/rel group sizes for the data splits
 #     "shuffle": True,  # whether to shuffle structure indices for the train/test(/val) split
 # }
+
+# ===== RELATIVE DIRS =====
+SCF_DIR = lambda A: join(DATA_DIR, f"{A}")
+RI_DIR = lambda A: join(SCF_DIR(A), RI_FIT_ID)
+REBUILD_DIR = lambda A: join(RI_DIR(A), "rebuild")
+PROCESSED_DIR = lambda A: join(RI_DIR(A), "processed")
+CHKPT_DIR = lambda epoch: join(ML_DIR, "checkpoint", f"epoch_{epoch}")
+EVAL_DIR = lambda A, epoch: join(ML_DIR, "evaluation", f"epoch_{epoch}", f"{A}")
+
+# ===== CREATE DIRS =====
+if not exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+if not exists(ML_DIR):
+    os.makedirs(ML_DIR)
+if not exists(join(ML_DIR, "checkpoint")):
+    os.makedirs(join(ML_DIR, "checkpoint"))
+if not exists(join(ML_DIR, "evaluation")):
+    os.makedirs(join(ML_DIR, "evaluation"))
 
 
 # ===== HPC =====
@@ -78,29 +96,38 @@ TORCH = {
     "dtype": DTYPE,  # important for model accuracy
     "device": torch.device(type=DEVICE),
 }
-LMAX = 3  # max l computed in RI decomposition
+TARGET_BASIS = unpickle_dict(  # Load the RI basis set definition
+    join(PROCESSED_DIR(STRUCTURE_ID[0]), "calc_info.pickle")
+)["basis_set"]
+LMAX = max(TARGET_BASIS["lmax"].values())
 DESCRIPTOR_HYPERS = {
     "spherical_expansion_hypers": {
-        "cutoff": 4.0,  # Angstrom
+        "cutoff": 6.0,  # Angstrom
         "max_radial": 10,  # Exclusive
-        "max_angular": 3,  # Inclusive
+        "max_angular": LMAX,  # Inclusive
         "atomic_gaussian_width": 0.3,
         "radial_basis": {"Gto": {}},
         "cutoff_function": {"ShiftedCosine": {"width": 0.1}},
         "center_atom_weight": 1.0,
     },
     "density_correlations_hypers": {
-        "max_angular": 10,
+        "max_angular": LMAX * 2,
         "correlation_order": 2,
-        "angular_cutoff": 3,
+        "angular_cutoff": None,
         "selected_keys": mts.Labels(
             names=["o3_lambda", "o3_sigma"],
             values=torch.tensor([[l, 1] for l in np.arange(LMAX + 1)]),
         ),
         "skip_redundant": True,
     },
+    "atom_types": [1, 14],
+    "mask_descriptor": True,
+    "slab_depth": 4.0,  # Ang
+    "interphase_depth": 1.0,  # Ang
 }
-def get_nn(
+
+
+def net(
     in_keys: mts.Labels,
     invariant_key_idxs: List[int],
     in_properties: mts.Labels,
@@ -132,7 +159,13 @@ def get_nn(
             device=device,
         ),
     )
-NN = get_nn
+NET = net
+
+# class Net(torch.nn.Module):
+#     """Defines the NN architecture, initializable from the descriptor calculator and
+#     target property basis set definition."""
+#     def __init__(self, descriptor_calculator: torch.nn.Module, target_basis: dict) -> None:
+
 
 TRAIN = {
     # Training
@@ -149,10 +182,6 @@ TRAIN = {
     "checkpoint_interval": 500,  # save model and optimizer state every x intervals
     "log_interval": 500,  # how often to log the loss
     "log_block_loss": True,  # whether to log the block losses
-    # Masked learning
-    "masked_learning": False,
-    "slab_depth": 4.0,  # Ang
-    "interphase_depth": 1.0,  # Ang
 }
 OPTIMIZER = partial(torch.optim.Adam, **{"lr": 1e-2})
 # SCHEDULER = None
@@ -164,25 +193,6 @@ SCHEDULER = partial(
     },
 )
 LOSS_FN = L2Loss
-
-
-# ===== RELATIVE DIRS =====
-SCF_DIR = lambda A: join(DATA_DIR, f"{A}")
-RI_DIR = lambda A: join(SCF_DIR(A), RI_FIT_ID)
-REBUILD_DIR = lambda A: join(RI_DIR(A), "rebuild")
-PROCESSED_DIR = lambda A: join(RI_DIR(A), "processed")
-CHKPT_DIR = lambda epoch: join(ML_DIR, "checkpoint", f"epoch_{epoch}")
-EVAL_DIR = lambda A, epoch: join(ML_DIR, "evaluation", f"epoch_{epoch}", f"{A}")
-
-# ===== CREATE DIRS =====
-if not exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
-if not exists(ML_DIR):
-    os.makedirs(ML_DIR)
-if not exists(join(ML_DIR, "checkpoint")):
-    os.makedirs(join(ML_DIR, "checkpoint"))
-if not exists(join(ML_DIR, "evaluation")):
-    os.makedirs(join(ML_DIR, "evaluation"))
 
 
 # ===== FINAL DICT =====
@@ -205,8 +215,9 @@ ML_SETTINGS = {
     "DTYPE": DTYPE,
     "DEVICE": DEVICE,
     "TORCH": TORCH,
+    "TARGET_BASIS": TARGET_BASIS,
     "DESCRIPTOR_HYPERS": DESCRIPTOR_HYPERS,
-    "NN": NN,
+    "NET": NET,
     "TRAIN": TRAIN,
     "OPTIMIZER": OPTIMIZER,
     "SCHEDULER": SCHEDULER,

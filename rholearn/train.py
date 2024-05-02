@@ -47,22 +47,13 @@ def train(ml_settings: dict):
     datasets = []
     for subset_id in all_subset_id:  # build each cross-val dataset
         utils.log(log_path, f"Build dataset for structures {subset_id}")
-        selected_samples = get_selected_samples(  # for structure and/or atomic subsets
-            structure=[ALL_STRUCTURE[A] for A in subset_id],
-            structure_id=subset_id,
-            masked_learning=TRAIN["masked_learning"],
-            slab_depth=TRAIN.get("slab_depth"),
-            interphase_depth=TRAIN.get("interphase_depth"),
-        )
         utils.log(log_path, f"Calculate descriptors for subset {subset_id}")
-        descriptor = calculate_descriptors(  # pre-compute descriptors
-            descriptor_calculator=descriptor_calculator,
-            all_structure=ALL_STRUCTURE,
-            all_structure_id=ALL_STRUCTURE_ID,
-            structure_id=subset_id,
-            correlate_what="pxp",
-            selected_samples=selected_samples,
-            drop_empty_blocks=True,
+        descriptor = descriptor_calculator(
+            system=rascaline.torch.systems_to_torch(
+                [ALL_STRUCTURE[A] for A in subset_id]
+            ),
+            system_id=torch.tensor(subset_id, dtype=torch.int32),
+            split_by_system=True,
         )
         utils.log(log_path, "Load targets and auxiliaries")
         target = [  # load RI coeffs
@@ -73,18 +64,18 @@ def train(ml_settings: dict):
             load_dft_data(join(PROCESSED_DIR(A), "ri_ovlp.npz"), torch_kwargs=TORCH)
             for A in subset_id
         ]
-        if TRAIN["masked_learning"]:  # mask the RI coeffs and overlaps for bulk atoms
+        if DESCRIPTOR_HYPERS["mask_descriptor"]:  # mask coeffs and ovlps for bulk atoms
             utils.log(
                 log_path,
                 f"Mask targets and auxiliaries based on slab/interphase depths"
-                f" of {[TRAIN.get('slab_depth'), TRAIN.get('interphase_depth')]}",
+                f" of {[DESCRIPTOR_HYPERS.get('slab_depth'), DESCRIPTOR_HYPERS.get('interphase_depth')]}",
             )
             target, aux = mask_dft_data(
                 structure=[ALL_STRUCTURE[A] for A in subset_id],
                 target=target,
                 aux=aux,
-                slab_depth=TRAIN["slab_depth"],
-                interphase_depth=TRAIN["interphase_depth"],
+                slab_depth=DESCRIPTOR_HYPERS["slab_depth"],
+                interphase_depth=DESCRIPTOR_HYPERS["interphase_depth"],
             )
 
         for desc, targ in zip(descriptor, target):  # check metadata match
@@ -112,24 +103,10 @@ def train(ml_settings: dict):
     if TRAIN.get("restart_epoch") is None:  # initialize
         utils.log(log_path, "Initializing model, optimizer, loss fn")
         epochs = torch.arange(TRAIN["n_epochs"] + 1)
-        in_keys = descriptor[0].keys
-        invariant_key_idxs = [
-            i for i, key in enumerate(in_keys) if key["o3_lambda"] == 0
-        ]
-        in_properties = [descriptor[0][key].properties for key in in_keys]
-        out_properties = [target[0][key].properties for key in in_keys]
         model = Model(
-            in_keys=in_keys,
-            in_properties=in_properties,
-            out_properties=out_properties,
+            target_basis=TARGET_BASIS,
             descriptor_calculator=descriptor_calculator,
-            nn=NN(
-                in_keys=in_keys,
-                invariant_key_idxs=invariant_key_idxs,
-                in_properties=in_properties,
-                out_properties=out_properties,
-                **TORCH,
-            ),
+            net=NET,
             **TORCH,
         )
         optimizer = OPTIMIZER(model.parameters())
@@ -180,14 +157,14 @@ def train(ml_settings: dict):
             val_losses = [
                 validation_step(dloader, model, loss_fn) for dloader in dataloaders[1:]
             ]
-            if (scheduler is not None):  # update scheduler params
+            if scheduler is not None:  # update scheduler params
                 step_scheduler(val_losses[0], scheduler)
                 lr = scheduler._last_lr[0]
 
         # Log general info and losses
         if epoch % TRAIN["log_interval"] == 0:
             log_msg = (
-                f"epoch {epoch} lr {lr} time {(time.time() - t0):.3f}" 
+                f"epoch {epoch} lr {lr} time {(time.time() - t0):.3f}"
                 f" use_ovlp {use_ovlp} train_loss {train_loss}"
             )
             if len(val_losses) > 0:
@@ -196,7 +173,9 @@ def train(ml_settings: dict):
             utils.log(log_path, log_msg)
 
             if TRAIN["log_block_loss"]:
-                block_losses = get_block_losses(model, dataloaders[0])  # on train subset for now
+                block_losses = get_block_losses(
+                    model, dataloaders[0]
+                )  # on train subset for now
                 for key, block_loss in block_losses.items():
                     utils.log(log_path, f"    key {key} block_loss {block_loss}")
 

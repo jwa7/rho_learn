@@ -2,6 +2,7 @@
 Module for converting coefficient (or projection) vectors and overlap matrices
 between numpy ndarrays and metatensor TensorMap formats.
 """
+
 import itertools
 from typing import Optional
 
@@ -761,7 +762,7 @@ def coeff_vector_tensormap_to_ndarray(
         structure_idx_present = True
         structure_idxs = metatensor.unique_metadata(tensor, "samples", "system")
         assert len(structure_idxs) == 1
-        structure_idx = structure_idxs[0]
+        structure_idx = structure_idxs[0].values[0]
     elif tensor.sample_names == convention.COEFF_VECTOR.sample_names[1:]:
         structure_idx_present = False
         structure_idx = None
@@ -791,7 +792,13 @@ def coeff_vector_tensormap_to_ndarray(
     num_coeffs_by_symbol = np.array(
         [num_coeffs_by_uniq_symbol[symbol] for symbol in symbols]
     )
-    assert np.sum(num_coeffs_by_symbol) == tot_coeffs
+    if np.sum(num_coeffs_by_symbol) != tot_coeffs:
+        raise ValueError(
+            f"the number of coefficients in the input tensor ({tot_coeffs})"
+            " does not match the expected number of coefficients according"
+            " to the basis set definition and input frame"
+            f" ({np.sum(num_coeffs_by_symbol)})"
+        )
 
     # Initialize a dict to store the block values
     results_dict = {}
@@ -896,11 +903,26 @@ def test_coeff_vector_conversion(
         center_type=ase.Atoms(symbol).get_atomic_numbers()[0],
     )
     if structure_idx is None:
-        s_idx = tm_block.samples.position((i,))
+        # s_idx = tm_block.samples.position((i,))
+        s_idx = tm_block.samples.position(
+            Labels(names=["atom"], values=np.array([[i]]))[0]
+        )
     else:
-        s_idx = tm_block.samples.position((structure_idx, i))
-    c_idx = tm_block.components[0].position((m,))
-    p_idx = tm_block.properties.position((n,))
+        # s_idx = tm_block.samples.position((structure_idx, i))
+        s_idx = tm_block.samples.position(
+            Labels(
+                names=["system", "atom"], values=np.array([[structure_idx, i]])
+            )[0]
+        )
+
+    # c_idx = tm_block.components[0].position((m,))
+    c_idx = tm_block.components[0].position(
+        Labels(names=["o3_mu"], values=np.array([[m]]))[0]
+    )
+    # p_idx = tm_block.properties.position((n,))
+    p_idx = tm_block.properties.position(
+        Labels(names=["n"], values=np.array([[n]]))[0]
+    )
 
     tm_elem = tm_block.values[s_idx][c_idx][p_idx]
     if print_level > 0:
