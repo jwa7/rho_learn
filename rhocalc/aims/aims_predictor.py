@@ -17,8 +17,8 @@ from rhocalc.aims import aims_calc
 
 
 def field_builder(
-    structure_id: List[int],
-    structure: List[ase.Atoms],
+    system_id: List[int],
+    system: List[ase.Atoms],
     predicted_coeffs: List[TensorMap],
     save_dir: Callable,
     return_field: bool = True,
@@ -32,33 +32,28 @@ def field_builder(
     if `return_field` is True, then this function waits for the AIMS calculations to
     finish then returns rebuilt scalar fields.
     """
-    assert isinstance(structure_id, list)
-    assert isinstance(structure, list)
-    assert isinstance(predicted_coeffs, list)
-    assert callable(save_dir)
-    assert isinstance(predicted_coeffs[0], TensorMap)
     calcs = {
-        A: {"atoms": struct, "run_dir": save_dir(A)}
-        for A, struct in zip(structure_id, structure)
+        A: {"atoms": sys, "run_dir": save_dir(A)}
+        for A, sys in zip(system_id, system)
     }
 
-    # Add tailored cube edges for each structure if applicable
+    # Add tailored cube edges for each system if applicable
     if kwargs["aims_kwargs"].get("output") == ["cube ri_fit"]:
         if kwargs["cube"].get("slab") is True:
-            for A in structure_id:
+            for A in system_id:
                 calcs[A]["aims_kwargs"] = aims_calc.get_aims_cube_edges_slab(
                     calcs[A]["atoms"], kwargs["cube"].get("n_points")
                 )
         else:
-            for A in structure_id:
+            for A in system_id:
                 calcs[A]["aims_kwargs"] = aims_calc.get_aims_cube_edges(
                     calcs[A]["atoms"], kwargs["cube"].get("n_points")
                 )
 
     # Convert to a list of numpy arrays
-    for A, struct, pred_coeff in zip(structure_id, structure, predicted_coeffs):
+    for A, sys, pred_coeff in zip(system_id, system, predicted_coeffs):
         pred_np = convert.coeff_vector_tensormap_to_ndarray(
-            frame=struct,
+            frame=sys,
             tensor=pred_coeff,
             lmax=kwargs["basis_set"]["lmax"],
             nmax=kwargs["basis_set"]["nmax"],
@@ -71,12 +66,12 @@ def field_builder(
     # If an "aims.out" file already exists in the save directory, delete it.
     # This prevents this function from incorrectly determining that the AIMS
     # calculation has finished, while not being able to delete the directory
-    all_aims_outs = [os.path.join(save_dir(A), "aims.out") for A in structure_id]
+    all_aims_outs = [os.path.join(save_dir(A), "aims.out") for A in system_id]
     for aims_out in all_aims_outs:
         if os.path.exists(aims_out):
             os.remove(aims_out)
 
-    # Run AIMS to build the target scalar field for each structure
+    # Run AIMS to build the target scalar field for each system
     aims_calc.run_aims_array(
         calcs=calcs,
         aims_path=kwargs["aims_path"],
@@ -85,6 +80,7 @@ def field_builder(
         run_dir=save_dir,  # must be a callable
         load_modules=kwargs["hpc_kwargs"]["load_modules"],
         run_command=kwargs["hpc_kwargs"]["run_command"],
+        export_vars=kwargs["hpc_kwargs"]["export_vars"],
     )
 
     if not return_field:
@@ -102,7 +98,7 @@ def field_builder(
                         all_aims_outs.remove(aims_out)
 
     targets = []
-    for A in structure_id:
+    for A in system_id:
         target = np.loadtxt(
             os.path.join(save_dir(A), "rho_rebuilt.out"),
             usecols=(0, 1, 2, 3),  # grid x, grid y, grid z, value
@@ -110,4 +106,3 @@ def field_builder(
         targets.append(target)
 
     return targets
-

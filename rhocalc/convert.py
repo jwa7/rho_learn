@@ -8,9 +8,11 @@ from typing import Optional
 
 import ase
 import numpy as np
+import torch
 
 import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
+import metatensor.torch
 
 from rholearn import utils
 from rhocalc import convention
@@ -756,6 +758,12 @@ def coeff_vector_tensormap_to_ndarray(
         of shape (N,), where N is the number of basis functions the electron
     density is expanded onto
     """
+    # Convert to core/numpy if a torch/torchscript tensormap
+    if isinstance(tensor, torch.ScriptObject):
+        tensor = utils.mts_tensormap_torch_to_core(
+            metatensor.torch.requires_grad(tensor, False)
+        ).to(arrays="numpy")
+
     # Check the samples names and determine whether or not the structure index
     # is included
     if tensor.sample_names == convention.COEFF_VECTOR.sample_names:
@@ -910,9 +918,7 @@ def test_coeff_vector_conversion(
     else:
         # s_idx = tm_block.samples.position((structure_idx, i))
         s_idx = tm_block.samples.position(
-            Labels(
-                names=["system", "atom"], values=np.array([[structure_idx, i]])
-            )[0]
+            Labels(names=["system", "atom"], values=np.array([[structure_idx, i]]))[0]
         )
 
     # c_idx = tm_block.components[0].position((m,))
@@ -920,9 +926,7 @@ def test_coeff_vector_conversion(
         Labels(names=["o3_mu"], values=np.array([[m]]))[0]
     )
     # p_idx = tm_block.properties.position((n,))
-    p_idx = tm_block.properties.position(
-        Labels(names=["n"], values=np.array([[n]]))[0]
-    )
+    p_idx = tm_block.properties.position(Labels(names=["n"], values=np.array([[n]]))[0])
 
     tm_elem = tm_block.values[s_idx][c_idx][p_idx]
     if print_level > 0:

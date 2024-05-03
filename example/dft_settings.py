@@ -17,13 +17,13 @@ FIELD_NAME = "ildos"
 RI_FIT_ID = "ildos-1V"
 
 # ===== DATA =====
-ALL_STRUCTURE = ase.io.read(
+ALL_SYSTEM = ase.io.read(
     join(DATA_DIR, "si_slabs_dimer_z_depth_geomopt_distorted.xyz"), ":"
 )
-ALL_STRUCTURE_ID = np.arange(len(ALL_STRUCTURE))
-# np.random.default_rng(seed=SEED).shuffle(ALL_STRUCTURE_ID)  # shuffle first?
-STRUCTURE_ID = ALL_STRUCTURE_ID[6::13]
-STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
+ALL_SYSTEM_ID = np.arange(len(ALL_SYSTEM))
+# np.random.default_rng(seed=SEED).shuffle(ALL_SYSTEM_ID)  # shuffle first?
+SYSTEM_ID = ALL_SYSTEM_ID[6::13]
+SYSTEM = [ALL_SYSTEM[A] for A in SYSTEM_ID]
 
 
 # ===== HPC
@@ -144,10 +144,10 @@ DFT_SETTINGS = {
     "DATA_DIR": DATA_DIR,
     "FIELD_NAME": FIELD_NAME,
     "RI_FIT_ID": RI_FIT_ID,
-    "ALL_STRUCTURE": ALL_STRUCTURE,
-    "ALL_STRUCTURE_ID": ALL_STRUCTURE_ID,
-    "STRUCTURE_ID": STRUCTURE_ID,
-    "STRUCTURE": STRUCTURE,
+    "ALL_SYSTEM": ALL_SYSTEM,
+    "ALL_SYSTEM_ID": ALL_SYSTEM_ID,
+    "SYSTEM_ID": SYSTEM_ID,
+    "SYSTEM": SYSTEM,
     "SBATCH": SBATCH,
     "HPC": HPC,
     "AIMS_PATH": AIMS_PATH,
