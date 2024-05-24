@@ -217,8 +217,13 @@ def flatten_tensormap(
     tensor: TensorMap, backend: str
 ) -> Union[np.ndarray, torch.Tensor]:
     """
-    Flattens all block values and returns as a 1D numpy array.
+    Sorts the TensorMap and then flattens all block values and returns as a 1D numpy
+    array.
     """
+    try:
+        tensor = mts.sort(tensor)
+    except ValueError:
+        tensor = mts.torch.sort(tensor)
     if backend == "numpy":
         flattened = np.array([])
         for block in tensor.blocks():

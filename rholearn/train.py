@@ -54,6 +54,7 @@ def train(ml_settings: dict):
             ),
             system_id=torch.tensor(subset_id, dtype=torch.int32),
             split_by_system=True,
+            drop_empty_blocks=False,
         )
         utils.log(log_path, "Load targets and auxiliaries")
         target = [  # load RI coeffs
@@ -80,6 +81,26 @@ def train(ml_settings: dict):
 
         for desc, targ in zip(descriptor, target):  # check metadata match
             assert mts.equal_metadata(desc, targ, check=["samples", "components"])
+
+        # Log mean sizes of descriptor, target, aux
+        for data_field, data_name in zip(
+            [descriptor, target, aux], ["descriptor", "target", "aux"]
+        ):
+            mean_field_size = torch.tensor(
+                [
+                    torch.tensor(
+                        [
+                            block.values.element_size() * block.values.nelement() * 1e-6
+                            for block in tensor
+                        ]
+                    ).sum()
+                for tensor in data_field
+                ]
+            ).mean()
+
+            utils.log(
+                log_path, f"Mean {data_name} size in MB (block tensors only, no metadata): {mean_field_size:.2f}"
+            )
 
         datasets.append(
             IndexedDataset(

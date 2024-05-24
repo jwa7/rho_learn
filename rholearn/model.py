@@ -43,6 +43,8 @@ class DescriptorCalculator(torch.nn.Module):
         if self._mask_descriptor:
             assert mask_kwargs is not None
             self._mask_kwargs = mask_kwargs
+        else:
+            self._mask_kwargs = {}
 
         # Initialize the calculators
         self._spherical_expansion_calculator = SphericalExpansion(
@@ -64,7 +66,7 @@ class DescriptorCalculator(torch.nn.Module):
         )
 
     def compute(
-        self, system, selected_samples: mts.Labels, drop_empty_blocks: bool = False
+        self, system, selected_samples: mts.Labels, drop_empty_blocks: bool
     ) -> torch.ScriptObject:
         """
         Takes a rascaline system and computes: 1) a spherical expansion, then 2) takes a
@@ -102,7 +104,7 @@ class DescriptorCalculator(torch.nn.Module):
                     keys_to_drop.append(key)
 
             if len(keys_to_drop) > 0:  # Drop empty blocks
-                descriptor_dropped = mts.drop_blocks(
+                descriptor = mts.drop_blocks(
                     descriptor,
                     keys=mts.Labels(
                         names=keys_to_drop[0].names,
@@ -111,12 +113,15 @@ class DescriptorCalculator(torch.nn.Module):
                         ),
                     ),
                 )
-            descriptor = descriptor_dropped
 
         return descriptor
 
     def forward(
-        self, system, split_by_system: bool = False, system_id: List[int] = None
+        self,
+        system,
+        split_by_system: bool = False,
+        drop_empty_blocks: bool = False,
+        system_id: List[int] = None,
     ) -> List:
         """
         Computes the lambda-SOAP descriptors for the given systems and returns them as
@@ -133,7 +138,9 @@ class DescriptorCalculator(torch.nn.Module):
             )
 
         # Compute the descriptor
-        descriptor = self.compute(system, selected_samples)
+        descriptor = self.compute(
+            system, selected_samples, drop_empty_blocks=drop_empty_blocks
+        )
 
         # Split into per-system TensorMaps and reindex if appropriate
         if split_by_system:
@@ -209,7 +216,7 @@ class Model(torch.nn.Module):
             device=self._device,
         )
 
-    def _apply_nn(
+    def _apply_net(
         self,
         descriptor: Union[torch.ScriptObject, List[torch.ScriptObject]],
         check_metadata: bool,
@@ -225,6 +232,8 @@ class Model(torch.nn.Module):
         if isinstance(descriptor, torch.ScriptObject):
             if check_metadata:  # check the properties metadata
                 for key, in_props in zip(self._in_keys, self._in_properties):
+                    if key not in descriptor.keys:
+                        continue
                     if not descriptor[key].properties == in_props:
                         raise ValueError(
                             "properties not consistent between model and"
@@ -237,6 +246,8 @@ class Model(torch.nn.Module):
         for desc in descriptor:
             if check_metadata:  # check the properties metadata
                 for key, in_props in zip(self._in_keys, self._in_properties):
+                    if key not in desc.keys:
+                        continue
                     if not desc[key].properties == in_props:
                         raise ValueError(
                             "properties not consistent between model and"
@@ -248,7 +259,7 @@ class Model(torch.nn.Module):
 
     def forward(
         self,
-        system = None,
+        system=None,
         descriptor: Union[torch.ScriptObject, List[torch.ScriptObject]] = None,
         system_id: Optional[List[int]] = None,
         check_metadata: bool = False,
@@ -276,11 +287,11 @@ class Model(torch.nn.Module):
         """
         if descriptor is None:  # calculate descriptor and keep as single TensorMap
             descriptor = self._descriptor_calculator(
-                system=system, split_by_system=False
+                system=system, split_by_system=False, drop_empty_blocks=True
             )
 
         if isinstance(descriptor, torch.ScriptObject):  # pass whole TM through NN
-            output = self._apply_nn(descriptor, check_metadata)
+            output = self._apply_net(descriptor, check_metadata)
             return split_tensor_and_reindex(
                 output, n_systems=len(system), system_id=system_id
             )
@@ -293,7 +304,7 @@ class Model(torch.nn.Module):
                 f"Expected `descriptor` to be TensorMap or List[TensorMap], got {type(descriptor)}"
             )
 
-        return self._apply_nn(descriptor, check_metadata)
+        return self._apply_net(descriptor, check_metadata)
 
     def predict(
         self, frames: Union[ase.Atoms, List[ase.Atoms]], system_id: List[int] = None
@@ -320,21 +331,26 @@ class Model(torch.nn.Module):
                 system_id = torch.arange(len(frames))
 
             unmasked_predictions = []
-            for A, frame, pred in zip(system_id, frames, predictions):
+            for A, frame, masked_tensor in zip(system_id, frames, predictions):
                 # Generate a zeros TensorMap with the metadata of the full
                 # (unmasked/unsliced) target
-                unmasked_pred = build_zeros_tensor(
+                unmasked_tensor = build_zeros_tensor(
                     self._in_keys, self._out_properties, frame=frame, system_id=A
                 )
                 # Modify in-place the zeros tensor, filling in values from the
                 # prediction for each of the samples predicted
-                for key, pred_block in pred.items():
-                    unmasked_block = unmasked_pred[key]
-                    for i, pred_sample in enumerate(pred_block.samples):  # iterate predicted samples
-                        unmasked_block.values[unmasked_block.samples.position(pred_sample)] = (
-                            pred_block.values[i]
+                for masked_key, masked_block in masked_tensor.items():
+                    for masked_sample_i, masked_sample in enumerate(
+                        masked_block.samples
+                    ):
+                        # Find the corresponding sample in the unmasked tensor
+                        unmasked_sample_i = unmasked_tensor[
+                            masked_key
+                        ].samples.position(masked_sample)
+                        unmasked_tensor[masked_key].values[unmasked_sample_i] = (
+                            masked_block.values[masked_sample_i]
                         )
-                unmasked_predictions.append(unmasked_pred)
+                unmasked_predictions.append(unmasked_tensor)
 
             return unmasked_predictions
 
@@ -343,7 +359,7 @@ class Model(torch.nn.Module):
 
 
 def select_samples_for_masked_learning(
-    system: List[ase.Atoms],
+    system,
     slab_depth: Optional[float],
     interphase_depth: Optional[float],
 ) -> mts.Labels:
@@ -505,7 +521,7 @@ def build_zeros_tensor(
     in_keys: mts.Labels,
     properties: List[mts.Labels],
     frame: ase.Atoms,
-    system_id: Optional[int] = None,
+    system_id: int,
 ) -> torch.ScriptObject:
     """
     Builds a zeros-like TensorMap with the correct metadata corresponding to the target

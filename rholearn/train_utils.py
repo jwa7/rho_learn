@@ -74,7 +74,7 @@ def parse_use_overlap_setting(
         else:
             parsed_use_overlap.append(True)
 
-    return parse_use_overlap
+    return parsed_use_overlap
 
 
 def training_step(
@@ -86,7 +86,8 @@ def training_step(
     use_aux: bool = False,
 ) -> Tuple[torch.Tensor]:
     """
-    Performs a single epoch of training by minibatching.
+    Performs a single epoch of training by minibatching. Returns the training loss for
+    the epoch, normalized by the total number of structures across all minibatches.
     """
     model.train()
 
@@ -140,7 +141,8 @@ def validation_step(
     val_loader, model, loss_fn, check_metadata: bool = False, use_aux: bool = False
 ) -> torch.Tensor:
     """
-    Performs a single validation step
+    Performs a single validation step by minibatching. Returns the validation loss,
+    normalized by the total number of structures across all minibatches.
     """
     with torch.no_grad():
         val_loss_epoch, out_val_pred = torch.nan, None
