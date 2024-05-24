@@ -27,8 +27,8 @@ pip cache remove "metatensor*"
 pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.2.2
 pip install metatensor-torch
 pip install wigners
-pip install --no-build-isolation --no-deps "rascaline @ git+https://github.com/luthaf/rascaline@37563c37a0d194c10dff3268e650b9b5cb47fcac"
-pip install --no-build-isolation --no-deps "rascaline-torch @ git+https://github.com/luthaf/rascaline@37563c37a0d194c10dff3268e650b9b5cb47fcac#subdirectory=python/rascaline-torch"
+pip install --no-build-isolation --no-deps "rascaline @ git+https://github.com/luthaf/rascaline@534813252a9c71c3f10cd3e3c9235f7fc526f421"
+pip install --no-build-isolation --no-deps "rascaline-torch @ git+https://github.com/luthaf/rascaline@534813252a9c71c3f10cd3e3c9235f7fc526f421#subdirectory=python/rascaline-torch"
 
 # ===== metatensor-operations release version
 pip install --no-build-isolation --no-deps metatensor-operations
