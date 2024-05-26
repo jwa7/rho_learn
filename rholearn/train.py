@@ -12,12 +12,21 @@ from rholearn.train_utils import *
 
 
 def set_settings_gloablly(ml_settings: dict):
+    """Sets the DFT and ML settings globally."""
     global_vars = globals()
     for key, value in ml_settings.items():
         global_vars[key] = value
 
 
 def train(ml_settings: dict):
+    """
+    Runs model training in the following steps:
+        1. Split structures into subsets
+        2. Calculate descriptors and oad targets and auxiliaries, masking if appropriate
+        3. Build cross-validation datasets and dataloaders
+        4. Initialize model, optimizer, scheduler, loss function
+        5. Iteratively train, validate, and checkpoint
+    """
 
     # ===== Setup =====
     t0_training = time.time()
@@ -25,15 +34,15 @@ def train(ml_settings: dict):
     torch.manual_seed(SEED)
     torch.set_default_dtype(DTYPE)
 
-    log_path = os.path.join(ML_DIR, "training.log")
-    utils.log(log_path, f"Setup")
-    utils.log(log_path, f"Top directory defined as: {TOP_DIR}")
+    log_path = os.path.join(ML_DIR, "train.log")
+    utils.log(log_path, f"===== BEGIN =====")
+    utils.log(log_path, f"Working directory: {ML_DIR}")
 
     # ===== Create datasets and dataloaders =====
     if ALL_SUBSET_ID is None:
         utils.log(log_path, f"Split structure ids into subsets")
         all_subset_id = data.group_idxs(  # cross-validation split of idxs
-            idxs=STRUCTURE_ID,
+            idxs=SYSTEM_ID,
             n_groups=CROSSVAL["n_groups"],
             group_sizes=CROSSVAL["group_sizes"],
             shuffle=CROSSVAL["shuffle"],
@@ -50,7 +59,7 @@ def train(ml_settings: dict):
         utils.log(log_path, f"Calculate descriptors for subset {subset_id}")
         descriptor = descriptor_calculator(
             system=rascaline.torch.systems_to_torch(
-                [ALL_STRUCTURE[A] for A in subset_id]
+                [ALL_SYSTEM[A] for A in subset_id]
             ),
             system_id=torch.tensor(subset_id, dtype=torch.int32),
             split_by_system=True,
@@ -72,7 +81,7 @@ def train(ml_settings: dict):
                 f" of {[DESCRIPTOR_HYPERS.get('slab_depth'), DESCRIPTOR_HYPERS.get('interphase_depth')]}",
             )
             target, aux = mask_dft_data(
-                structure=[ALL_STRUCTURE[A] for A in subset_id],
+                structure=[ALL_SYSTEM[A] for A in subset_id],
                 target=target,
                 aux=aux,
                 slab_depth=DESCRIPTOR_HYPERS["slab_depth"],
@@ -105,7 +114,7 @@ def train(ml_settings: dict):
         datasets.append(
             IndexedDataset(
                 sample_id=subset_id,
-                structure=[ALL_STRUCTURE[A] for A in subset_id],
+                structure=[ALL_SYSTEM[A] for A in subset_id],
                 descriptor=descriptor,
                 target=target,
                 aux=aux,

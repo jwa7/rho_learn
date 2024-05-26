@@ -129,11 +129,11 @@ def write_aims_sbatch_array(
 
         # Get the structure idx in the sbatch array
         f.write("# Get the structure idx from the SLURM job ID\n")
-        f.write("STRUCTURE_ID=${SLURM_ARRAY_TASK_ID}\n\n")
+        f.write("SYSTEM_ID=${SLURM_ARRAY_TASK_ID}\n\n")
 
         # Define the run directory and cd to it
         f.write("# Define the run directory and cd into it\n")
-        f.write(f"RUNDIR={run_dir('${STRUCTURE_ID}')}\n")
+        f.write(f"RUNDIR={run_dir('${SYSTEM_ID}')}\n")
         f.write("cd $RUNDIR\n\n")
 
         # Write the run AIMS command
@@ -365,11 +365,11 @@ def process_aims_results_sbatch_array(
 
         # Get the structure idx in the sbatch array
         f.write("# Get the structure idx from the SLURM job ID\n")
-        f.write("STRUCTURE_ID=${SLURM_ARRAY_TASK_ID}\n\n")
+        f.write("SYSTEM_ID=${SLURM_ARRAY_TASK_ID}\n\n")
 
         # Define the run directory and cd to it
         f.write("# Define the run directory and cd into it\n")
-        f.write(f"RUNDIR={run_dir('${STRUCTURE_ID}')}\n")
+        f.write(f"RUNDIR={run_dir('${SYSTEM_ID}')}\n")
         f.write("cd $RUNDIR\n\n")
 
         f.write("# Run the Python command\n")

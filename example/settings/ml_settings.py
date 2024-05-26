@@ -19,26 +19,26 @@ from rholearn.utils import timestamp, unpickle_dict
 
 # ===== SETUP =====
 SEED = 42
-TOP_DIR = "/Users/joe.abbott/Documents/phd/code/rho/april-24/rho_learn/example"
-DATA_DIR = "/Users/joe.abbott/Documents/phd/code/rho/april-24/si_mask/data"
+TOP_DIR = "/home/abbott/march-24/rho_learn/example"
+DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
 FIELD_NAME = "edensity"
 RI_FIT_ID = "edensity"
-ML_RUN_ID = "masked_1"
+ML_RUN_ID = "unmasked_8_nonlin"  # name of the run directory
 ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID)
 
 # ===== DATA =====
-ALL_STRUCTURE = ase.io.read(
+ALL_SYSTEM = ase.io.read(
     join(DATA_DIR, "si_slabs_dimer_z_depth_geomopt_distorted.xyz"), ":"
 )
-ALL_STRUCTURE_ID = np.arange(len(ALL_STRUCTURE))
-# np.random.default_rng(seed=SEED).shuffle(ALL_STRUCTURE_ID)  # shuffle first?
-STRUCTURE_ID = ALL_STRUCTURE_ID[6::13]
-STRUCTURE = [ALL_STRUCTURE[A] for A in STRUCTURE_ID]
+ALL_SYSTEM_ID = np.arange(len(ALL_SYSTEM))
+# np.random.default_rng(seed=SEED).shuffle(ALL_SYSTEM_ID)  # shuffle first?
+SYSTEM_ID = ALL_SYSTEM_ID[6::13]
+SYSTEM = [ALL_SYSTEM[A] for A in SYSTEM_ID]
 
 ALL_SUBSET_ID = [
-    STRUCTURE_ID[:1],  # train subsets: [4, 7, 11, 17]
-    STRUCTURE_ID[-5:-3],  # 2 x val
-    STRUCTURE_ID[-3:]  # 3 x test
+    SYSTEM_ID[:8],  # train subsets: [2, 4, 8, 16]
+    SYSTEM_ID[-5:-3],  # 2 x val
+    SYSTEM_ID[-3:],  # 3 x test
 ]
 CROSSVAL = None
 
@@ -97,7 +97,7 @@ TORCH = {
     "device": torch.device(type=DEVICE),
 }
 TARGET_BASIS = unpickle_dict(  # Load the RI basis set definition
-    join(PROCESSED_DIR(STRUCTURE_ID[0]), "calc_info.pickle")
+    join(PROCESSED_DIR(SYSTEM_ID[0]), "calc_info.pickle")
 )["basis_set"]
 LMAX = max(TARGET_BASIS["lmax"].values())
 DESCRIPTOR_HYPERS = {
@@ -121,7 +121,7 @@ DESCRIPTOR_HYPERS = {
         "skip_redundant": True,
     },
     "atom_types": [1, 14],
-    "mask_descriptor": True,
+    "mask_descriptor": False,
     "slab_depth": 4.0,  # Ang
     "interphase_depth": 1.0,  # Ang
 }
@@ -153,31 +153,31 @@ def net(
             in_keys=in_keys,
             invariant_key_idxs=invariant_key_idxs,
             in_features=[len(in_props) for in_props in in_properties],
+            out_features=128,
+            bias=True,  # equivariant bias
+            dtype=dtype,
+            device=device,
+        ),
+        nn.InvariantSiLU(in_keys=in_keys, invariant_key_idxs=invariant_key_idxs),
+        nn.EquivariantLinear(
+            in_keys=in_keys,
+            invariant_key_idxs=invariant_key_idxs,
+            in_features=128,
             out_properties=out_properties,
             bias=True,  # equivariant bias
             dtype=dtype,
             device=device,
         ),
     )
+
+
 NET = net
-
-# class Net(torch.nn.Module):
-#     """Defines the NN architecture, initializable from the descriptor calculator and
-#     target property basis set definition."""
-#     def __init__(self, descriptor_calculator: torch.nn.Module, target_basis: dict) -> None:
-
-
 TRAIN = {
     # Training
     "batch_size": 1,
     "n_epochs": 2001,  # number of total epochs to run. End in a 1, i.e. 20001.
     "restart_epoch": None,  # The epoch of the last saved checkpoint, or None for no restart
     "use_overlap": False,  # True/False, or the epoch to start using it at
-    # Evaluation
-    "eval_interval": None,  # validate every x epochs against real-space SCF field. None to turn off evaluation
-    "eval_subset": "train",
-    "calculate_error": False,  # whether to wait for AIMS calcs to finish
-    "target_type": "ri",  # evaluate against QM ("ref") or RI ("ri") scalar field
     # Saving and logging
     "checkpoint_interval": 500,  # save model and optimizer state every x intervals
     "log_interval": 500,  # how often to log the loss
@@ -193,6 +193,16 @@ SCHEDULER = partial(
     },
 )
 LOSS_FN = L2Loss
+EVAL = {  # Evaluation
+    "eval_id": ALL_SUBSET_ID[2],
+    "eval_epoch": 2000,
+    "target_type": "ri",  # evaluate MAE against QM ("ref") or RI ("ri") scalar field
+    "evaluate_on": "surface",  # "surface" or "slab"
+    "stm": {
+        "center_coord": 0,  # Angstrom, offset from max Z coord
+        "thickness": 4.0,  # Angstrom
+    },
+}
 
 
 # ===== FINAL DICT =====
@@ -204,10 +214,10 @@ ML_SETTINGS = {
     "RI_FIT_ID": RI_FIT_ID,
     "ML_RUN_ID": ML_RUN_ID,
     "ML_DIR": ML_DIR,
-    "ALL_STRUCTURE": ALL_STRUCTURE,
-    "ALL_STRUCTURE_ID": ALL_STRUCTURE_ID,
-    "STRUCTURE_ID": STRUCTURE_ID,
-    "STRUCTURE": STRUCTURE,
+    "ALL_SYSTEM": ALL_SYSTEM,
+    "ALL_SYSTEM_ID": ALL_SYSTEM_ID,
+    "SYSTEM_ID": SYSTEM_ID,
+    "SYSTEM": SYSTEM,
     "ALL_SUBSET_ID": ALL_SUBSET_ID,
     "CROSSVAL": CROSSVAL,
     "SBATCH": SBATCH,
@@ -228,4 +238,5 @@ ML_SETTINGS = {
     "PROCESSED_DIR": PROCESSED_DIR,
     "CHKPT_DIR": CHKPT_DIR,
     "EVAL_DIR": EVAL_DIR,
+    "EVAL": EVAL,
 }
