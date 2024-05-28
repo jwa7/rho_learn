@@ -12,7 +12,7 @@ from rholearn.train_utils import *
 
 
 def set_settings_gloablly(ml_settings: dict):
-    """Sets the DFT and ML settings globally."""
+    """Sets the ML settings globally."""
     global_vars = globals()
     for key, value in ml_settings.items():
         global_vars[key] = value

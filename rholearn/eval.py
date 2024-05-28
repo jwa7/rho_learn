@@ -41,7 +41,7 @@ def eval(dft_settings: dict, ml_settings: dict):
     utils.log(log_path, f"Working directory: {ML_DIR}")
 
     # ===== Model inference =====
-    utils.log(log_path, f"Load model")
+    utils.log(log_path, f"Load model from checkpoint at epoch {EVAL['eval_epoch']}")
     eval_frames = [ALL_SYSTEM[A] for A in EVAL["eval_id"]]
     model = torch.load(join(CHKPT_DIR(EVAL["eval_epoch"]), "model.pt"))
     utils.log(log_path, f"Perform inference")
@@ -79,7 +79,7 @@ def eval(dft_settings: dict, ml_settings: dict):
                         all_aims_outs.remove(aims_out)
 
     # ===== Evaluate MAE =====
-    utils.log(log_path, f"Evaluate MAE")
+    utils.log(log_path, f"Evaluate MAE versus reference field type: {EVAL['target_type']}")
     for A, frame in zip(EVAL["eval_id"], eval_frames):
         grid = np.loadtxt(join(RI_DIR(A), "partition_tab.out"))
         rho_ref = np.loadtxt(join(RI_DIR(A), f"rho_{EVAL['target_type']}.out"))

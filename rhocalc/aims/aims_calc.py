@@ -108,7 +108,7 @@ def write_aims_sbatch_array(
 
         # Write the array of structure indices
         f.write(f"#SBATCH --array={','.join(map(str, structure_idxs))}\n")
-        # f.write("#SBATCH --output=slurm_out/%a_slurm.out")
+        f.write("#SBATCH --output=./slurm_out/slurm_%a.out")
         f.write("\n\n")
 
         # Load modules

@@ -19,12 +19,10 @@ from rholearn.utils import timestamp, unpickle_dict
 
 # ===== SETUP =====
 SEED = 42
-TOP_DIR = "/home/abbott/march-24/rho_learn/example"
-DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
 FIELD_NAME = "edensity"
 RI_FIT_ID = "edensity"
-ML_RUN_ID = "unmasked_8_nonlin"  # name of the run directory
-ML_DIR = join(TOP_DIR, "ml", RI_FIT_ID, ML_RUN_ID)
+DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
+ML_DIR = "/home/abbott/may-24/si_clean_distortions/run_1/masked/2"
 
 # ===== DATA =====
 ALL_SYSTEM = ase.io.read(
@@ -212,7 +210,6 @@ ML_SETTINGS = {
     "DATA_DIR": DATA_DIR,
     "FIELD_NAME": FIELD_NAME,
     "RI_FIT_ID": RI_FIT_ID,
-    "ML_RUN_ID": ML_RUN_ID,
     "ML_DIR": ML_DIR,
     "ALL_SYSTEM": ALL_SYSTEM,
     "ALL_SYSTEM_ID": ALL_SYSTEM_ID,

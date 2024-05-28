@@ -6,7 +6,9 @@ matrices.
 Note that these parsers have been written to work with the AIMS version 221103
 and may not necessarily be compatible with older or newer versions.
 """
+import json
 import os
+import re
 from typing import Tuple, Optional, Union, List
 
 import ase
@@ -17,6 +19,7 @@ import metatensor
 from metatensor import Labels, TensorBlock, TensorMap
 
 from rhocalc import convert
+from rhocalc.aims import aims_fields
 from rholearn import utils
 
 
@@ -259,6 +262,43 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                 calc_info["ri_fit_finished"] = True
 
     return calc_info
+
+def extract_input_file(aims_out_path: str, section_type: str, save_dir_path: str):
+    """
+    Parse aims.out file at `aims_out_path` and extracts either the "geometry.in" or
+    "control.in" section, depending on whether `section_type="geometry"` or
+    `section_type="control"`, respectively.
+    
+    Writes it to `save_dir_path`/{geometry,control}.in.
+
+    Assumes these sections are contained between "----" separators in the aims.out file.
+    For parsing the geometry, keywords "trust_radius" and "hessian_block" are ignored.
+    """
+    assert section_type in ["control", "geometry"]
+    with open(aims_out_path, "r") as f:
+        lines = f.readlines()
+        for i, line in enumerate(lines):
+            if f"Parsing {section_type}.in" in line:
+                for j, next_line in enumerate(lines[i:], i):
+                    if "-----" in next_line:
+                        start = j + 1
+                        break
+
+        geom_lines = []
+        for next_line in lines[start:]:
+            split = next_line.split()
+            if len(split) == 0:
+                continue
+            if section_type == "geometry" and split[0] in ["trust_radius", "hessian_block"]:
+                continue
+            if "---" in next_line:
+                break
+
+            geom_lines.append(next_line)
+
+    with open(os.path.join(save_dir_path, section_type, ".in"), "w") as f:
+        for line in geom_lines:
+            f.write(line)
 
 
 def extract_basis_set_info(frame: ase.Atoms, aims_output_dir: str) -> Tuple[dict, dict]:
@@ -657,7 +697,7 @@ def process_aims_ri_results(
         # Calculat edensity fitting error
         aims_out["df_error_percent"][
             "total" if ri_calc_idx is None else ri_calc_idx
-        ] = get_percent_mae_between_fields(
+        ] = aims_fields.get_percent_mae_between_fields(
             input=np.loadtxt(
                 os.path.join(aims_output_dir, f"rho_ri{ri_calc_suffix}.out")
             ),

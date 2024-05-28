@@ -10,8 +10,6 @@ import numpy as np
 
 # ===== SETUP =====
 SEED = 42
-TOP_DIR = "/home/abbott/march-24/rho_learn/example"
-# DATA_DIR = join(TOP_DIR, "data")
 DATA_DIR = "/work/cosmo/abbott/april-24/si_masked/data"
 FIELD_NAME = "ildos"
 RI_FIT_ID = "ildos-1V"
@@ -49,7 +47,7 @@ HPC = {
 # ===== BASE AIMS =====
 AIMS_PATH = "/home/abbott/codes/new_aims/FHIaims/build/aims.230905.scalapack.mpi.x"
 BASE_AIMS = {
-    "species_dir": "/home/abbott/march-24/rho_learn/rhocalc/aims/aims_species/tight/default",
+    "species_dir": "/home/abbott/codes/rho_learn/rhocalc/aims/aims_species/tight/default",
     "xc": "pbe",
     "spin": "none",
     # "relativistic": ["atomic_zora scalar"],
@@ -140,7 +138,6 @@ if not exists(DATA_DIR):
 # ===== FINAL DICT =====
 DFT_SETTINGS = {
     "SEED": SEED,
-    "TOP_DIR": TOP_DIR,
     "DATA_DIR": DATA_DIR,
     "FIELD_NAME": FIELD_NAME,
     "RI_FIT_ID": RI_FIT_ID,
