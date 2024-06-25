@@ -27,11 +27,11 @@ pip cache remove "metatensor*"
 pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.2.2
 pip install metatensor-torch
 pip install wigners
-pip install --no-build-isolation --no-deps "rascaline @ git+https://github.com/luthaf/rascaline@534813252a9c71c3f10cd3e3c9235f7fc526f421"
-pip install --no-build-isolation --no-deps "rascaline-torch @ git+https://github.com/luthaf/rascaline@534813252a9c71c3f10cd3e3c9235f7fc526f421#subdirectory=python/rascaline-torch"
+pip install --no-build-isolation --no-deps "rascaline @ git+https://github.com/luthaf/rascaline@1f879f9d54d1b4e24bbe4c089b3c749a7c8ba7d8"
+pip install --no-build-isolation --no-deps "rascaline-torch @ git+https://github.com/luthaf/rascaline@1f879f9d54d1b4e24bbe4c089b3c749a7c8ba7d8#subdirectory=python/rascaline-torch"
 
 # ===== metatensor-operations release version
 pip install --no-build-isolation --no-deps metatensor-operations
 
 # ===== metatensor-learn latest version
-pip install --no-build-isolation --no-deps "metatensor-learn @ git+https://github.com/lab-cosmo/metatensor@8263f36659135d23a1d6590fb307898a2551b52e#subdirectory=python/metatensor-learn"
+pip install --no-build-isolation --no-deps "metatensor-learn @ git+https://github.com/lab-cosmo/metatensor@2f60f48798a2c34b0fbd91d40a1d85420c456f26#subdirectory=python/metatensor-learn"
