@@ -26,33 +26,7 @@ from rholearn.model import DescriptorCalculator
 
 def load_dft_data(path: str, torch_kwargs: dict) -> torch.ScriptObject:
     """Loads a TensorMap from file and converts its backend to torch"""
-    return mts.load(path).to(**torch_kwargs)
-
-
-def mask_dft_data(
-    structure: List[ase.Atoms],
-    target: List[torch.ScriptObject],
-    aux: List[torch.ScriptObject],
-    slab_depth: float,
-    interphase_depth: float,
-) -> Tuple[torch.ScriptObject]:
-    """
-    Masks the RI coefficients and overlap TensorMaps according to the slab/interphase
-    depth
-    """
-    target_masked, aux_masked = [], []
-    for frame, t, o in zip(structure, target, aux):
-        idxs_surface, idxs_interphase, idxs_bulk = (
-            structure_builder.get_atom_idxs_by_region(
-                frame, slab_depth, interphase_depth
-            )
-        )
-        idxs_to_keep = list(idxs_surface) + list(idxs_interphase)
-
-        target_masked.append(data.mask_coeff_vector_tensormap(t, idxs_to_keep))
-        aux_masked.append(data.mask_ovlp_matrix_tensormap(o, idxs_to_keep))
-
-    return target_masked, aux_masked
+    return mts.sort(mts.load(path)).to(**torch_kwargs)
 
 
 def parse_use_overlap_setting(
@@ -95,42 +69,40 @@ def training_step(
     for train_batch in train_loader:
 
         optimizer.zero_grad()  # zero grads
-
-        id_train, struct_train, in_train, out_train, aux_train = (
-            train_batch  # unpack batch
-        )
-        if not use_aux:
-            aux_train = None
-
         out_train_pred = model(  # forward pass
-            descriptor=in_train, check_metadata=check_metadata
+            descriptor=train_batch.descriptor, check_metadata=check_metadata
         )
 
         # Drop the blocks from the prediction that aren't part of the target
         if isinstance(out_train_pred, torch.ScriptObject):
             out_train_pred = mts.TensorMap(
-                keys=out_train.keys,
-                blocks=[out_train_pred[key].copy() for key in out_train.keys],
+                keys=train_batch.target.keys,
+                blocks=[out_train_pred[key].copy() for key in train_batch.target.keys],
             )
         else:
             out_train_pred = [
                 mts.TensorMap(
-                    keys=out_train[i].keys,
-                    blocks=[out_train_pred[i][key].copy() for key in out_train[i].keys],
+                    keys=train_batch.target[i].keys,
+                    blocks=[
+                        out_train_pred[i][key].copy()
+                        for key in train_batch.target[i].keys
+                    ],
                 )
                 for i in range(len(out_train_pred))
             ]
 
         train_loss_batch = loss_fn(  # train loss
             input=out_train_pred,
-            target=out_train,
-            overlap=aux_train,
+            target=train_batch.target,
+            overlap=train_batch.aux if use_aux else None,
             check_metadata=check_metadata,
         )
         train_loss_batch.backward()  # backward pass
         optimizer.step()  # update parameters
         train_loss_epoch += train_loss_batch  # store loss
-        n_train_epoch += len(id_train)  # accumulate num structures in epoch
+        n_train_epoch += len(
+            train_batch.sample_id
+        )  # accumulate num structures in epoch
 
     train_loss_epoch /= n_train_epoch  # normalize loss by num structures
 
@@ -150,19 +122,17 @@ def validation_step(
         n_val_epoch = 0
         for val_batch in val_loader:  # minibatches
 
-            id_val, struct_val, in_val, out_val, aux_val = val_batch  # unpack batch
-            if not use_aux:
-                aux_val = None
-
-            out_val_pred = model(descriptor=in_val, check_metadata=check_metadata)
+            out_val_pred = model(  # forward pass
+                descriptor=val_batch.descriptor, check_metadata=check_metadata
+            )
             val_loss_batch = loss_fn(  # validation loss
                 input=out_val_pred,
-                target=out_val,
-                overlap=aux_val,
+                target=val_batch.target,
+                overlap=val_batch.aux if use_aux else None,
                 check_metadata=check_metadata,
             )
             val_loss_epoch += val_loss_batch  # store loss
-            n_val_epoch += len(id_val)
+            n_val_epoch += len(val_batch.sample_id)
 
         val_loss_epoch /= n_val_epoch  # normalize loss
 
@@ -177,73 +147,6 @@ def step_scheduler(val_loss: torch.Tensor, scheduler) -> None:
         scheduler.step()
 
 
-def evaluation_step(
-    model,
-    dataloader,
-    save_dir: Callable,
-    calculate_error: bool = False,
-    target_type: Optional[str] = None,
-    reference_dir: Optional[Callable] = None,
-) -> Union[None, float]:
-    """
-    Evaluates the model by making a prediction (with no gradient tracking) and
-    rebuilding the scalar field from these coefficients by calling AIMS. Rebuilt
-    scalar fields are saved to `save_dir`, a callable called with each structure
-    index as an argument.
-
-    If `calculate_error` is set to true, the % MAE (normalized by the number of
-    electrons) of the rebuilt scalar field relative to either the DFT scalar
-    field (`target_type="ref"`) or the RI scalar field (`target_type="ri"`) is
-    returned.
-
-    In this case, the directories where the reference DFT calculation files are
-    stored must be specified in `reference_dir`. This is again a callable,
-    called with each structure index.
-    """
-    model.eval()
-
-    assert target_type in ["ref", "ri"]
-
-    # Compile relevant data from all minibatches
-    structure_id, structure, descriptor = [], [], []
-    for batch in dataloader:
-        for idx in batch.sample_id:
-            structure_id.append(idx)
-        for struct in batch.structure:
-            structure.append(struct)
-        for desc in batch.descriptor:
-            descriptor.append(desc)
-
-    # Make prediction with the model
-    with torch.no_grad():
-        prediction = model(  # return a list of TensorMap (or ScriptObject)
-            descriptor=descriptor, check_metadata=True
-        )
-
-    if not calculate_error:
-        return np.nan
-
-    assert reference_dir is not None
-
-    percent_maes = []
-    for A, frame, prediction in zip(structure_id, structure, predictions):
-
-        grid = np.loadtxt(  # integration weights
-            join(reference_dir(A), "partition_tab.out")
-        )
-        target = np.loadtxt(  # target scalar field
-            join(reference_dir(A), f"rho_{target_type}.out")
-        )
-        percent_mae = aims_fields.get_percent_mae_between_fields(  # calc MAE
-            input=prediction,
-            target=target,
-            grid=grid,
-        )
-        percent_maes.append(percent_mae)
-
-    return np.mean(percent_maes)
-
-
 def get_block_losses(model, dataloader):
     """
     For all structures in the dataloader, sums the squared errors on the
@@ -251,24 +154,64 @@ def get_block_losses(model, dataloader):
     dictionary.
     """
     with torch.no_grad():
-        # Get all the descriptors structures
-        descriptor = [desc for batch in dataloader for desc in batch.descriptor]
-        target = [targ for batch in dataloader for targ in batch.target]
+
+        def block_loss(input, target):
+            return torch.mean( ( (input - target) / target ) ** 2)
+
+        # Get all descriptors and targets over all minibatches
+        all_batches = [batch for batch in dataloader]
+        if isinstance(all_batches[0].target, torch.ScriptObject):  # single TensorMap
+            expect_list = False
+        else:  # list of TensorMap
+            expect_list = True
+
+        if expect_list:
+            descriptor = [desc for batch in all_batches for desc in batch.descriptor]
+            target = [targ for batch in all_batches for targ in batch.target]
+
+        else:
+            descriptor = mts.join(
+                [batch.descriptor for batch in all_batches],
+                axis="samples",
+                remove_tensor_name=True,
+            )
+            target = mts.join(
+                [batch.target for batch in all_batches],
+                axis="samples",
+                remove_tensor_name=True,
+            )
+
         prediction = model(descriptor=descriptor, check_metadata=False)
-        keys = prediction[0].keys
+        if expect_list:
+            keys = prediction[0].keys
+        else:
+            keys = prediction.keys
 
         block_losses = {tuple(key): 0 for key in keys}
         for key in keys:
-            for pred, targ in zip(prediction, target):
-                if key not in targ.keys:  # target does not have this key
+            if expect_list:  # list of TensorMap
+                for pred, targ in zip(prediction, target):
+                    if key not in targ.keys:  # target does not have this key
+                        continue
+                    # Remove predicted blocks that aren't in the target
+                    pred = mts.TensorMap(
+                        keys=targ.keys, blocks=[pred[key].copy() for key in targ.keys]
+                    )
+                    assert mts.equal_metadata(pred, targ)
+                    block_losses[tuple(key)] += block_loss(
+                        pred[key].values, targ[key].values
+                    )
+            else:  # single TensorMap
+                if key not in target.keys:  # target does not have this key
                     continue
                 # Remove predicted blocks that aren't in the target
-                pred = mts.TensorMap(
-                    keys=targ.keys, blocks=[pred[key].copy() for key in targ.keys]
+                prediction = mts.TensorMap(
+                    keys=target.keys,
+                    blocks=[prediction[key].copy() for key in target.keys],
                 )
-                assert mts.equal_metadata(pred, targ)
-                block_losses[tuple(key)] += torch.nn.MSELoss(reduction="sum")(
-                    pred[key].values, targ[key].values
+                assert mts.equal_metadata(prediction, target)
+                block_losses[tuple(key)] = block_loss(
+                    prediction[key].values, target[key].values
                 )
 
     return block_losses
@@ -288,11 +231,11 @@ def save_checkpoint(model: torch.nn.Module, optimizer, scheduler, chkpt_dir: str
         join(chkpt_dir, f"model_state_dict.pt"),
     )
     # Optimizer and scheduler
-    torch.save(optimizer.state_dict(), join(chkpt_dir, f"optimizer.pt"))
+    torch.save(optimizer.state_dict(), join(chkpt_dir, f"optimizer_state_dict.pt"))
     if scheduler is not None:
         torch.save(
             scheduler.state_dict(),
-            join(chkpt_dir, f"scheduler.pt"),
+            join(chkpt_dir, f"scheduler_state_dict.pt"),
         )
 
 

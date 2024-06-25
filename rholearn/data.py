@@ -12,6 +12,8 @@ import torch
 
 import metatensor.torch as mts
 
+from rhocalc import convert
+
 
 # ===== Fxns for masked learning =====
 
@@ -98,17 +100,48 @@ def mask_ovlp_matrix_tensormap(
     return matrix_tensor_masked
 
 
-def get_zeros_like_target_tensor(
+def unmask_coeff_vector_tensormap(
+    masked_tensor: torch.ScriptObject,
     in_keys: mts.Labels,
-    out_properties: List[mts.Labels],
+    properties: List[mts.Labels],
     frame: ase.Atoms,
-    system_id: Optional[int] = None,
+    system_id: int,
+) -> torch.ScriptObject:
+    """
+    Builds a zeros tensor with the correct dimensions according to the atomic samples in
+    `frame` and the specified `in_keys` and `properties`. Fills in corresponding samples
+    from `masked_tensor` and returns.
+    """
+    # Build the zeros tensor with the correct dimensions
+    unmasked_tensor = build_zeros_tensor(in_keys, properties, frame=frame, system_id=system_id)
+
+    # Modify in-place the zeros tensor, filling in values from the
+    # masked tensor for each of the samples present
+    for masked_key, masked_block in masked_tensor.items():
+        for masked_sample_i, masked_sample in enumerate(masked_block.samples):
+            # Find the corresponding sample in the unmasked tensor
+            unmasked_sample_i = unmasked_tensor[masked_key].samples.position(
+                masked_sample
+            )
+            unmasked_tensor[masked_key].values[unmasked_sample_i] = masked_block.values[
+                masked_sample_i
+            ]
+
+    return unmasked_tensor
+
+
+def build_zeros_tensor(
+    in_keys: mts.Labels,
+    properties: List[mts.Labels],
+    frame: ase.Atoms,
+    system_id: int,
 ) -> torch.ScriptObject:
     """
     Builds a zeros-like TensorMap with the correct metadata corresponding to the target
     property, based on the atoms in input system and the target basis set definition.
     """
-    for key, out_props in zip(in_keys, out_properties):
+    blocks = []
+    for key, props in zip(in_keys, properties):
         o3_lambda, center_type = key
         ref_atom_sym = convert.NUM_TO_SYM[center_type]
         samples = mts.Labels(
@@ -119,7 +152,7 @@ def get_zeros_like_target_tensor(
                     for atom_id, atom_sym in enumerate(frame.get_chemical_symbols())
                     if atom_sym == ref_atom_sym
                 ]
-            )
+            ),
         )
         components = [
             mts.Labels(
@@ -127,55 +160,18 @@ def get_zeros_like_target_tensor(
                 values=torch.arange(-o3_lambda, o3_lambda + 1).reshape(-1, 1),
             )
         ]
-        # print(key, samples)
         blocks.append(
             mts.TensorBlock(
                 values=torch.zeros(
-                    len(samples), *(len(c) for c in components), len(properties)
+                    len(samples), *(len(c) for c in components), len(props)
                 ),
                 samples=samples,
                 components=components,
-                properties=out_props,
+                properties=props,
             )
         )
     return mts.TensorMap(in_keys, blocks)
 
-
-# def unmask_coeff_vector_tensormap(
-#     tensor_sliced: torch.ScriptObject, system, system_id: int
-# ) -> torch.ScriptObject:
-#     """
-#     Builds a zeros tensor with `mts.zeros_like(zeros_tensor_like)` and fills in its block
-#     values with the values for the samples present in `tensor_sliced`.
-
-#     :param tensor_sliced: the masked (i.e. with sliced samples) version of
-#         `zeros_tensor_like`, such that every sample in `tensor_sliced` is present and can
-#         be assigned to the corresponding samples in `zeros_tensor_like`.
-#     :param zeros_tensor_like: the full version of the tensor, with all samples present.
-
-#     :return: a TensorMap with the same metadata as `zeros_tensor_like`, with values
-#         filled in from the corresponding samples in `tensor_sliced`. All other samples
-#         values are zero.
-#     """
-#     # First generate a TensorMap with the correct full (i.e. unmasked / unsliced)
-#     # samples dimension
-
-#     zeros_like_target = get_zeros_like_target_tensor()
-
-
-#     # Generate a TensorMap of zeros of the unmasked shape
-#     zeros_tensor_like = mts.zeros_like(zeros_tensor_like)
-
-#     # Fill in the values from masked TensorMap
-#     for key, block_sliced in tensor_sliced.items():
-
-#         block_full = zeros_tensor_like[key]
-#         for i, masked_sample in enumerate(block_sliced.samples):
-#             block_full.values[block_full.samples.position(masked_sample)] = (
-#                 block_sliced.values[i]
-#             )
-
-#     return zeros_tensor_like
 
 
 # ===== Fxns for creating groups of indices for train/test/validation splits
