@@ -6,6 +6,7 @@ matrices.
 Note that these parsers have been written to work with the AIMS version 221103
 and may not necessarily be compatible with older or newer versions.
 """
+
 import json
 import os
 import re
@@ -232,7 +233,10 @@ def parse_aims_out(aims_output_dir: str) -> dict:
             if split[:2] == "Product basis:".split():
                 assert lines[line_i + 1].split()[:3] == "| charge radius:".split()
                 assert lines[line_i + 2].split()[:3] == "| field radius:".split()
-                assert lines[line_i + 3].split()[:9] == "| Species   l  charge radius    field radius  multipol momen".split()
+                assert (
+                    lines[line_i + 3].split()[:9]
+                    == "| Species   l  charge radius    field radius  multipol momen".split()
+                )
 
                 tmp_line_i = line_i + 4
                 keep_reading = True
@@ -246,13 +250,20 @@ def parse_aims_out(aims_output_dir: str) -> dict:
                     if tmp_split[-1] != "a.u.":
                         keep_reading = False
                         break
-                    
+
                     # This is one of the charge radius lines we want to read from
-                    if calc_info["prodbas_radial_fn_radii_ang"].get(tmp_split[1]) is None:
-                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]] = [float(tmp_split[3])]
+                    if (
+                        calc_info["prodbas_radial_fn_radii_ang"].get(tmp_split[1])
+                        is None
+                    ):
+                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]] = [
+                            float(tmp_split[3])
+                        ]
                     else:
-                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]].append(float(tmp_split[3]))
-                    
+                        calc_info["prodbas_radial_fn_radii_ang"][tmp_split[1]].append(
+                            float(tmp_split[3])
+                        )
+
                     tmp_line_i += 1
 
             # Extract ri_fit info
@@ -263,12 +274,13 @@ def parse_aims_out(aims_output_dir: str) -> dict:
 
     return calc_info
 
+
 def extract_input_file(aims_out_path: str, section_type: str, save_dir_path: str):
     """
     Parse aims.out file at `aims_out_path` and extracts either the "geometry.in" or
     "control.in" section, depending on whether `section_type="geometry"` or
     `section_type="control"`, respectively.
-    
+
     Writes it to `save_dir_path`/{geometry,control}.in.
 
     Assumes these sections are contained between "----" separators in the aims.out file.
@@ -289,7 +301,10 @@ def extract_input_file(aims_out_path: str, section_type: str, save_dir_path: str
             split = next_line.split()
             if len(split) == 0:
                 continue
-            if section_type == "geometry" and split[0] in ["trust_radius", "hessian_block"]:
+            if section_type == "geometry" and split[0] in [
+                "trust_radius",
+                "hessian_block",
+            ]:
                 continue
             if "---" in next_line:
                 break
@@ -388,6 +403,7 @@ def process_aux_basis_func_data(
     aims_output_dir: str,
     ri_calc_idx: Optional[int] = None,
     process_what: Optional[List[str]] = None,
+    ovlp_shape: str = "lower_tri",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Processes and returns the coefficients and projections vectors, and overlap
@@ -456,6 +472,9 @@ def process_aux_basis_func_data(
         shape (N,) where N is the number of ABFs. The overlap matrix is a 2D
         array with shape (N, N).
     """
+    if ovlp_shape not in ["full", "lower_tri"]:
+        raise ValueError(f"ovlp_shape must be 'full' or 'lower_tri'. Got: {ovlp_shape}")
+
     # Check that the AIMS output directory exists
     if not os.path.exists(aims_output_dir):
         raise ValueError(f"`aims_output_dir` {aims_output_dir} does not exist.")
@@ -486,19 +505,37 @@ def process_aux_basis_func_data(
         )
     if "ovlp" in process_what:
         ovlp = np.loadtxt(os.path.join(aims_output_dir, "ri_ovlp.out"))
-        ovlp_dim = int(np.sqrt(ovlp.shape[0]))
+
+        if ovlp_shape == "full":
+            ovlp_dim = int(np.sqrt(ovlp.shape[0]))
 
     # Check shapes
     if "coeffs" in process_what and "projs" in process_what:
         assert coeffs.shape == projs.shape
     if "coeffs" in process_what and "ovlp" in process_what:
-        assert ovlp.shape == (coeffs.shape[0] ** 2,)
+        if ovlp_shape == "full":
+            assert ovlp.shape == (coeffs.shape[0] ** 2,)
+        else:
+            # Overlap matrix is a flattened vector corresponding to the triangle
+            # (including diagonal) of the actual overlap matrix, so has length 
+            # ((n^2 + n) / 2)
+            assert ovlp.shape[0] == ((coeffs.shape[0] ** 2) + coeffs.shape[0]) / 2
 
-    # Reshape overlap into a square matrix and check symmetry. As the overlap
-    # matrix should be symmetric, reshaping in either C or F order should give
-    # the same result. Here we just use the default C order.
     if "ovlp" in process_what:
-        ovlp = ovlp.reshape(ovlp_dim, ovlp_dim)
+        if ovlp_shape == "full":
+            # Reshape overlap into a square matrix and check symmetry. As the overlap
+            # matrix should be symmetric, reshaping in either C or F order should give
+            # the same result. Here we just use the default C order.
+            ovlp = ovlp.reshape(ovlp_dim, ovlp_dim)
+        else:
+            # Reconstruct the full matrix from the triangular
+            ovlp_dim = int(coeffs.shape[0])
+            s_full = np.empty((ovlp_dim, ovlp_dim))
+            tri_idxs = np.triu_indices(ovlp_dim)
+            s_full[tri_idxs] = ovlp
+            s_full.T[tri_idxs] = ovlp
+            ovlp = s_full
+
         assert np.allclose(ovlp, ovlp.T)
 
     return coeffs, projs, ovlp
@@ -580,7 +617,7 @@ def process_aims_ri_results(
     process_what: List[str] = None,
     ri_calc_idxs: Optional[List[int]] = [],
     structure_idx: Optional[int] = None,
-    save_numpy: bool = False,
+    ovlp_shape: str = "lower_tri",
 ) -> None:
     """
     Calls a series of functions to process the results of an AIMS RI calculation
@@ -589,10 +626,6 @@ def process_aims_ri_results(
     First, the calculation info is extracted from aims.out and stored in a
     dictionary. To this dict are added the RI basis set definition, then the
     dict is pickled to file "calc.pickle".
-
-    Then, the RI basis set coefficients, projections, and overlap matrix are
-    processed and saved as numpy arrays if `save_numpy` is true, under filenames
-    "ri_coeffs.npy", "ri_projs.npy", and "ri_ovlp.npy" respectively.
 
     If `ri_calc_idxs` is passed, indicating the indices of the RI calculation
     within the main AIMS calculation, (1-indexed) the processed coefficients and
@@ -604,6 +637,16 @@ def process_aims_ri_results(
     regardless of the number of RI fittings that have taken place.
 
     If passed, `structure_idx` is used as metadata in the constructed TensorMap.
+
+    `ovlp_shape` can be either "lower_tri" or "full". If "lower_tri", the overlap
+    matrix is read from file with a flat index as follows:
+    ```
+    flat_idx = 0
+    for row in range(len(ovlp_dim)):
+        for col in range(row, len(ovlp_dim)):
+            flat_idx += 1
+    ```
+    whereas if "full", the standard double loop is assumed.
 
     :param frame: the ASE.atoms frame for which the AIMS RI calculation was
         performed.
@@ -624,9 +667,8 @@ def process_aims_ri_results(
     :param structure_idx: optional ``int`` to indicate the index of the
         structure in the dataset. This is used as metadata in the constructed
         TensorMap.
-    :param save_numpy: optional ``bool`` indicating whether the processed data
-        should be saved as numpy arrays (the intermediate format) as well as
-        TensorMaps. If False, the data is saved only in TensorMap format.
+    :param ovlp_shape: optional ``str`` to indicate the shape of the overlap
+        matrix read from file. Either "lower_tri" or "full".
     """
     # Create a directory for the processed data
     processed_dir = os.path.join(aims_output_dir, "processed")
@@ -639,19 +681,6 @@ def process_aims_ri_results(
     # Parse basis set info
     lmax, nmax = extract_basis_set_info(frame, aims_output_dir)
     aims_out.update({"basis_set": {"lmax": lmax, "nmax": nmax}})
-
-    # # Parse basis set idx ordering
-    # idx_ordering = np.loadtxt(
-    #     os.path.join(aims_output_dir, "product_basis_idxs.out"), dtype=int
-    # )
-    # aims_out.update(
-    #     {
-    #         "basis_set": {
-    #             "def": {"lmax": lmax, "nmax": nmax},
-    #             "idxs": idx_ordering,
-    #         }
-    #     }
-    # )
 
     # Parse KS orbital information
     if os.path.exists(os.path.join(aims_output_dir, "ks_orbital_info.out")):
@@ -694,10 +723,8 @@ def process_aims_ri_results(
         # the fixed basis set definition, so does not need to be suffixed.
         ri_calc_suffix = "" if ri_calc_idx is None else f"_{int(ri_calc_idx):04d}"
 
-        # Calculat edensity fitting error
-        aims_out["df_error_percent"][
-            "total" if ri_calc_idx is None else ri_calc_idx
-        ] = aims_fields.get_percent_mae_between_fields(
+        # Calculate density fitting error
+        mae, norm = aims_fields.get_mae_between_fields(
             input=np.loadtxt(
                 os.path.join(aims_output_dir, f"rho_ri{ri_calc_suffix}.out")
             ),
@@ -706,6 +733,9 @@ def process_aims_ri_results(
             ),
             grid=grid,
         )
+        aims_out["df_error_percent"][
+            "total" if ri_calc_idx is None else ri_calc_idx
+        ] = 100 * mae / norm
 
         # Only process the overlap matrix once
         if "ovlp" in process_what and iteration_i > 0:
@@ -720,11 +750,6 @@ def process_aims_ri_results(
 
         # Save to file
         if "coeffs" in process_what:
-            if save_numpy:
-                np.save(
-                    os.path.join(processed_dir, f"ri_coeffs{ri_calc_suffix}.npy"),
-                    coeffs,
-                )
             # Convert to metatensor and save
             coeffs = convert.coeff_vector_ndarray_to_tensormap(
                 frame, coeffs, lmax, nmax, structure_idx=structure_idx
@@ -735,10 +760,6 @@ def process_aims_ri_results(
         else:
             assert coeffs is None
         if "projs" in process_what:
-            if save_numpy:
-                np.save(
-                    os.path.join(processed_dir, f"ri_projs{ri_calc_suffix}.npy"), projs
-                )
             # Convert to metatensor and save
             projs = convert.coeff_vector_ndarray_to_tensormap(
                 frame, projs, lmax, nmax, structure_idx=structure_idx
@@ -749,8 +770,6 @@ def process_aims_ri_results(
         else:
             assert projs is None
         if "ovlp" in process_what:
-            if save_numpy:
-                np.save(os.path.join(processed_dir, "ri_ovlp.npy"), ovlp)
             # Convert to metatensor, drop redundant blocks, and save
             ovlp = convert.overlap_matrix_ndarray_to_tensormap(
                 frame, ovlp, lmax, nmax, structure_idx=structure_idx
@@ -758,14 +777,20 @@ def process_aims_ri_results(
             ovlp = convert.overlap_drop_redundant_off_diagonal_blocks(ovlp)
             metatensor.save(os.path.join(processed_dir, "ri_ovlp.npz"), ovlp)
 
+            # Also take the diagonal of the overlap and save
+            diag = convert.extract_matrix_diagonal(ovlp)
+            metatensor.save(
+                os.path.join(processed_dir, "ri_ovlp_diag.npz"), 
+                utils.make_contiguous_numpy(diag)
+            )
+
         else:
             assert ovlp is None
 
         # Clear from memory
-        del coeffs, projs, ovlp
+        del coeffs, projs, ovlp, diag
 
     # Pickle calc info
     utils.pickle_dict(os.path.join(processed_dir, "calc_info.pickle"), aims_out)
 
     return
-

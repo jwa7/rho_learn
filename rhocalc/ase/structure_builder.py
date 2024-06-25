@@ -222,30 +222,29 @@ def make_slab_topside_dimer_pair(
     return slab
 
 
-def get_atom_idxs_by_region(frame: ase.Atoms, slab_depth: float, interphase_depth: float):
+def get_atom_idxs_by_region(frame: ase.Atoms, surface_depth: float, buffer_depth: float):
     """
-    Returns the atomic indices of the surface (S), interphase (I), and bulk (B) regions
-    of a frame, respectively.
+    Returns the atomic indices of the surface, buffer, and bulk regions of a frame,
+    respectively. Only applicable to slab systems, where the slab is oriented along the
+    z-axis, with the surface at z=0.
 
-    If `d_S` is the slab depth and `d_I` is depth of the interphase (buffer) region,
-    `z_max` the maximum z_coordinate of the frame, and `z_i` is the z-coordinate of atom
-    i, the atoms are classified as follows:
+    With `d_surf` being the surface region depth, `d_buff` the buffer region depth, and
+    `z_i` is the z-coordinate of atom i, the atoms are classified as follows:
 
-        - Surface: z_i >= z_max - d_S
-        - Buffer: z_max - d_S - d_I <= z_i < z_max - d_S
-        - Bulk: z_i < z_max - d_S - d_I
+        - Surface atoms: z_i >= - d_surf
+        - Buffer: - d_surf > z_i >= - d_surf - d_buff
+        - Bulk: - d_surf - d_buff > z_i
     """
     # Define the region boundaries
-    z_max = frame.positions[:, 2].max()
-    s_i_boundary = z_max - slab_depth
-    i_b_boundary = z_max - slab_depth - interphase_depth
+    surf_buff_boundary = - surface_depth
+    buff_bulk_boundary = - surface_depth - buffer_depth
 
-    # Find the indices for the surface, interphase, and bulk regions
-    idxs_surface = np.where(frame.positions[:, 2] >= s_i_boundary)[0]
-    idxs_interphase = np.where(
-        (frame.positions[:, 2] < s_i_boundary)
-        & (frame.positions[:, 2] >= i_b_boundary)
+    # Find the indices for the surface, buffer, and bulk regions
+    idxs_surface = np.where(frame.positions[:, 2] >= surf_buff_boundary)[0]
+    idxs_buffer = np.where(
+        (frame.positions[:, 2] < surf_buff_boundary)
+        & (frame.positions[:, 2] >= buff_bulk_boundary)
     )[0]
-    idxs_bulk = np.where(frame.positions[:, 2] < i_b_boundary)[0]
+    idxs_bulk = np.where(frame.positions[:, 2] < buff_bulk_boundary)[0]
 
-    return idxs_surface, idxs_interphase, idxs_bulk
+    return idxs_surface, idxs_buffer, idxs_bulk

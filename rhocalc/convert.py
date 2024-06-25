@@ -855,6 +855,70 @@ def coeff_vector_tensormap_to_ndarray(
     return coeffs
 
 
+def extract_matrix_diagonal(matrix: TensorMap) -> TensorMap:
+    """
+    Extracts the diagonal of the input `matrix` in TensorMap format.
+
+    Assumes `matrix` has the matrix metadata structure as in
+    :py:func:`convention.OVERLAP_MATRIX` and returns the diagonal in vector metadata
+    structure as in :py:func:`convention.COEFF_VECTOR`.
+    """
+    # Keys
+    key_mask_1 = matrix.keys.values[:, 0] == matrix.keys.values[:, 1]
+    key_mask_2 = matrix.keys.values[:, 2] == matrix.keys.values[:, 3]
+    key_mask = key_mask_1 & key_mask_2
+    new_keys = Labels(
+        names=["o3_lambda", "center_type"], values=matrix.keys.values[key_mask][:, ::2]
+    )
+
+    new_blocks = []
+    for key in new_keys:
+        l, a = key
+        block = matrix.block(
+            dict(o3_lambda_1=l, o3_lambda_2=l, center_1_type=a, center_2_type=a)
+        )
+
+        # Mask metadata
+        samples_mask = block.samples.values[:, 1] == block.samples.values[:, 2]
+        assert np.all(block.components[0].values == block.components[1].values)
+        properties_mask = block.properties.values[:, 0] == block.properties.values[:, 1]
+
+        n_s = np.sum(samples_mask)
+        n_c = len(block.components[0].values)
+        n_p = np.sum(properties_mask)
+
+        vals = block.values[samples_mask][:, :, :, properties_mask]
+
+        new_vals = []
+        for m in range(n_c):
+            new_vals.append(vals[:, m, m, :].reshape(n_s, 1, n_p))
+
+        new_vals = np.hstack(new_vals)
+
+        new_blocks.append(
+            TensorBlock(
+                values=new_vals,
+                samples=Labels(
+                    names=["system", "atom"],
+                    values=block.samples.values[samples_mask][:, :2],
+                ),
+                components=[
+                    Labels(names=["o3_mu"], values=block.components[0].values)
+                ],
+                properties=Labels(
+                    names=["n"],
+                    values=block.properties.values[properties_mask][:, 0].reshape(
+                        -1, 1
+                    ),
+                ),
+            )
+        )
+
+    diagonal = TensorMap(new_keys, new_blocks)
+
+    return diagonal
+
+
 def overlap_matrix_tensormap_to_ndarray(
     frame: ase.Atoms,
     overlap: TensorMap,
@@ -1069,5 +1133,55 @@ SYM_TO_NUM = {
     "Se": 34,
     "Br": 35,
     "Kr": 36,
+    "Rb": 37,
+    "Sr": 38,
+    "Y": 39,
+    "Zr": 40,
+    "Nb": 41,
+    "Mo": 42,
+    "Tc": 43,
+    "Ru": 44,
+    "Rh": 45,
+    "Pd": 46,
+    "Ag": 47,
+    "Cd": 48,
+    "In": 49,
+    "Sn": 50,
+    "Sb": 51,
+    "Te": 52,
+    "I": 53,
+    "Xe": 54,
+    "Cs": 55,
+    "Ba": 56,
+    "La": 57,
+    "Ce": 58,
+    "Pr": 59,
+    "Nd": 60,
+    "Pm": 61,
+    "Sm": 62,
+    "Eu": 63,
+    "Gd": 64,
+    "Tb": 65,
+    "Dy": 66,
+    "Ho": 67,
+    "Er": 68,
+    "Tm": 69,
+    "Yb": 70,
+    "Lu": 71,
+    "Hf": 72,
+    "Ta": 73,
+    "W": 74,
+    "Re": 75,
+    "Os": 76,
+    "Ir": 77,
+    "Pt": 78,
+    "Au": 79,
+    "Hg": 80,
+    "Tl": 81,
+    "Pb": 82,
+    "Bi": 83,
+    "Po": 84,
+    "At": 85,
+    "Rn": 86,
 }
 NUM_TO_SYM = {num: sym for sym, num in SYM_TO_NUM.items()}

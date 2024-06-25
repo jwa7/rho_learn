@@ -3,11 +3,16 @@ Module containing the RhoCube class, which wraps the cube_tools.cube class from
 https://github.com/funkymunkycool/Cube-Toolz. Allows reading and manipulation of
 cube files, with added functionality for generating STM images.
 """
+
+from typing import List
+
 import ase
 import numpy as np
+from scipy.interpolate import CubicSpline
 
 import cube_tools
 from cube_tools import cube
+
 
 class RhoCube(cube_tools.cube):
 
@@ -77,3 +82,65 @@ class RhoCube(cube_tools.cube):
                     axis_c_vals += self.data[:, :, i_cube]
 
         return axis_a_coords, axis_b_coords, axis_c_vals
+
+    def get_height_profile_map(
+        self,
+        isovalue: float,
+        tolerance: float,
+        grid_multiplier: int,
+        z_min: float = None,
+        z_max: float = None,
+        xy_tiling: List[int] = None,
+    ) -> np.ndarray:
+        """
+        Calculates the height profile of the density in `self.data` at the target
+        `isovalue`, within the specified `tolerance`.
+
+        For each XY point, the Z-coordinates of the cube array are densified by a factor
+        of `grid_multiplier`, then interpolated with splines to find the Z-coordinates
+        that match the taregt `isovalue` within the specified `tolerance`.
+
+        The intended use of this function is for visualizing slab surface densities. As
+        such, the surface is assumed to be aligned at Z=0, with the slab at negative
+        Z-coordinates. Any Z-coordinate that is outside the range of `min_z` and
+        `max_z` is ignored and returned as NaN.
+        """
+
+        height_map = np.ones((self.NX, self.NY)) * np.nan
+        for i in range(self.data.shape[0]):
+            for j in range(self.data.shape[1]):
+
+                # Spline this 1D array of values, build a cubic spline
+                z_grid = (np.arange(self.NZ) * self.Z[2]) + self.origin[2]
+                spliner = CubicSpline(z_grid, self.data[i, j, :])
+
+                # Build a finer grid for interpolation
+                z_grid_fine = np.linspace(
+                    z_grid.min(), z_grid.max(), self.NZ * grid_multiplier
+                )
+
+                # Find the idxs of the values that match the isovalue, within the tolerance
+                match_idxs = np.where(
+                    np.abs(spliner(z_grid_fine) - isovalue) < tolerance
+                )[0]
+                if len(match_idxs) == 0:
+                    continue
+
+                # Find the idx of the matching value with the greatest z-coordinate
+                match_idx = match_idxs[np.argmax(z_grid_fine[match_idxs])]
+                z_height = z_grid_fine[match_idx]
+                if (z_min is not None and z_height < z_min) or (
+                    z_max is not None and z_height > z_max
+                ):
+                    continue
+                height_map[i, j] = z_grid_fine[match_idx]
+
+        if xy_tiling is None:
+            xy_tiling = [1, 1]
+        assert len(xy_tiling) == 2
+
+        X = (np.arange(self.NX * xy_tiling[0]) * self.X[0]) + self.origin[0]
+        Y = (np.arange(self.NY * xy_tiling[1]) * self.Y[1]) + self.origin[1]
+        Z = np.tile(height_map, reps=xy_tiling)
+
+        return X, Y, Z.T

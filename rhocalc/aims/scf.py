@@ -3,8 +3,10 @@ from os.path import exists, join
 import glob
 import shutil
 
-from rhocalc.aims import aims_calc
+import ase.io
 
+from rhocalc.aims import aims_calc, aims_fields, aims_parser
+from rholearn import utils
 
 def set_settings_gloablly(dft_settings: dict):
     """Sets the DFT settings globally."""
@@ -18,6 +20,12 @@ def scf(dft_settings: dict):
 
     set_settings_gloablly(dft_settings)
 
+    for A, frame in zip(SYSTEM_ID, SYSTEM):
+        if not exists(SCF_DIR(A)):
+            os.makedirs(SCF_DIR(A))
+        if not exists(join(SCF_DIR(A), "geometry.in")):
+            ase.io.write(join(SCF_DIR(A), "geometry.in"), frame, format="aims")
+
     # Define paths to the aims.out files for RI calcs
     all_aims_outs = [join(SCF_DIR(A), "aims.out") for A in SYSTEM_ID]
     for aims_out in all_aims_outs:
@@ -27,6 +35,7 @@ def scf(dft_settings: dict):
 
     calcs = {A: {"atoms": structure} for A, structure in zip(SYSTEM_ID, SYSTEM)}
     for A in SYSTEM_ID:
+        shutil.copy("dft_settings.py", SCF_DIR(A))
         if exists(join(SCF_DIR(A), "geometry.in.next_step")):
             shutil.copy(
                 join(SCF_DIR(A), "geometry.in"),
@@ -87,12 +96,13 @@ def process_scf(dft_settings: dict):
         fermi_vbm = kso_info[homo_idx - 1]["energy_eV"]  # 1-indexing
 
         # Calculate the Fermi energy by integration
-        fermi_integrated = aims_fields.calculate_fermi_energy(
-            kso_info_path=join(SCF_DIR(A), "ks_orbital_info.out"),
-            n_electrons=frame.get_atomic_numbers().sum(),
-            gaussian_width=LDOS["gaussian_width"],
-            interpolation_truncation=0.5,
-        )
+        fermi_integrated = None
+        # fermi_integrated = aims_fields.calculate_fermi_energy(
+        #     kso_info_path=join(SCF_DIR(A), "ks_orbital_info.out"),
+        #     n_electrons=frame.get_atomic_numbers().sum(),
+        #     gaussian_width=LDOS["gaussian_width"],
+        #     interpolation_truncation=9.0,
+        # )
         print(f"Fermi energy for {A}: ChemPot: {calc_info['fermi_eV']}, VBM: {fermi_vbm}, integrated: {fermi_integrated}")
         calc_info["vbm_eV"] = fermi_vbm
         calc_info["fermi_integrated_eV"] = fermi_integrated

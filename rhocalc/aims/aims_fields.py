@@ -4,8 +4,9 @@ Kohn-Sham orbitals.
 """
 
 import os
-from typing import Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
+import ase
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -14,7 +15,10 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.optimize import brentq
 from scipy.special import erf
 
-from rhocalc.aims import aims_parser
+import metatensor as mts
+
+from rhocalc import convert
+from rhocalc.aims import aims_calc, aims_parser
 
 
 def get_kso_weight_vector_for_named_field(
@@ -72,8 +76,8 @@ def get_kso_weight_vector_homo(kso_info_path: str) -> np.ndarray:
     homo_kso_idx = get_homo_kso_idx(kso_info, max_occ=2)
 
     # Fill in weights
-    weights = np.zeros(ks_info.shape[0])
-    homo_kso =  kso_info[homo_kso_idx - 1]
+    weights = np.zeros(kso_info.shape[0])
+    homo_kso = kso_info[homo_kso_idx - 1]
     assert homo_kso["kso_i"] == homo_kso_idx
     weights[homo_kso_idx - 1] = homo_kso["k_weight"]
 
@@ -92,8 +96,8 @@ def get_kso_weight_vector_lumo(kso_info_path: str) -> np.ndarray:
     lumo_kso_idx = get_lumo_kso_idx(kso_info, max_occ=2)
 
     # Fill in weights
-    weights = np.zeros(ks_info.shape[0])
-    lumo_kso =  kso_info[lumo_kso_idx - 1]
+    weights = np.zeros(kso_info.shape[0])
+    lumo_kso = kso_info[lumo_kso_idx - 1]
     assert lumo_kso["kso_i"] == lumo_kso_idx
     weights[lumo_kso_idx - 1] = lumo_kso["k_weight"]
 
@@ -466,14 +470,14 @@ def sort_field_by_grid_points(field: Union[str, np.ndarray]) -> np.ndarray:
     return np.array([[x, y, z, w] for x, y, z, w in field], dtype=np.float64)
 
 
-def get_percent_mae_between_fields(
-    input: np.ndarray, target: np.ndarray, grid: np.ndarray
+def get_mae_between_fields(
+    input: np.ndarray, target: np.ndarray, grid: np.ndarray,
 ) -> float:
     """
-    Calculates the absolute error between the target and input scalar fields,
-    integrates this over all space, then divides by the target field integrated
-    over all space (i.e. the number of electrons). Multiplies by 100 and returns
-    this as a % MAE.
+    Calculates the absolute error between the target and input scalar fields and
+    integrates over all space.
+    
+    If `normalize` is true, divides by the target field integrated over all space.
     """
     if not np.all(input[:, :3] == grid[:, :3]):
         raise ValueError(
@@ -484,27 +488,25 @@ def get_percent_mae_between_fields(
             "grid points not equivalent between target scalar field and integration weights"
         )
 
-    
-    return (
-        100
-        * np.dot(np.abs(input[:, 3] - target[:, 3]), grid[:, 3])
-        / np.dot(target[:, 3], grid[:, 3])
-    )
+    mae = np.dot(np.abs(input[:, 3] - target[:, 3]), grid[:, 3])
+    normalization = np.dot(target[:, 3], grid[:, 3])
+
+    return mae, normalization
 
 
 def calculate_electrostatic_potential(
     rho: np.ndarray,
     grid: np.ndarray,
     eval_coords: Optional[np.ndarray] = None,
-    eval_coords_size: Optional[np.ndarray] = None, 
+    eval_coords_size: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray]:
     """
     Calculate the electrostatic potential for a given charge density `rho` and grid
     points on which it is evaluated `grid` (including integration weights).
-    
+
     A vector of points `eval_coords` can be provided as the points at which the
     potential is evaluated.
-    
+
     If `eval_coords` is None, the grid is constructed by uniformly discretizing over the
     min and max coordinates in `grid` along each axis, according to the
     `eval_coord_size` parameter.
@@ -521,12 +523,15 @@ def calculate_electrostatic_potential(
 
     if eval_coords is None:
         if eval_coords_size is None:
-            raise ValueError("If `eval_coords` is None, `eval_coords_size` must be provided")
+            raise ValueError(
+                "If `eval_coords` is None, `eval_coords_size` must be provided"
+            )
         min_x, max_x = grid[:, 0].min(), grid[:, 0].max()
         min_y, max_y = grid[:, 1].min(), grid[:, 1].max()
         min_z, max_z = grid[:, 2].min(), grid[:, 2].max()
         X, Y, Z = [
-            np.linspace(min_, max_, size) for min_, max_, size in zip(
+            np.linspace(min_, max_, size)
+            for min_, max_, size in zip(
                 [min_x, min_y, min_z], [max_x, max_y, max_z], eval_coords_size
             )
         ]
@@ -543,16 +548,18 @@ def calculate_electrostatic_potential(
         # Calculate |r - r'| for all r in the `eval_coords` and all r' in `coords`
         norm_length = np.linalg.norm(
             np.abs(
-                coords.reshape(coords.shape[0], 1, coords.shape[1]).repeat(eval_coords.shape[0], axis=1) 
+                coords.reshape(coords.shape[0], 1, coords.shape[1]).repeat(
+                    eval_coords.shape[0], axis=1
+                )
                 - eval_coords
             ),
-            axis=2
+            axis=2,
         )
 
         # Calculate the integrand for all r in `coords` and all r' in `eval_coords`
-        integrand = (rho.reshape(-1, 1) / norm_length)
-        
-        # Calculate the integral, y summing over `coords` 
+        integrand = rho.reshape(-1, 1) / norm_length
+
+        # Calculate the integral, y summing over `coords`
         integral = integrand.sum(axis=0)
 
         # Mean over points in the Z plane
@@ -560,3 +567,100 @@ def calculate_electrostatic_potential(
         V.append(V_z)
 
     return Z, np.array(V)
+
+
+def field_builder(
+    system_id: List[int],
+    system: List[ase.Atoms],
+    coeff: List[mts.TensorMap],
+    save_dir: Callable,
+    return_field: bool = True,
+    *,
+    aims_kwargs: dict = None,
+    aims_path: str = None,
+    basis_set: dict = None,
+    cube: dict = None,
+    hpc_kwargs: dict = None,
+    sbatch_kwargs: dict = None,
+):
+    """
+    Takes a list of TensorMap corresponding to RI coefficients `coeff` for each system
+    in `system`. Converts them from TensorMap to numpy format, writes to `ri_coeffs.in`,
+    then rebuilds the field by calling AIMS.
+
+    if `return_field` is True, then this function waits for the AIMS calculations to
+    finish then returns rebuilt scalar fields.
+    """
+    calcs = {
+        A: {"atoms": sys, "run_dir": save_dir(A)} for A, sys in zip(system_id, system)
+    }
+
+    # Add tailored cube edges for each system if applicable
+    if aims_kwargs.get("output") == ["cube ri_fit"]:
+        if cube.get("slab") is True:
+            for A in system_id:
+                calcs[A]["aims_kwargs"] = aims_calc.get_aims_cube_edges_slab(
+                    calcs[A]["atoms"], cube.get("n_points"), cube.get("z_min"), cube.get("z_max")
+                )
+        else:
+            for A in system_id:
+                calcs[A]["aims_kwargs"] = aims_calc.get_aims_cube_edges(
+                    calcs[A]["atoms"], cube.get("n_points")
+                )
+
+    # Convert to a list of numpy arrays
+    for A, sys, pred_coeff in zip(system_id, system, coeff):
+        pred_np = convert.coeff_vector_tensormap_to_ndarray(
+            frame=sys,
+            tensor=pred_coeff,
+            lmax=basis_set["lmax"],
+            nmax=basis_set["nmax"],
+        )
+        # Save each coeff vector to "ri_coeffs.in"
+        if not os.path.exists(save_dir(A)):
+            os.makedirs(save_dir(A))
+        np.savetxt(os.path.join(save_dir(A), "ri_coeffs.in"), pred_np)
+
+    # If an "aims.out" file already exists in the save directory, delete it.
+    # This prevents this function from incorrectly determining that the AIMS
+    # calculation has finished, while not being able to delete the directory
+    all_aims_outs = [os.path.join(save_dir(A), "aims.out") for A in system_id]
+    for aims_out in all_aims_outs:
+        if os.path.exists(aims_out):
+            os.remove(aims_out)
+
+    # Run AIMS to build the target scalar field for each system
+    aims_calc.run_aims_array(
+        calcs=calcs,
+        aims_path=aims_path,
+        aims_kwargs=aims_kwargs,
+        sbatch_kwargs=sbatch_kwargs,
+        run_dir=save_dir,  # must be a callable
+        load_modules=hpc_kwargs["load_modules"],
+        run_command=hpc_kwargs["run_command"],
+        export_vars=hpc_kwargs["export_vars"],
+    )
+
+    if not return_field:
+        return
+
+    # Wait until all AIMS calcs have finished, then read in and return the
+    # target scalar fields
+    all_finished = False
+    while len(all_aims_outs) > 0:
+        for aims_out in all_aims_outs:
+            if os.path.exists(aims_out):
+                with open(aims_out, "r") as f:
+                    # Basic check to see if AIMS calc has finished
+                    if "Leaving FHI-aims." in f.read():
+                        all_aims_outs.remove(aims_out)
+
+    targets = []
+    for A in system_id:
+        target = np.loadtxt(
+            os.path.join(save_dir(A), "rho_rebuilt.out"),
+            usecols=(0, 1, 2, 3),  # grid x, grid y, grid z, value
+        )
+        targets.append(target)
+
+    return targets

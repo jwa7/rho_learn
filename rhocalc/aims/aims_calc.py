@@ -1,6 +1,7 @@
 """
 Module for setting up and running FHI-AIMS calculations.
 """
+
 import inspect
 import glob
 import os
@@ -42,7 +43,7 @@ def write_aims_sbatch(
     load_modules: Optional[list] = None,
     export_vars: Optional[list] = None,
     run_command: str = "srun",
-    **kwargs
+    **kwargs,
 ):
     """
     Writes a bash script to `fname` that allows running of FHI-AIMS with
@@ -392,13 +393,21 @@ def process_aims_results_sbatch_array(
     return
 
 
-def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100)):
+def get_aims_cube_edges_slab(
+    slab: ase.Atoms, n_points: tuple, z_min: float = None, z_max: float = None
+):
     """
-    Returns FHI-aims keywords for specifying the cube file edges in control.in.
-    The x and y edges are taken to be the lattice vectors of the slab. As the
-    slab is likely to have a large vacuum region, the z-edge is calculated from
-    the bounding length of the nuclear positions in the z-direction, plus 10
-    Angstrom.
+    Returns FHI-aims keywords for specifying the cube file edges in control.in. The x
+    and y edges are taken to be the lattice vectors of the slab.
+
+    The edges of the total cube are calculated as follows, assuming that the slab is
+    oriented along the z-axis. The x and y edges are given by the cell lengths along
+    these axes.
+
+    As the slab is also assumed to have a large vacuum region along the z-axis, the
+    z-edge is calculated as the maximum bounding length of atomic positions, plus 5
+    Angstrom either side. This is unless `z_min` and/or `z_max` are passed, which
+    override the max/min z-coords of the atomic positions.
 
     Returned is a dict like:
         {"cube": [
@@ -412,34 +421,39 @@ def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100))
     if not np.all(slab.pbc):
         raise ValueError("Slab must have periodic boundary conditions")
 
-    # check square cell
+    # Check cell is cubic
     if not np.all(
         [
-            param == 0 
+            param == 0
             for param in [
-                slab.cell[0, 1], slab.cell[0, 2], 
-                slab.cell[1, 0], slab.cell[1, 2],
-                slab.cell[2, 0], slab.cell[2, 1]
+                slab.cell[0, 1],
+                slab.cell[0, 2],
+                slab.cell[1, 0],
+                slab.cell[1, 2],
+                slab.cell[2, 0],
+                slab.cell[2, 1],
             ]
         ]
     ):
-        warnings.warn(f"Cell not square: {slab.cell}")
+        warnings.warn(f"Cell not cubic: {slab.cell}")
 
-    min_x = np.min(slab.positions[:, 0])
-    max_x = np.max(slab.positions[:, 0])
-    min_y = np.min(slab.positions[:, 1])
-    max_y = np.max(slab.positions[:, 1])
-    min_z = np.min(slab.positions[:, 2])
-    max_z = np.max(slab.positions[:, 2])
+    x_min = np.min(slab.positions[:, 0])
+    x_max = np.max(slab.positions[:, 0])
+    y_min = np.min(slab.positions[:, 1])
+    y_max = np.max(slab.positions[:, 1])
 
-    min_coord = np.array([min_x, min_y, min_z])
-    max_coord = np.array([max_x, max_y, max_z])
+    if z_min is None:
+        z_min = np.min(slab.positions[:, 2]) - 5
+    if z_max is None:
+        z_max = np.max(slab.positions[:, 2]) + 5
+
+    min_coord = np.array([x_min, y_min, z_min])
+    max_coord = np.array([x_max, y_max, z_max])
     max_lengths = max_coord - min_coord
 
-    # Take the x and y lattice vectors to be the length of the cube in these
-    # directions. For the z-direction, take the bounding box (plus some) of
-    # nuclear positions.
-    max_lengths = [slab.cell[0, 0], slab.cell[1, 1], max_lengths[2] + 10]
+    # Take the x and y lattice vectors to be the length of the cube in these directions.
+    # For the z-direction, take the bounding box of nuclear positions.
+    max_lengths = [slab.cell[0, 0], slab.cell[1, 1], max_lengths[2]]
     center = (min_coord + max_coord) / 2
 
     return {
@@ -454,7 +468,7 @@ def get_aims_cube_edges_slab(slab: ase.Atoms, n_points: tuple = (100, 100, 100))
     }
 
 
-def get_aims_cube_edges(frame: ase.Atoms, n_points: tuple = (100, 100, 100)):
+def get_aims_cube_edges(frame: ase.Atoms, n_points: tuple):
     """
     Returns FHI-aims keywords for specifying the cube file edges in control.in.
     The x, y, z edges are taken to be the lattice vectors of the frame.
@@ -469,26 +483,29 @@ def get_aims_cube_edges(frame: ase.Atoms, n_points: tuple = (100, 100, 100)):
     as required for writing a control.in using the ASE interface.
     """
     # Find the bounding box and center of the frame
-    min_x = np.min(frame.positions[:, 0])
-    max_x = np.max(frame.positions[:, 0])
-    min_y = np.min(frame.positions[:, 1])
-    max_y = np.max(frame.positions[:, 1])
-    min_z = np.min(frame.positions[:, 2])
-    max_z = np.max(frame.positions[:, 2])
+    x_min = np.min(frame.positions[:, 0])
+    x_max = np.max(frame.positions[:, 0])
+    y_min = np.min(frame.positions[:, 1])
+    y_max = np.max(frame.positions[:, 1])
+    z_min = np.min(frame.positions[:, 2])
+    z_max = np.max(frame.positions[:, 2])
 
-    min_coord = np.array([min_x, min_y, min_z])
-    max_coord = np.array([max_x, max_y, max_z])
+    min_coord = np.array([x_min, y_min, z_min])
+    max_coord = np.array([x_max, y_max, z_max])
     center = (min_coord + max_coord) / 2
 
     if np.all(frame.pbc):
         # check square cell
         if not np.all(
             [
-                param == 0 
+                param == 0
                 for param in [
-                    frame.cell[0, 1], frame.cell[0, 2], 
-                    frame.cell[1, 0], frame.cell[1, 2],
-                    frame.cell[2, 0], frame.cell[2, 1]
+                    frame.cell[0, 1],
+                    frame.cell[0, 2],
+                    frame.cell[1, 0],
+                    frame.cell[1, 2],
+                    frame.cell[2, 0],
+                    frame.cell[2, 1],
                 ]
             ]
         ):
